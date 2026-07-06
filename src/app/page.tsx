@@ -1,10 +1,17 @@
+"use client";
 import Link from "next/link";
 import React from "react";
+import { motion } from "framer-motion";
 import { PlayCircle, Zap, CheckCircle2, Clock, TrendingUp, DollarSign, Layers, Sparkles, EyeOff, VideoOff, CalendarX, Film, Wand2, Plus, Check, X, Info } from "lucide-react";
 
 export default function LandingPage() {
   return (
-    <div className="min-h-screen bg-background flex flex-col font-sans">
+    <motion.div 
+      initial={{ opacity: 0, y: 15 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.6, ease: "easeOut" }}
+      className="min-h-screen bg-background flex flex-col font-sans"
+    >
       {/* Navigation */}
       <header className="w-full border-b border-gray-100 bg-white sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
@@ -154,97 +161,43 @@ export default function LandingPage() {
               </p>
             </div>
             
-            <div className="flex justify-center gap-4 md:gap-6 flex-wrap lg:flex-nowrap">
-              {/* Thumbnail 1 */}
-              <div className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer">
-                <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-colors">
-                  <div className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
-                      FESTIVAL OF
-                    </h3>
+            <div className="relative w-full overflow-hidden flex items-center justify-center [mask-image:linear-gradient(to_right,transparent,black_10%,black_90%,transparent)] py-4">
+              <motion.div 
+                initial={{ x: 0 }}
+                animate={{ x: "-25%" }}
+                transition={{ repeat: Infinity, ease: "linear", duration: 30, repeatType: "loop" }}
+                className="flex w-max"
+              >
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="flex gap-4 md:gap-6 pr-4 md:pr-6">
+                    {[
+                      { title: "FESTIVAL OF", views: "43.7k", style: "Epic History", bg: "bg-gradient-to-br from-purple-500 to-indigo-600" },
+                      { title: "THE WHISPERING", views: "28.8k", style: "Childrens Book", bg: "bg-gradient-to-br from-emerald-400 to-teal-700" },
+                      { title: "HOW DID", views: "62.3k", style: "AutoShorts V2", bg: "bg-gradient-to-br from-orange-400 to-red-600" },
+                      { title: "REVEALING A", views: "22.6k", style: "UGC Hook", bg: "bg-gradient-to-br from-pink-400 to-rose-600" },
+                      { title: "SCARY FACTS", views: "14.1k", style: "Dark Mystery", bg: "bg-slate-800" },
+                      { title: "SPACE SECRETS", views: "89.2k", style: "Sci-Fi Lore", bg: "bg-gradient-to-br from-blue-400 to-cyan-600" }
+                    ].map((card, j) => (
+                      <div key={j} className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer transition-transform duration-300 hover:-translate-y-4">
+                        <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-all">
+                          <div className={`absolute inset-0 ${card.bg}`}></div>
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
+                              {card.title}
+                            </h3>
+                          </div>
+                          <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
+                            <PlayCircle size={14} className="fill-white/20" /> {card.views}
+                          </div>
+                        </div>
+                        <div className="text-center text-blue-200 text-xs font-semibold">
+                          Style: {card.style}
+                        </div>
+                      </div>
+                    ))}
                   </div>
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
-                    <PlayCircle size={14} className="fill-white/20" /> 43.7k
-                  </div>
-                </div>
-                <div className="text-center text-blue-200 text-xs font-semibold">
-                  Style: Epic History
-                </div>
-              </div>
-              
-              {/* Thumbnail 2 */}
-              <div className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer">
-                <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-colors">
-                  <div className="absolute inset-0 bg-gradient-to-br from-emerald-400 to-teal-700"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
-                      THE WHISPERING
-                    </h3>
-                  </div>
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
-                    <PlayCircle size={14} className="fill-white/20" /> 28.8k
-                  </div>
-                </div>
-                <div className="text-center text-blue-200 text-xs font-semibold">
-                  Style: Childrens Book
-                </div>
-              </div>
-              
-              {/* Thumbnail 3 */}
-              <div className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer lg:-translate-y-4 transition-transform">
-                <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-colors">
-                  <div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-red-600"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
-                      HOW DID
-                    </h3>
-                  </div>
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
-                    <PlayCircle size={14} className="fill-white/20" /> 62.3k
-                  </div>
-                </div>
-                <div className="text-center text-blue-200 text-xs font-semibold">
-                  Style: AutoShorts V2
-                </div>
-              </div>
-
-              {/* Thumbnail 4 */}
-              <div className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer">
-                <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-colors">
-                  <div className="absolute inset-0 bg-gradient-to-br from-pink-400 to-rose-600"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
-                      REVEALING A
-                    </h3>
-                  </div>
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
-                    <PlayCircle size={14} className="fill-white/20" /> 22.6k
-                  </div>
-                </div>
-                <div className="text-center text-blue-200 text-xs font-semibold">
-                  Style: UGC Hook
-                </div>
-              </div>
-              
-              {/* Thumbnail 5 */}
-              <div className="w-[160px] md:w-[200px] shrink-0 flex flex-col gap-3 group cursor-pointer hidden sm:flex">
-                <div className="relative aspect-[9/16] rounded-2xl overflow-hidden shadow-2xl border-2 border-white/10 group-hover:border-white/30 transition-colors">
-                  <div className="absolute inset-0 bg-slate-800"></div>
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <h3 className="text-white font-black text-xl italic text-center leading-tight drop-shadow-md px-2">
-                      SCARY FACTS
-                    </h3>
-                  </div>
-                  <div className="absolute bottom-2 left-2 flex items-center gap-1 text-white text-xs font-bold drop-shadow-md">
-                    <PlayCircle size={14} className="fill-white/20" /> 14.1k
-                  </div>
-                </div>
-                <div className="text-center text-blue-200 text-xs font-semibold">
-                  Style: Dark Mystery
-                </div>
-              </div>
-
+                ))}
+              </motion.div>
             </div>
           </div>
         </section>
@@ -840,6 +793,6 @@ export default function LandingPage() {
           </div>
         </div>
       </footer>
-    </div>
+    </motion.div>
   );
 }
