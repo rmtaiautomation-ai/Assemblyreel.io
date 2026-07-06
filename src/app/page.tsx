@@ -1,10 +1,19 @@
 "use client";
 import Link from "next/link";
-import React from "react";
-import { motion } from "framer-motion";
+import React, { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import { useRouter } from "next/navigation";
 import { PlayCircle, Zap, CheckCircle2, Clock, TrendingUp, DollarSign, Layers, Sparkles, EyeOff, VideoOff, CalendarX, Film, Wand2, Plus, Check, X, Info } from "lucide-react";
 
 export default function LandingPage() {
+  const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+  const router = useRouter();
+
+  const handleLogin = (e: React.FormEvent) => {
+    e.preventDefault();
+    router.push("/workspaces");
+  };
+
   return (
     <motion.div 
       initial={{ opacity: 0, y: 15 }}
@@ -15,16 +24,13 @@ export default function LandingPage() {
       {/* Navigation */}
       <header className="w-full border-b border-gray-100 bg-white sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
-          <div className="flex items-center gap-2 text-2xl font-extrabold text-accent-primary tracking-tight">
-            <div className="w-8 h-8 rounded-lg bg-accent-primary shadow-sm flex items-center justify-center">
-              <Zap size={18} className="text-white" />
-            </div>
-            Assemblyreel
-          </div>
+          <Link href="/" className="flex items-center tracking-tight cursor-pointer overflow-hidden w-[240px] h-14 -ml-4">
+            <img src="/logo.jpg" alt="Assemblyreels Logo" className="w-full h-full object-contain scale-[3] mix-blend-multiply" />
+          </Link>
           <nav className="hidden md:flex items-center gap-8 font-medium text-text-secondary">
-            <Link href="#pricing" className="hover:text-accent-primary transition-colors">Pricing</Link>
-            <Link href="/login" className="hover:text-foreground transition-colors">Login</Link>
-            <Link href="/signup" className="btn-primary py-2 px-5">Sign Up</Link>
+            <Link href="/pricing" className="hover:text-accent-primary transition-colors">Pricing</Link>
+            <button onClick={() => setIsLoginModalOpen(true)} className="hover:text-foreground transition-colors font-medium cursor-pointer">Login</button>
+            <button onClick={() => setIsLoginModalOpen(true)} className="btn-primary py-2 px-5 cursor-pointer">Sign Up</button>
           </nav>
         </div>
       </header>
@@ -49,10 +55,10 @@ export default function LandingPage() {
             </p>
             
             <div className="flex flex-col sm:flex-row items-center justify-center lg:justify-start gap-4 mb-6">
-              <Link href="/signup" className="btn-primary text-lg px-8 py-4 w-full sm:w-auto shadow-lg shadow-blue-500/20">
+              <button onClick={() => setIsLoginModalOpen(true)} className="btn-primary text-lg px-8 py-4 w-full sm:w-auto shadow-lg shadow-blue-500/20 cursor-pointer">
                 Start Creating Free
-              </Link>
-              <Link href="#pricing" className="btn-secondary text-lg px-8 py-4 w-full sm:w-auto">
+              </button>
+              <Link href="/pricing" className="btn-secondary text-lg px-8 py-4 w-full sm:w-auto">
                 See Plans & Pricing
               </Link>
             </div>
@@ -480,7 +486,6 @@ export default function LandingPage() {
             </div>
           </div>
         </section>
-
         {/* Pricing Section */}
         <section className="bg-background py-24 md:py-32">
           <div className="max-w-7xl mx-auto px-6">
@@ -502,11 +507,11 @@ export default function LandingPage() {
             </div>
 
             {/* Pricing Cards Container */}
-            <div className="bg-accent-primary rounded-3xl p-4 md:p-6 shadow-2xl overflow-x-auto">
-              <div className="flex gap-4 md:gap-6 min-w-max md:min-w-0 md:grid md:grid-cols-4">
+            <div className="bg-accent-primary rounded-3xl p-4 md:p-6 shadow-2xl">
+              <div className="flex flex-col gap-4 md:gap-6 md:grid md:grid-cols-4">
                 
                 {/* Free Tier */}
-                <div className="bg-white rounded-2xl p-6 flex flex-col w-[280px] md:w-auto">
+                <div className="bg-white rounded-2xl p-6 flex flex-col w-full md:w-auto">
                   <div className="text-center mb-8">
                     <h3 className="text-text-secondary font-bold uppercase tracking-wider mb-2">Free</h3>
                     <div className="text-5xl font-extrabold text-foreground">$0</div>
@@ -529,7 +534,7 @@ export default function LandingPage() {
                 </div>
 
                 {/* Starter Tier */}
-                <div className="bg-white rounded-2xl p-6 flex flex-col w-[280px] md:w-auto relative shadow-xl transform md:-translate-y-2">
+                <div className="bg-white rounded-2xl p-6 flex flex-col w-full md:w-auto relative shadow-xl transform md:-translate-y-2">
                   <div className="absolute top-0 left-0 right-0 h-1.5 bg-green-400 rounded-t-2xl"></div>
                   <div className="text-center mb-8">
                     <h3 className="text-text-secondary font-bold uppercase tracking-wider mb-2">Starter</h3>
@@ -555,7 +560,7 @@ export default function LandingPage() {
                 </div>
 
                 {/* Daily Tier */}
-                <div className="bg-white rounded-2xl p-6 flex flex-col w-[280px] md:w-auto">
+                <div className="bg-white rounded-2xl p-6 flex flex-col w-full md:w-auto">
                   <div className="text-center mb-8">
                     <h3 className="text-text-secondary font-bold uppercase tracking-wider mb-2">Daily</h3>
                     <div className="text-5xl font-extrabold text-foreground flex items-baseline justify-center gap-1">
@@ -580,7 +585,7 @@ export default function LandingPage() {
                 </div>
 
                 {/* Hardcore Tier */}
-                <div className="bg-white rounded-2xl p-6 flex flex-col w-[280px] md:w-auto">
+                <div className="bg-white rounded-2xl p-6 flex flex-col w-full md:w-auto">
                   <div className="text-center mb-8">
                     <h3 className="text-text-secondary font-bold uppercase tracking-wider mb-2">Hardcore</h3>
                     <div className="text-5xl font-extrabold text-foreground flex items-baseline justify-center gap-1">
@@ -681,7 +686,6 @@ export default function LandingPage() {
         </section>
 
       </main>
-
       {/* CTA Section */}
       <section className="bg-background py-16 md:py-24">
         <div className="max-w-5xl mx-auto px-6">
@@ -717,6 +721,7 @@ export default function LandingPage() {
         </div>
       </section>
 
+
       {/* Footer */}
       <footer className="bg-gradient-to-br from-blue-700 to-blue-900 pt-20 pb-10 px-6 text-blue-100">
         <div className="max-w-7xl mx-auto">
@@ -742,7 +747,7 @@ export default function LandingPage() {
             <div>
               <h4 className="text-white font-bold mb-6 tracking-wide">Company</h4>
               <ul className="space-y-3 text-sm text-blue-200">
-                <li><Link href="#" className="hover:text-white transition-colors">Pricing</Link></li>
+                <li><Link href="/pricing" className="hover:text-white transition-colors">Pricing</Link></li>
                 <li><Link href="#" className="hover:text-white transition-colors">Affiliates</Link></li>
                 <li><Link href="#" className="hover:text-white transition-colors">Contact Us</Link></li>
               </ul>
@@ -793,6 +798,61 @@ export default function LandingPage() {
           </div>
         </div>
       </footer>
+
+      {/* Login Modal */}
+      <AnimatePresence>
+        {isLoginModalOpen && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 z-[100] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4"
+            onClick={() => setIsLoginModalOpen(false)}
+          >
+            <motion.div 
+              initial={{ scale: 0.95, opacity: 0, y: 20 }}
+              animate={{ scale: 1, opacity: 1, y: 0 }}
+              exit={{ scale: 0.95, opacity: 0, y: 20 }}
+              transition={{ type: "spring", duration: 0.5 }}
+              onClick={(e) => e.stopPropagation()}
+              className="bg-white rounded-3xl p-8 md:p-10 w-full max-w-md shadow-2xl relative border border-gray-100 flex flex-col items-center gap-6"
+            >
+              <button 
+                onClick={() => setIsLoginModalOpen(false)}
+                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+              >
+                <X size={20} />
+              </button>
+
+              <div className="text-center w-full">
+                <div className="overflow-hidden w-[220px] h-12 mx-auto mb-6">
+                  <img src="/logo.jpg" alt="Assemblyreels Logo" className="w-full h-full object-contain scale-[3.5] mix-blend-multiply" />
+                </div>
+                <h2 className="text-2xl font-bold text-foreground">Welcome Back</h2>
+                <p className="text-text-secondary mt-1">Sign in to your media factory</p>
+              </div>
+
+              <form onSubmit={handleLogin} className="w-full flex flex-col gap-4 mt-2">
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-1">Email Address</label>
+                  <input type="email" required className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-accent-primary focus:ring-2 focus:ring-accent-primary/20 outline-none transition-all" placeholder="you@example.com" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-text-secondary mb-1">Password</label>
+                  <input type="password" required className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-accent-primary focus:ring-2 focus:ring-accent-primary/20 outline-none transition-all" placeholder="••••••••" />
+                </div>
+                <button type="submit" className="btn-primary w-full py-3 mt-2 text-lg">
+                  Sign In
+                </button>
+              </form>
+
+              <div className="text-sm text-text-secondary w-full text-center mt-2">
+                Need an account? <button onClick={() => setIsLoginModalOpen(true)} className="text-accent-primary font-semibold hover:underline">Sign up</button>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 }

@@ -5,7 +5,9 @@ export default function LoginPage() {
     <div style={{ display: 'flex', minHeight: '100vh', alignItems: 'center', justifyContent: 'center', padding: '1rem' }}>
       <div className="glass-panel" style={{ padding: '3rem', width: '100%', maxWidth: '400px', display: 'flex', flexDirection: 'column', gap: '1.5rem', alignItems: 'center' }}>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ width: '48px', height: '48px', borderRadius: '12px', background: 'linear-gradient(135deg, var(--accent-primary), #a855f7)', margin: '0 auto 1rem auto' }}></div>
+          <div className="overflow-hidden w-[220px] h-12 mx-auto mb-6">
+            <img src="/logo.jpg" alt="Assemblyreels Logo" className="w-full h-full object-contain scale-[3.5] mix-blend-multiply" />
+          </div>
           <h1 className="heading-2">Welcome Back</h1>
           <p className="text-muted">Sign in to your media factory</p>
         </div>
@@ -14,7 +16,7 @@ export default function LoginPage() {
           style={{ width: '100%', display: 'flex', flexDirection: 'column', gap: '1rem' }}
           onSubmit={(e) => {
             e.preventDefault();
-            window.location.href = '/';
+            window.location.href = '/workspaces';
           }}
         >
           <div>

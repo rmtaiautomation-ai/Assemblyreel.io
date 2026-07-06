@@ -11,10 +11,9 @@ export default function DashboardLayout({
     <div className="flex h-screen overflow-hidden bg-background">
       {/* Sidebar */}
       <aside className="w-[260px] bg-bg-secondary border-r border-gray-200 flex flex-col p-6 z-10">
-        <div className="text-xl font-extrabold flex items-center gap-2 mb-12 text-accent-primary">
-          <div className="w-6 h-6 rounded bg-accent-primary shadow-sm"></div>
-          Assemblyreel
-        </div>
+        <Link href="/" className="flex items-center mb-12 cursor-pointer overflow-hidden w-[220px] h-12 -ml-4">
+          <img src="/logo.jpg" alt="Assemblyreels Logo" className="w-full h-full object-contain scale-[3.5] mix-blend-multiply" />
+        </Link>
 
         <nav className="flex flex-col gap-1">
           <Link href="/workspaces" className="flex items-center gap-3 px-3 py-2 text-foreground bg-gray-50 border-l-2 border-accent-primary rounded-r-md transition-all font-medium">

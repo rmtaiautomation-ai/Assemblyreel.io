@@ -1,20 +1,19 @@
 'use client';
 
 import React, { useState } from 'react';
+import Link from 'next/link';
 import { useWorkspaceStore } from '@/store/workspaces';
-import WorkspaceForm from '@/components/ui/WorkspaceForm';
 import VoiceCloningModal from '@/components/ui/VoiceCloningModal';
 
 export default function WorkspacesDashboard() {
   const { workspaces, activeWorkspaceId, setActiveWorkspace } = useWorkspaceStore();
-  const [isFormOpen, setIsFormOpen] = useState(false);
   const [isVoiceModalOpen, setIsVoiceModalOpen] = useState(false);
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex justify-between items-center mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-white to-text-secondary">Workspaces</h1>
+          <h1 className="text-3xl font-bold text-foreground">Workspaces</h1>
           <p className="text-text-secondary mt-1">Manage your channel profiles and niches</p>
         </div>
         <div className="flex gap-3">
@@ -24,21 +23,14 @@ export default function WorkspacesDashboard() {
           >
             Voice Cloning Hub
           </button>
-          <button 
-            onClick={() => setIsFormOpen(!isFormOpen)}
-            className="bg-accent-primary text-white py-2 px-4 rounded-md font-medium transition-all shadow-[0_2px_10px_var(--accent-glow)] hover:bg-accent-hover hover:-translate-y-[1px]"
+          <Link 
+            href="/workspaces/new"
+            className="bg-accent-primary text-white py-2 px-4 rounded-md font-medium transition-all shadow-[0_2px_10px_var(--accent-glow)] hover:bg-accent-hover hover:-translate-y-[1px] inline-flex items-center justify-center"
           >
-            {isFormOpen ? 'Close Form' : '+ New Workspace'}
-          </button>
+            + New Workspace
+          </Link>
         </div>
       </div>
-
-      {isFormOpen && (
-        <div className="bg-bg-glass backdrop-blur-md border border-[rgba(255,255,255,0.08)] p-6 rounded-xl shadow-glass mb-8">
-          <h2 className="text-xl font-semibold mb-4">Create New Workspace</h2>
-          <WorkspaceForm onSuccess={() => setIsFormOpen(false)} />
-        </div>
-      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {workspaces.map((ws) => (

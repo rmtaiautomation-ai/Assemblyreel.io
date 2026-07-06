@@ -28,21 +28,21 @@ export default function NewWorkspacePage() {
   };
 
   return (
-    <div style={{ maxWidth: '600px', margin: '0 auto' }}>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1 className="heading-1">Create New Workspace</h1>
-        <p className="text-muted">Set up a new dedicated environment for a specific video niche.</p>
+    <div className="max-w-2xl mx-auto py-8">
+      <div className="mb-8">
+        <h1 className="text-3xl font-bold text-foreground">Create New Workspace</h1>
+        <p className="text-text-secondary mt-1">Set up a new dedicated environment for a specific video niche.</p>
       </div>
 
-      <div className="glass-panel" style={{ padding: '2rem' }}>
-        <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div className="bg-white border border-gray-100 p-8 rounded-2xl shadow-sm">
+        <form onSubmit={handleCreate} className="flex flex-col gap-8">
           
           <div>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Workspace Name</label>
-            <p className="text-muted" style={{ marginBottom: '0.5rem', fontSize: '0.85rem' }}>e.g., "Finance Shorts" or "Tech Reviews"</p>
+            <label className="block mb-1 font-semibold text-foreground">Workspace Name</label>
+            <p className="text-text-secondary mb-3 text-sm">e.g., "Finance Shorts" or "Tech Reviews"</p>
             <input 
               type="text" 
-              className="input-field" 
+              className="w-full px-4 py-3 rounded-xl border border-gray-200 focus:border-accent-primary focus:ring-2 focus:ring-accent-primary/20 outline-none transition-all bg-white text-foreground" 
               placeholder="Enter workspace name" 
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -51,59 +51,54 @@ export default function NewWorkspacePage() {
           </div>
 
           <div>
-            <label style={{ display: 'block', marginBottom: '0.5rem', fontWeight: '500' }}>Default Format Priority</label>
-            <p className="text-muted" style={{ marginBottom: '0.5rem', fontSize: '0.85rem' }}>You can still render both types, but this sets your primary layout engine.</p>
+            <label className="block mb-1 font-semibold text-foreground">Default Format Priority</label>
+            <p className="text-text-secondary mb-4 text-sm">You can still render both types, but this sets your primary layout engine.</p>
             
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
-              <label style={{ cursor: 'pointer' }}>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <label className="cursor-pointer">
                 <input 
                   type="radio" 
                   name="format" 
                   value="9:16" 
                   checked={aspectRatio === "9:16"}
                   onChange={() => setAspectRatio("9:16")}
-                  style={{ display: 'none' }}
+                  className="hidden"
                 />
-                <div className="glass-panel" style={{ 
-                  padding: '1rem', 
-                  textAlign: 'center', 
-                  border: aspectRatio === "9:16" ? '2px solid var(--accent-primary)' : '2px solid transparent' 
-                }}>
-                  <div style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '0.5rem' }}>9:16 Shorts</div>
-                  <div className="text-muted" style={{ fontSize: '0.85rem' }}>TikTok, Reels, Shorts</div>
+                <div className={`p-6 text-center rounded-xl border-2 transition-all ${
+                  aspectRatio === "9:16" ? 'border-accent-primary bg-accent-primary/5' : 'border-gray-200 hover:border-gray-300'
+                }`}>
+                  <div className="text-xl font-bold text-foreground mb-1">9:16 Shorts</div>
+                  <div className="text-text-secondary text-sm">TikTok, Reels, Shorts</div>
                 </div>
               </label>
 
-              <label style={{ cursor: 'pointer' }}>
+              <label className="cursor-pointer">
                 <input 
                   type="radio" 
                   name="format" 
                   value="16:9" 
                   checked={aspectRatio === "16:9"}
                   onChange={() => setAspectRatio("16:9")}
-                  style={{ display: 'none' }}
+                  className="hidden"
                 />
-                <div className="glass-panel" style={{ 
-                  padding: '1rem', 
-                  textAlign: 'center', 
-                  border: aspectRatio === "16:9" ? '2px solid var(--accent-primary)' : '2px solid transparent' 
-                }}>
-                  <div style={{ fontSize: '1.25rem', fontWeight: '600', marginBottom: '0.5rem' }}>16:9 Cinematic</div>
-                  <div className="text-muted" style={{ fontSize: '0.85rem' }}>YouTube Long-form</div>
+                <div className={`p-6 text-center rounded-xl border-2 transition-all ${
+                  aspectRatio === "16:9" ? 'border-accent-primary bg-accent-primary/5' : 'border-gray-200 hover:border-gray-300'
+                }`}>
+                  <div className="text-xl font-bold text-foreground mb-1">16:9 Cinematic</div>
+                  <div className="text-text-secondary text-sm">YouTube Long-form</div>
                 </div>
               </label>
             </div>
           </div>
 
-          <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'flex-end', gap: '1rem' }}>
-            <button type="button" className="btn-secondary" onClick={() => router.push("/")}>
+          <div className="pt-4 border-t border-gray-100 flex justify-end gap-3 mt-2">
+            <button type="button" className="btn-secondary px-6 py-2" onClick={() => router.push("/workspaces")}>
               Cancel
             </button>
-            <button type="submit" className="btn-primary">
+            <button type="submit" className="btn-primary px-6 py-2">
               Initialize Workspace
             </button>
           </div>
-
         </form>
       </div>
     </div>
