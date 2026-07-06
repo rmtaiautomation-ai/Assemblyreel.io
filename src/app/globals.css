@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --color-background: #fafafa;
+  --color-foreground: #111827;
+  
+  --color-bg-secondary: #ffffff;
+  --color-bg-glass: #ffffff;
+  --color-bg-glass-hover: #f9fafb;
+  
+  --color-text-secondary: #6b7280;
+  
+  --color-accent-primary: #1d4ed8;
+  --color-accent-hover: #1e3a8a;
+  --color-accent-glow: rgba(29, 78, 216, 0.1);
+  --color-border-glow: rgba(29, 78, 216, 0.2);
+  
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  
+  --shadow-glass: 0 2px 10px rgba(0, 0, 0, 0.05);
+  --shadow-neon: 0 4px 14px rgba(29, 78, 216, 0.15);
+}
+
+@layer base {
+  body {
+    @apply bg-background text-foreground font-sans min-h-screen antialiased;
+  }
+}
+
+@layer components {
+  .heading-1 {
+    @apply text-4xl font-extrabold tracking-tight text-foreground;
+  }
+  
+  .text-muted {
+    @apply text-sm text-text-secondary;
+  }
+  
+  .btn-primary {
+    @apply inline-flex items-center justify-center px-5 py-2.5 text-sm font-semibold text-white transition-all duration-200 rounded-lg bg-accent-primary hover:bg-accent-hover hover:-translate-y-0.5 hover:shadow-neon focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2;
+  }
+  
+  .btn-secondary {
+    @apply inline-flex items-center justify-center px-5 py-2.5 text-sm font-semibold text-foreground transition-all duration-200 border border-gray-200 rounded-lg bg-white hover:border-accent-primary hover:text-accent-primary hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-accent-primary focus:ring-offset-2 shadow-sm hover:shadow-md;
+  }
+
+  .glass-panel {
+    @apply relative overflow-hidden bg-bg-glass border border-gray-200 rounded-xl shadow-glass transition-all duration-300;
+  }
+  
+  .glass-panel:hover {
+    @apply border-accent-primary shadow-neon -translate-y-1;
+  }
+}
