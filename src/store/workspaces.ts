@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { persist } from 'zustand/middleware';
 
 export interface Workspace {
   id: string;
@@ -7,6 +8,12 @@ export interface Workspace {
   master_prompt: string;
   voice_id: string | null;
   art_style_preset: string | null;
+  slug?: string;
+  aspectRatio?: string;
+  studio_type?: 'cinema' | 'marketing' | 'short';
+  linkedAccounts?: string[];
+  videoLanguage?: string;
+  duration?: string;
 }
 
 interface WorkspaceState {
@@ -21,6 +28,7 @@ const mockWorkspaces: Workspace[] = [
   {
     id: '1',
     name: 'FORBIDDEN SECRETS',
+    slug: 'forbidden-secrets',
     niche: 'Esoteric Philosophy / Biblical Horror',
     master_prompt: 'Deep cosmic backgrounds, weathered fresco textures, dark burgundy/ochre tones, featuring ancient iconography like the Ankh, Scarab, and Ouroboros.',
     voice_id: 'cartesia_adam_deep',
@@ -29,6 +37,7 @@ const mockWorkspaces: Workspace[] = [
   {
     id: '2',
     name: 'FINANCE BROS',
+    slug: 'finance-bros',
     niche: 'Finance / Crypto',
     master_prompt: 'High-contrast modern aesthetics, neon green and dark blues, 3D coin renders, fast-paced energetic feel.',
     voice_id: 'cartesia_michael_hype',
@@ -36,14 +45,21 @@ const mockWorkspaces: Workspace[] = [
   }
 ];
 
-export const useWorkspaceStore = create<WorkspaceState>((set) => ({
-  workspaces: mockWorkspaces,
-  activeWorkspaceId: mockWorkspaces[0].id,
-  addWorkspace: (workspace) => set((state) => ({ 
-    workspaces: [...state.workspaces, workspace] 
-  })),
-  setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
-  updateWorkspace: (id, updates) => set((state) => ({
-    workspaces: state.workspaces.map(w => w.id === id ? { ...w, ...updates } : w)
-  }))
-}));
+export const useWorkspaceStore = create<WorkspaceState>()(
+  persist(
+    (set) => ({
+      workspaces: mockWorkspaces,
+      activeWorkspaceId: mockWorkspaces[0].id,
+      addWorkspace: (workspace) => set((state) => ({ 
+        workspaces: [...state.workspaces, workspace] 
+      })),
+      setActiveWorkspace: (id) => set({ activeWorkspaceId: id }),
+      updateWorkspace: (id, updates) => set((state) => ({
+        workspaces: state.workspaces.map(w => w.id === id ? { ...w, ...updates } : w)
+      }))
+    }),
+    {
+      name: 'workspace-storage',
+    }
+  )
+);

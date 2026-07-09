@@ -7,11 +7,12 @@
 - **Database & Auth:** Supabase (PostgreSQL)
 - **Hosting:** Vercel (Hobby tier for dev/personal use, Pro for scaling)
 
-## 2. External Generation Pipeline
+## 2. External Generation Pipeline (Next.js Code-First)
 All external generative AI tools must route through Next.js Server Actions to safely hide API environment keys from the client.
-- **The Logic (Scripts & Scene Splits):** Google Gemini 2.5 API
-- **The Voice (TTS):** Cartesia AI (or ElevenLabs)
+- **The AI Engine (7-Agent Logic):** The complex 7-agent workflow (Script Writer, Slicer, Casting, Visual Architect, Cinematic Director, Prompter, Safety) runs entirely in Next.js using Google Gemini 2.5 API with strictly typed JSON Structured Outputs.
+- **The Voice (TTS):** 11Labs or Cartesia AI
 - **The Visuals (Video/Image):** Fal.ai (routing to Seedance, Kling, or Google Veo)
+- **n8n Status:** Deprecated for core AI reasoning due to complex JSON loop requirements. Reserved only for potential background rendering tasks if necessary.
 
 ## 3. Web-Based Timeline Architecture
 Instead of exporting directly to traditional tools, users retain full timeline capabilities inside the application.
@@ -22,7 +23,7 @@ Instead of exporting directly to traditional tools, users retain full timeline c
 ## 4. Strict Directory Layout
 ```text
 /app
-  /api              # Serverless webhooks (Stripe, YouTube API notifications)
+  /api              # Serverless API routes (YouTube API callbacks, external service hooks)
   /dashboard        # Protected client routes (Workspaces, Projects, Timeline)
 /components
   /editor           # Multi-track timeline rows, playback buttons, preview window
