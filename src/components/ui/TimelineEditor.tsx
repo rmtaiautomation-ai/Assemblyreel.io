@@ -1,7 +1,8 @@
 "use client";
 
 import React, { useState } from "react";
-import { Play, Image as ImageIcon, Volume2, Wand2, X, Clock, Maximize2, SkipBack, Settings } from "lucide-react";
+import { Play, Image as ImageIcon, Volume2, Wand2, X, Clock, Maximize2, SkipBack, Settings, Type, Music, Loader2 } from "lucide-react";
+import { generateSceneAudio } from "@/app/actions/audio-actions";
 
 export default function TimelineEditor({ 
   initialProject, 
@@ -10,22 +11,74 @@ export default function TimelineEditor({
   initialProject: any, 
   initialScenes: any[] 
 }) {
+  const [scenes, setScenes] = useState<any[]>(initialScenes);
   const [selectedScene, setSelectedScene] = useState<any | null>(null);
+  const [cursorPosition, setCursorPosition] = useState<number>(0);
+  const [timelineHeight, setTimelineHeight] = useState(300);
+  const [isResizing, setIsResizing] = useState(false);
+  const [isGeneratingAll, setIsGeneratingAll] = useState(false);
+  const [generatingSceneId, setGeneratingSceneId] = useState<string | null>(null);
+
+  const handleGenerateAllAudio = async () => {
+    setIsGeneratingAll(true);
+    for (const scene of scenes) {
+      if (!scene.audio_url) {
+        setGeneratingSceneId(scene.id);
+        const res = await generateSceneAudio(scene.id, scene.voice_over_beat);
+        if (res.success) {
+          setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, audio_url: res.audioUrl } : s));
+        } else {
+          alert(`Error on Scene ${scene.sequence_number}: ${res.error}`);
+          break; // Stop generating if there's an error
+        }
+      }
+    }
+    setGeneratingSceneId(null);
+    setIsGeneratingAll(false);
+  };
+
+  const handleRegenerateSingleAudio = async (scene: any) => {
+    setGeneratingSceneId(scene.id);
+    const res = await generateSceneAudio(scene.id, scene.voice_over_beat);
+    if (res.success) {
+      setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, audio_url: res.audioUrl } : s));
+      // Update selected scene to reflect change in modal
+      setSelectedScene({ ...scene, audio_url: res.audioUrl });
+    }
+    setGeneratingSceneId(null);
+  };
+
+  React.useEffect(() => {
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!isResizing) return;
+      setTimelineHeight(prev => Math.max(200, Math.min(prev - e.movementY, 800)));
+    };
+    const handleMouseUp = () => setIsResizing(false);
+    
+    if (isResizing) {
+      window.addEventListener('mousemove', handleMouseMove);
+      window.addEventListener('mouseup', handleMouseUp);
+    }
+    return () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, [isResizing]);
 
   // 1 Second = 30px width for the timeline scale
   const SCALE = 30; 
 
   // Calculate the actual content duration
-  const contentDuration = initialScenes.reduce((acc, scene) => acc + (scene.video_duration || 5), 0);
+  const contentDuration = scenes.reduce((acc, scene) => acc + (scene.video_duration || 5), 0);
   
-  // Force the timeline ruler to be at least 30 seconds, and always add a 15s buffer at the end
-  const timelineDuration = Math.max(30, contentDuration + 15);
+  // Force the timeline ruler to be at least 60 seconds, and always add a 15s buffer at the end
+  const timelineDuration = Math.max(60, contentDuration + 15);
 
   return (
     <div className="flex flex-col h-full">
       
       {/* Top Section: Preview Player & Master Script Info */}
-      <div className="flex flex-col lg:flex-row gap-6 px-6 mb-6 flex-none mt-6">
+      <div className="flex flex-col lg:flex-row gap-6 px-6 pb-6 pt-6 flex-1 overflow-y-auto min-h-[200px]">
         
         {/* Left: Video Preview Player Placeholder */}
         <div className="w-full lg:w-1/2 bg-black rounded-2xl aspect-video relative flex flex-col items-center justify-center border border-gray-800 overflow-hidden shadow-xl">
@@ -79,9 +132,17 @@ export default function TimelineEditor({
             </div>
           </div>
           
-          <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100">
+          <div className="flex justify-end gap-3 mt-6 pt-4 border-t border-gray-100 flex-wrap">
             <button className="px-4 py-2 border border-gray-200 text-gray-700 bg-white rounded-xl text-sm font-semibold hover:bg-gray-50 transition-colors shadow-sm">
               Export Script
+            </button>
+            <button 
+              onClick={handleGenerateAllAudio}
+              disabled={isGeneratingAll}
+              className="px-6 py-2 bg-green-600 text-white rounded-xl text-sm font-semibold hover:bg-green-700 shadow-md transition-colors flex items-center gap-2 disabled:opacity-50"
+            >
+              {isGeneratingAll ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
+              {isGeneratingAll ? "Generating..." : "Generate All Audio"}
             </button>
             <button className="px-6 py-2 bg-purple-600 text-white rounded-xl text-sm font-semibold hover:bg-purple-700 shadow-md transition-colors flex items-center gap-2">
               <Wand2 size={16} /> Render Final Video
@@ -91,8 +152,19 @@ export default function TimelineEditor({
 
       </div>
 
+      {/* Resizer Handle */}
+      <div 
+        className="h-2 w-full bg-gray-50 border-t border-gray-200 cursor-row-resize hover:bg-gray-200 transition-colors flex items-center justify-center flex-none"
+        onMouseDown={() => setIsResizing(true)}
+      >
+        <div className="w-10 h-0.5 rounded-full bg-gray-300"></div>
+      </div>
+
       {/* Horizontal Timeline Editor */}
-      <div className="bg-white border-t border-gray-200 shadow-2xl overflow-hidden flex flex-col flex-1">
+      <div 
+        className="bg-white shadow-2xl overflow-hidden flex flex-col flex-none"
+        style={{ height: `${timelineHeight}px` }}
+      >
         {/* Timeline Toolbar */}
         <div className="bg-gray-50 px-4 py-3 border-b border-gray-200 flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -107,17 +179,72 @@ export default function TimelineEditor({
         </div>
 
         {/* Timeline Area */}
-        <div className="flex-1 overflow-x-auto overflow-y-hidden relative pb-8 pt-2 custom-scrollbar">
+        <div className="flex-1 overflow-x-auto overflow-y-auto relative pb-4 pt-2 custom-scrollbar">
            
            <div className="min-w-max px-4">
               {/* Ruler Track */}
-              <div className="h-6 flex items-end border-b border-gray-200 mb-2 relative" style={{ width: `${timelineDuration * SCALE}px` }}>
-                 {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => (
-                    <div key={i} className="absolute flex flex-col items-center" style={{ left: `${i * SCALE}px` }}>
-                       <span className="text-[9px] text-gray-400 font-mono mb-1">{i}s</span>
-                       <div className="w-[1px] h-2 bg-gray-300"></div>
+              <div className="flex items-end mb-2 relative group w-max">
+                 <div className="w-24 shrink-0 sticky left-0 z-10 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]"></div>
+                 <div 
+                    className="relative h-6 border-b border-gray-200 cursor-pointer ml-2"
+                    style={{ width: `${timelineDuration * SCALE}px` }}
+                    onClick={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       setCursorPosition(e.clientX - rect.left);
+                    }}
+                 >
+                    {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => (
+                       <div key={i} className="absolute flex flex-col items-center" style={{ left: `${i * SCALE}px` }}>
+                          <span className="text-[9px] text-gray-400 font-mono mb-1">{i}s</span>
+                          <div className="w-[1px] h-2 bg-gray-300"></div>
+                       </div>
+                    ))}
+
+                    {/* Playhead / Cursor */}
+                    <div 
+                      className="absolute top-0 h-[336px] z-50 pointer-events-none flex flex-col items-center"
+                      style={{ left: `${cursorPosition}px`, transform: 'translateX(-50%)' }}
+                    >
+                       <div className="w-3 h-3 bg-gray-800 rounded-sm mb-0.5 relative flex items-center justify-center">
+                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-gray-800"></div>
+                       </div>
+                       <div className="w-[1.5px] h-full bg-gray-800 shadow-[0_0_3px_rgba(0,0,0,0.3)]"></div>
                     </div>
-                 ))}
+                 </div>
+              </div>
+
+              {/* Spacer above Text Track */}
+              <div className="flex items-center mb-1 group relative">
+                 <div className="w-24 shrink-0 sticky left-0 z-10 bg-white"></div>
+                 <div 
+                    className="flex flex-1 relative h-7 ml-2 cursor-pointer" 
+                    style={{ width: `${timelineDuration * SCALE}px` }}
+                    onClick={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       setCursorPosition(e.clientX - rect.left);
+                    }}
+                 >
+                 </div>
+              </div>
+
+              {/* Caption / Text Track */}
+              <div className="flex items-center mb-1 group relative">
+                 <div className="w-24 shrink-0 sticky left-0 z-10 bg-white py-1 flex items-center gap-2 border-r border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                    <Type size={14} className="text-purple-500" />
+                    <span className="text-[10px] font-bold text-gray-700">T1 (Text)</span>
+                 </div>
+                 <div 
+                   className="flex flex-1 relative h-6 bg-gray-100 rounded-lg ml-2 items-center border border-gray-200 shadow-inner cursor-pointer" 
+                   style={{ width: `${timelineDuration * SCALE}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                   }}
+                 >
+                    <div className="absolute inset-0 flex items-center px-4 pointer-events-none">
+                       <span className="text-[9px] text-gray-400 font-medium italic">Caption / Text layer...</span>
+                    </div>
+                 </div>
               </div>
 
               {/* Video Track */}
@@ -126,14 +253,24 @@ export default function TimelineEditor({
                     <ImageIcon size={14} className="text-blue-500" />
                     <span className="text-xs font-bold text-gray-700">V1 (Visuals)</span>
                  </div>
-                 <div className="flex flex-1 relative h-20 bg-gray-50 rounded-lg ml-2 items-center border border-gray-100 shadow-inner">
-                    {initialScenes.map((scene) => (
+                 <div 
+                   className="flex flex-1 relative h-20 bg-gray-50 rounded-lg ml-2 items-center border border-gray-100 shadow-inner cursor-pointer" 
+                   style={{ width: `${timelineDuration * SCALE}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                   }}
+                 >
+                    {scenes.map((scene) => (
                        <div 
                          key={`video-${scene.id}`}
-                         onClick={() => setSelectedScene(scene)}
-                         className="h-[80%] absolute rounded-md border border-blue-400 bg-blue-50 hover:bg-blue-100 hover:border-blue-500 cursor-pointer transition-all overflow-hidden group/block shadow-sm"
+                         onClick={(e) => {
+                           e.stopPropagation();
+                           setSelectedScene(scene);
+                         }}
+                         className="h-[80%] absolute top-[10%] rounded-md border border-blue-400 bg-blue-50 hover:bg-blue-100 hover:border-blue-500 cursor-pointer transition-all overflow-hidden group/block shadow-sm"
                          style={{ 
-                           left: `${initialScenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * SCALE}px`,
+                           left: `${scenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * SCALE}px`,
                            width: `${(scene.video_duration || 5) * SCALE}px`
                          }}
                        >
@@ -153,19 +290,29 @@ export default function TimelineEditor({
               </div>
 
               {/* Audio Track */}
-              <div className="flex items-center group relative">
+              <div className="flex items-center mb-1 group relative">
                  <div className="w-24 shrink-0 sticky left-0 z-10 bg-white py-4 flex items-center gap-2 border-r border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
                     <Volume2 size={14} className="text-green-500" />
                     <span className="text-xs font-bold text-gray-700">A1 (Voice)</span>
                  </div>
-                 <div className="flex flex-1 relative h-16 bg-gray-50 rounded-lg ml-2 items-center border border-gray-100 shadow-inner">
-                    {initialScenes.map((scene) => (
+                 <div 
+                   className="flex flex-1 relative h-16 bg-gray-50 rounded-lg ml-2 items-center border border-gray-100 shadow-inner cursor-pointer" 
+                   style={{ width: `${timelineDuration * SCALE}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                   }}
+                 >
+                    {scenes.map((scene) => (
                        <div 
                          key={`audio-${scene.id}`}
-                         onClick={() => setSelectedScene(scene)}
-                         className="h-[70%] absolute rounded-md border border-green-400 bg-green-50 hover:bg-green-100 hover:border-green-500 cursor-pointer transition-all overflow-hidden px-2 py-1 shadow-sm"
+                         onClick={(e) => {
+                           e.stopPropagation();
+                           setSelectedScene(scene);
+                         }}
+                         className="h-[70%] absolute top-[15%] rounded-md border border-green-400 bg-green-50 hover:bg-green-100 hover:border-green-500 cursor-pointer transition-all overflow-hidden px-2 py-1 shadow-sm"
                          style={{ 
-                           left: `${initialScenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * SCALE}px`,
+                           left: `${scenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * SCALE}px`,
                            width: `${(scene.video_duration || 5) * SCALE}px`
                          }}
                        >
@@ -173,10 +320,49 @@ export default function TimelineEditor({
                            {scene.voice_over_beat}
                          </span>
                          <div className="absolute bottom-1.5 left-2 right-2 h-2 opacity-40 flex items-center gap-[1px]">
-                           {[...Array(10)].map((_,i) => <div key={i} className="flex-1 bg-green-500 rounded-full" style={{ height: `${Math.random() * 100}%` }}></div>)}
+                           {[...Array(10)].map((_,i) => <div key={i} className={`flex-1 ${scene.audio_url ? 'bg-green-500' : 'bg-gray-400'} rounded-full`} style={{ height: `${Math.random() * 100}%` }}></div>)}
                          </div>
+                         {generatingSceneId === scene.id && (
+                           <div className="absolute inset-0 bg-green-900/50 flex items-center justify-center rounded-md">
+                             <Loader2 size={14} className="text-white animate-spin" />
+                           </div>
+                         )}
                        </div>
                     ))}
+                 </div>
+              </div>
+
+              {/* Background Music Track */}
+              <div className="flex items-center mb-1 group relative">
+                 <div className="w-24 shrink-0 sticky left-0 z-10 bg-white py-3 flex items-center gap-2 border-r border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+                    <Music size={14} className="text-blue-500" />
+                    <span className="text-xs font-bold text-gray-700">A2 (Music)</span>
+                 </div>
+                 <div 
+                   className="flex flex-1 relative h-16 bg-gray-100 rounded-lg ml-2 items-center border border-gray-200 shadow-inner cursor-pointer" 
+                   style={{ width: `${timelineDuration * SCALE}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                   }}
+                 >
+                    <div className="absolute inset-0 flex items-center px-4 pointer-events-none">
+                       <span className="text-[10px] text-gray-400 font-medium italic">Background music slot...</span>
+                    </div>
+                 </div>
+              </div>
+
+              {/* Empty Clickable Bottom Space */}
+              <div className="flex items-center group relative mb-1">
+                 <div className="w-24 shrink-0 sticky left-0 z-10 py-3 pr-2"></div>
+                 <div 
+                    className="flex flex-1 relative h-6 ml-2 cursor-pointer" 
+                    style={{ width: `${timelineDuration * SCALE}px` }}
+                    onClick={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       setCursorPosition(e.clientX - rect.left);
+                    }}
+                 >
                  </div>
               </div>
 
@@ -216,11 +402,22 @@ export default function TimelineEditor({
                   <textarea 
                     className="w-full bg-gray-50 border border-gray-200 focus:border-green-400 focus:ring-2 focus:ring-green-100 rounded-xl p-4 text-sm text-gray-800 transition-all resize-none min-h-[100px]"
                     defaultValue={selectedScene.voice_over_beat}
+                    onChange={(e) => setSelectedScene({...selectedScene, voice_over_beat: e.target.value})}
                   />
                   <div className="flex justify-between items-center mt-2">
                      <span className="text-xs text-gray-500 flex items-center gap-1"><Clock size={12}/> Estimated length: {selectedScene.video_duration}s</span>
-                     <button className="text-xs font-semibold text-green-600 hover:text-green-700">Regenerate Audio</button>
+                     <button 
+                       onClick={() => handleRegenerateSingleAudio(selectedScene)}
+                       disabled={generatingSceneId === selectedScene.id}
+                       className="text-xs font-semibold text-green-600 hover:text-green-700 flex items-center gap-1"
+                     >
+                       {generatingSceneId === selectedScene.id ? <Loader2 size={12} className="animate-spin" /> : null}
+                       {selectedScene.audio_url ? "Regenerate Audio" : "Generate Audio"}
+                     </button>
                   </div>
+                  {selectedScene.audio_url && (
+                    <audio src={selectedScene.audio_url} controls className="w-full mt-3 h-8" />
+                  )}
                </div>
 
                {/* Visual Prompt Field */}

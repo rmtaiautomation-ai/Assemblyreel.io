@@ -1,14 +1,14 @@
 import React from "react";
 import Link from "next/link";
-import { Settings, Mic, Layout, Palette, Image as ImageIcon, Sparkles, Wand2, MonitorPlay } from "lucide-react";
+import { Settings, Mic, Layout, Palette, Image as ImageIcon, MonitorPlay } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { revalidatePath } from "next/cache";
+import NewVideoForm from "@/components/ui/NewVideoForm";
 
 export default async function WorkspaceHubPage({ params }: { params: { slug: string } }) {
   const { slug: workspaceId } = await params;
   
   const supabase = await createClient();
-  const { data: workspace, error } = await supabase
+  const { data: workspace } = await supabase
     .from('workspaces')
     .select('*')
     .eq('id', workspaceId)
@@ -19,58 +19,6 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
     .select('*')
     .eq('workspace_id', workspaceId)
     .order('created_at', { ascending: false });
-
-  async function handleGenerate(formData: FormData) {
-    "use server";
-    const topic = formData.get("topic") as string;
-    const narrativeArc = formData.get("narrative_arc") as string;
-    const scriptHook = formData.get("script_hook") as string;
-    
-    if (!topic) return;
-
-    const supabaseAdmin = await createClient(); // uses the same client
-    
-    // Handle Image Uploads
-    const files = formData.getAll("images") as File[];
-    const imageUrls: string[] = [];
-    
-    for (const file of files) {
-      if (file.size > 0 && imageUrls.length < 3) {
-        const fileExt = file.name.split('.').pop();
-        const fileName = `${Math.random().toString(36).substring(2)}_${Date.now()}.${fileExt}`;
-        
-        const { data, error: uploadError } = await supabaseAdmin.storage
-          .from('character-references')
-          .upload(fileName, file);
-          
-        if (data) {
-          const { data: { publicUrl } } = supabaseAdmin.storage
-            .from('character-references')
-            .getPublicUrl(data.path);
-          imageUrls.push(publicUrl);
-        } else {
-          console.error("Upload error:", uploadError);
-        }
-      }
-    }
-    
-    const { error } = await supabaseAdmin.from('video_projects').insert([
-      {
-        workspace_id: workspaceId,
-        topic: topic,
-        narrative_arc: narrativeArc,
-        script_hook: scriptHook,
-        manual_image_urls: imageUrls,
-        status: 'pending',
-      }
-    ]);
-
-    if (error) {
-      console.error("Error creating video project:", error.message, error.details, error.hint);
-    }
-
-    revalidatePath(`/workspaces/${workspaceId}`);
-  }
 
   if (!workspace) {
     return (
@@ -149,78 +97,10 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
         {/* Main Content Area */}
         <div className="lg:col-span-2 space-y-4">
 
-          {/* Content Generator */}
-          <div className="bg-white border border-purple-100 rounded-xl shadow-sm p-5 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-400 to-purple-600"></div>
-            <div className="flex items-center gap-2 mb-3">
-              <Sparkles className="text-purple-600" size={24} />
-              <h2 className="text-2xl font-bold text-gray-900">Create New Video</h2>
-            </div>
+          {/* Content Generator Form Client Component */}
+          <NewVideoForm workspace={workspace} />
 
-            <form action={handleGenerate} className="space-y-3">
-              
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">Core Topic / Story</label>
-                <p className="text-xs text-gray-500 mb-2">A detailed explanation of what this specific video will cover.</p>
-                <textarea
-                  name="topic"
-                  required
-                  className="w-full bg-gray-50 border border-gray-200 text-gray-900 p-3 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all resize-none min-h-[80px]"
-                  placeholder={`e.g. How casinos use carpet patterns and lack of clocks to keep you gambling...`}
-                />
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">Narrative Arc</label>
-                  <p className="text-xs text-gray-500 mb-2">The pacing and structure of the story.</p>
-                  <select 
-                    name="narrative_arc" 
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-900 p-2.5 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 appearance-none"
-                  >
-                    <option value="The Mystery Reveal">The Mystery Reveal (Question → Truth)</option>
-                    <option value="Chronological History">Chronological History (Past → Present)</option>
-                    <option value="Problem and Solution">Problem &amp; Solution (Pain → Answer)</option>
-                    <option value="Did You Know?">The &quot;Did You Know?&quot; (Fast Fact Stacking)</option>
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-semibold text-gray-700 mb-1">Reference Images (Optional)</label>
-                  <p className="text-xs text-gray-500 mb-2">Upload up to 3 images for consistent character generation.</p>
-                  <input 
-                    type="file" 
-                    name="images"
-                    multiple 
-                    accept="image/*"
-                    className="w-full bg-gray-50 border border-gray-200 text-gray-700 p-2 rounded-xl text-sm file:mr-4 file:py-1.5 file:px-3 file:rounded-full file:border-0 file:text-xs file:font-semibold file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <label className="block text-sm font-semibold text-gray-700 mb-1">Script Hook (First 5 seconds)</label>
-                <p className="text-xs text-gray-500 mb-2">Type out the exact hook you want the AI to use, or leave it blank to auto-generate.</p>
-                <textarea
-                  name="script_hook"
-                  className="w-full bg-gray-50 border border-gray-200 text-gray-900 p-3 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-2 focus:ring-purple-200 transition-all resize-none min-h-[60px]"
-                  placeholder={`e.g. Have you ever noticed there are no clocks in a casino? Here is why...`}
-                />
-              </div>
-
-              <div className="flex justify-end pt-3 border-t border-gray-100 mt-2">
-                <button
-                  type="submit"
-                  className="bg-purple-600 hover:bg-purple-700 text-white font-semibold px-5 py-2.5 rounded-lg shadow-md transition-colors flex items-center gap-2"
-                >
-                  <Wand2 size={18} />
-                  Generate Script
-                </button>
-              </div>
-            </form>
-          </div>
-
-          {/* Niche Settings and Stats (Moved from sidebar) */}
+          {/* Niche Settings and Stats */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
             <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5">
               <h3 className="font-bold text-gray-900 mb-3 flex items-center gap-2">
