@@ -478,6 +478,12 @@ export default function TimelineEditor({
   useEffect(() => {
     Object.values(mediaRefs.current).forEach(media => {
       if (!media) return;
+
+      const track = media.dataset.track as 'V1' | 'A1' | 'A2';
+      if (track && trackStates[track]) {
+        media.muted = trackStates[track].muted;
+      }
+
       const startTime = parseFloat(media.dataset.start || "0");
       const duration = parseFloat(media.dataset.duration || "0");
       
@@ -503,7 +509,7 @@ export default function TimelineEditor({
          }
       }
     });
-  }, [cursorPosition, isPlaying, scale]);
+  }, [cursorPosition, isPlaying, scale, trackStates]);
 
   const activeScene = scenes.find((s, idx) => {
     const startTime = scenes.slice(0, idx).reduce((acc, prev) => acc + (prev.video_duration || 5), 0);
@@ -542,6 +548,7 @@ export default function TimelineEditor({
               ref={el => { mediaRefs.current[`scene-${scene.id}`] = el; }}
               data-start={a1Scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
               data-duration={scene.video_duration || 5}
+              data-track="A1"
               muted={trackStates.A1.muted}
             />
          ))}
@@ -553,6 +560,7 @@ export default function TimelineEditor({
               ref={el => { mediaRefs.current[`clip-${clip.id}`] = el; }}
               data-start={clip.startTime}
               data-duration={clip.duration}
+              data-track="A2"
               muted={trackStates.A2.muted}
             />
          ))}
@@ -919,6 +927,7 @@ export default function TimelineEditor({
                          ref={el => { mediaRefs.current[`clip-${activeClipV1.id}`] = el; }}
                          data-start={activeClipV1.startTime}
                          data-duration={activeClipV1.duration}
+                         data-track="V1"
                          muted={trackStates.V1.muted}
                        />
                     ) : (
@@ -935,6 +944,7 @@ export default function TimelineEditor({
                              ref={el => { mediaRefs.current[`scene-video-${displayScene.id}`] = el; }}
                              data-start={scenes.slice(0, scenes.indexOf(displayScene)).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
                              data-duration={displayScene.video_duration || 5}
+                             data-track="V1"
                              muted={trackStates.V1.muted}
                            />
                         ) : (
@@ -1051,7 +1061,15 @@ export default function TimelineEditor({
         {/* Timeline Track Area */}
         <div className="flex-1 overflow-x-auto overflow-y-auto relative pb-6 pt-1 custom-scrollbar bg-gray-50/30 z-10">
            
-           <div className="min-w-max">
+           <div className="min-w-max relative">
+              {/* Playhead Vertical Line */}
+              <div 
+                className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
+                style={{ left: `calc(8rem + ${cursorPosition}px)`, transform: 'translateX(-50%)' }}
+              >
+                 <div className="w-px h-full bg-purple-600/80 shadow-[0_0_8px_rgba(147,51,234,0.4)]"></div>
+              </div>
+
               {/* Ruler Track */}
               <div className="flex items-end mb-1 relative group w-max">
                  <div className="w-32 shrink-0 sticky left-0 z-30 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]"></div>
@@ -1077,13 +1095,12 @@ export default function TimelineEditor({
 
                     {/* Playhead / Cursor - Changed to Purple */}
                     <div 
-                      className="absolute top-0 h-[800px] z-50 pointer-events-none flex flex-col items-center"
+                      className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
                       style={{ left: `${cursorPosition}px`, transform: 'translateX(-50%)' }}
                     >
                        <div className="w-3 h-3 bg-purple-600 rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
                           <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-purple-600"></div>
                        </div>
-                       <div className="w-px h-full bg-purple-600/80 shadow-[0_0_8px_rgba(147,51,234,0.4)]"></div>
                     </div>
                  </div>
               </div>
@@ -1158,6 +1175,7 @@ export default function TimelineEditor({
                             setV1DragInsertIndex(null);
                          }}
                          onClick={(e) => {
+                           if (trackStates.V1.locked) return;
                            setSelectedScene(scene);
                            setSelectedSceneTrack('V1');
                            setSelectedAsset(null);
@@ -1165,6 +1183,7 @@ export default function TimelineEditor({
                          }}
                          onContextMenu={(e) => {
                            e.preventDefault();
+                           if (trackStates.V1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
                          }}
                          className={`h-[80%] absolute top-[10%] rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-all overflow-hidden group/block shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'V1' ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:brightness-95 z-10'}`}
@@ -1240,12 +1259,14 @@ export default function TimelineEditor({
                         style={{ top: '10%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all"
                         onClick={(e: any) => {
+                          if (trackStates.V1.locked) return;
                           setSelectedAsset(null);
                           setSelectedScene(null);
                           setSelectedSceneTrack(null);
                         }}
                         onContextMenu={(e: any) => {
                           e.preventDefault();
+                          if (trackStates.V1.locked) return;
                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'V1' });
                         }}
                       >
@@ -1329,6 +1350,7 @@ export default function TimelineEditor({
                             setA1DragInsertIndex(null);
                          }}
                          onClick={(e) => {
+                           if (trackStates.A1.locked) return;
                            setSelectedScene(scene);
                            setSelectedSceneTrack('A1');
                            setSelectedAsset(null);
@@ -1336,6 +1358,7 @@ export default function TimelineEditor({
                          }}
                          onContextMenu={(e) => {
                            e.preventDefault();
+                           if (trackStates.A1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
                          }}
                          className={`h-[70%] absolute top-[15%] rounded-md border border-purple-200 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'A1' ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:bg-purple-100 z-10'}`}
@@ -1353,8 +1376,8 @@ export default function TimelineEditor({
                          </div>
                          {/* Static Symmetrical Waveform */}
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
-                              <path 
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                              <path suppressHydrationWarning
                                  d={Array.from({length: 250}).map((_, i) => {
                                     const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
                                     return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
@@ -1401,12 +1424,14 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"
                         onClick={(e: any) => {
+                          if (trackStates.A1.locked) return;
                           setSelectedAsset(null);
                           setSelectedScene(null);
                           setSelectedSceneTrack(null);
                         }}
                         onContextMenu={(e: any) => {
                           e.preventDefault();
+                          if (trackStates.A1.locked) return;
                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'A1' });
                         }}
                       >
@@ -1415,8 +1440,8 @@ export default function TimelineEditor({
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{clip.asset.file.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
-                              <path 
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                              <path suppressHydrationWarning
                                  d={Array.from({length: 250}).map((_, i) => {
                                     const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
                                     return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
@@ -1489,12 +1514,14 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"
                         onClick={(e: any) => {
+                          if (trackStates.A2.locked) return;
                           setSelectedAsset(null);
                           setSelectedScene(null);
                           setSelectedSceneTrack(null);
                         }}
                         onContextMenu={(e: any) => {
                           e.preventDefault();
+                          if (trackStates.A2.locked) return;
                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'A2' });
                         }}
                       >
@@ -1503,8 +1530,8 @@ export default function TimelineEditor({
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{clip.asset.file.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
-                              <path 
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                              <path suppressHydrationWarning
                                  d={Array.from({length: 250}).map((_, i) => {
                                     const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
                                     return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
@@ -1526,7 +1553,7 @@ export default function TimelineEditor({
                  <div className="w-32 shrink-0 sticky left-0 z-30 bg-transparent pointer-events-none"></div>
                  {/* Clickable timeline area */}
                  <div 
-                   className="flex flex-1 relative min-h-[150px] cursor-pointer"
+                   className="flex flex-1 relative min-h-[30px] cursor-pointer"
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
