@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, Trash2, Lock, Unlock, VolumeX } from "lucide-react";
 import { generateSceneAudio } from "@/app/actions/audio-actions";
 import { Rnd } from "react-rnd";
 
@@ -14,7 +14,7 @@ interface MediaAsset {
   file: File;
   url: string;
   type: MediaType;
-  duration?: string;
+  duration?: number;
 }
 
 interface TimelineClip {
@@ -36,6 +36,7 @@ export default function TimelineEditor({
   const [scenes, setScenes] = useState<any[]>(initialScenes);
   const [timelineClips, setTimelineClips] = useState<TimelineClip[]>([]);
   const [selectedScene, setSelectedScene] = useState<any | null>(null);
+  const [selectedSceneTrack, setSelectedSceneTrack] = useState<'V1' | 'A1' | null>(null);
   const [selectedAsset, setSelectedAsset] = useState<MediaAsset | null>(null);
   
   const [cursorPosition, setCursorPosition] = useState<number>(0);
@@ -49,10 +50,98 @@ export default function TimelineEditor({
   const [activeTab, setActiveTab] = useState<TabState>('scene');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [showRatioMenu, setShowRatioMenu] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'scene' | 'clip', id: string, trackId?: string } | null>(null);
 
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
   
+  const [a1Scenes, setA1Scenes] = useState<any[]>([...initialScenes]);
+  const [draggingAsset, setDraggingAsset] = useState<MediaAsset | null>(null);
+  const [draggingScene, setDraggingScene] = useState<{ id: string, track: string, duration: number } | null>(null);
+  const [v1DragInsertIndex, setV1DragInsertIndex] = useState<number | null>(null);
+  const [a1DragInsertIndex, setA1DragInsertIndex] = useState<number | null>(null);
+
+  const [trackStates, setTrackStates] = useState({
+    V1: { locked: false, muted: false },
+    A1: { locked: false, muted: false },
+    A2: { locked: false, muted: false }
+  });
+
+  const toggleTrackState = (trackId: 'V1' | 'A1' | 'A2', key: 'locked' | 'muted') => {
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: {
+        ...prev[trackId],
+        [key]: !prev[trackId][key]
+      }
+    }));
+  };
+  
+  const getSceneDuration = (scene: any) => {
+    if (scene.custom_media_url && scene.assetId) {
+      const asset = mediaAssets.find(a => a.id === scene.assetId);
+      if (asset && asset.duration) {
+        return asset.duration;
+      }
+    }
+    return scene.video_duration || 5;
+  };
+
+  const getUnshiftedLeftPosition = (track: 'V1' | 'A1', index: number) => {
+    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    let time = 0;
+    for (let i = 0; i < index; i++) {
+       if (draggingScene && draggingScene.track === track && trackScenes[i].id === draggingScene.id) {
+          continue;
+       }
+       time += getSceneDuration(trackScenes[i]);
+    }
+    return time * scale;
+  };
+
+  const getSceneLeftPosition = (track: 'V1' | 'A1', sceneIndex: number) => {
+    let time = getUnshiftedLeftPosition(track, sceneIndex) / scale;
+    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    const insertIdx = track === 'V1' ? v1DragInsertIndex : a1DragInsertIndex;
+    
+    if (insertIdx !== null && sceneIndex >= insertIdx) {
+      if (draggingAsset) {
+        time += (draggingAsset.duration || 5);
+      } else if (draggingScene && draggingScene.track === track && trackScenes[sceneIndex].id !== draggingScene.id) {
+        time += (draggingScene.duration || 5);
+      }
+    }
+    return time * scale;
+  };
+
+  const getVisualSequenceNumber = (track: 'V1' | 'A1', originalIndex: number) => {
+    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    const insertIdx = track === 'V1' ? v1DragInsertIndex : a1DragInsertIndex;
+    
+    if (!draggingScene || draggingScene.track !== track || insertIdx === null) {
+      return trackScenes[originalIndex].sequence_number;
+    }
+
+    const dragIndex = trackScenes.findIndex(s => s.id === draggingScene.id);
+    if (dragIndex === -1) return trackScenes[originalIndex].sequence_number;
+
+    if (originalIndex === dragIndex) {
+      let finalIndex = insertIdx;
+      if (insertIdx > dragIndex) finalIndex -= 1;
+      return finalIndex + 1;
+    }
+
+    let finalIndex = originalIndex;
+    if (originalIndex > dragIndex) finalIndex -= 1;
+    
+    let simulatedInsert = insertIdx;
+    if (simulatedInsert > dragIndex) simulatedInsert -= 1;
+
+    if (finalIndex >= simulatedInsert) finalIndex += 1;
+    
+    return finalIndex + 1;
+  };
+
   const mediaRefs = useRef<{ [id: string]: HTMLMediaElement | null }>({});
 
   // Timeline scaling and zooming
@@ -62,6 +151,12 @@ export default function TimelineEditor({
   const [resizingSceneId, setResizingSceneId] = useState<string | null>(null);
   const [resizeStartX, setResizeStartX] = useState<number>(0);
   const [initialDuration, setInitialDuration] = useState<number>(0);
+
+  const formatDuration = (d: number) => {
+    const m = Math.floor(d / 60).toString().padStart(2, '0');
+    const s = Math.floor(d % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files) {
@@ -82,7 +177,7 @@ export default function TimelineEditor({
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = 'copy';
+    e.dataTransfer.dropEffect = draggingScene ? 'move' : 'copy';
   };
 
   const applyMagneticSnap = (trackId: string, requestedStartTime: number, ignoreClipId?: string) => {
@@ -108,12 +203,46 @@ export default function TimelineEditor({
     return 0; // Snap to 0 if dropped before everything
   };
 
-  const handleDrop = (e: React.DragEvent, trackId: string) => {
+  const handleDrop = async (e: React.DragEvent, trackId: string) => {
     e.preventDefault();
-    const data = e.dataTransfer.getData('text/plain');
-    if (data) {
+    setV1DragInsertIndex(null);
+    setA1DragInsertIndex(null);
+    setDraggingAsset(null);
+    setDraggingScene(null);
+    const dataStr = e.dataTransfer.getData('text/plain');
+    if (dataStr) {
       try {
-        const asset = JSON.parse(data) as MediaAsset;
+        const data = JSON.parse(dataStr);
+        if (data.type === 'reorder') {
+           const trackScenes = data.track === 'V1' ? scenes : a1Scenes;
+           const setTrackScenes = data.track === 'V1' ? setScenes : setA1Scenes;
+           
+           const rect = e.currentTarget.getBoundingClientRect();
+           const dropX = e.clientX - rect.left;
+           const startTime = dropX / scale;
+           
+           let insertIndex = trackScenes.length;
+           for (let i = 0; i < trackScenes.length; i++) {
+              const sceneDuration = getSceneDuration(trackScenes[i]);
+              const sceneLeft = getSceneLeftPosition(data.track as 'V1' | 'A1', i) / scale;
+              const sceneMidpoint = sceneLeft + (sceneDuration / 2);
+              if (startTime < sceneMidpoint) {
+                 insertIndex = i;
+                 break;
+              }
+           }
+           
+           setTrackScenes(prev => {
+              const newScenes = [...prev];
+              const [movedScene] = newScenes.splice(data.index, 1);
+              if (insertIndex > data.index) insertIndex -= 1;
+              newScenes.splice(insertIndex, 0, movedScene);
+              return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
+           });
+           return;
+        }
+        
+        const asset = data as MediaAsset;
         
         // Enforce track rules
         if (trackId === 'A1') {
@@ -133,27 +262,69 @@ export default function TimelineEditor({
         const dropX = e.clientX - rect.left;
         let startTime = dropX / scale;
         
-        // Apply Magnetic Snapping
-        startTime = applyMagneticSnap(trackId, startTime);
+        // Apply Magnetic Snapping for non-V1 tracks
+        if (trackId !== 'V1') {
+          startTime = applyMagneticSnap(trackId, startTime);
+        }
         
         let durationSecs = 5; // Default for images or missing duration
         if (asset.duration) {
-          const parts = asset.duration.split(':');
-          if (parts.length === 2) {
-            durationSecs = parseInt(parts[0]) * 60 + parseInt(parts[1]);
-          }
+          durationSecs = asset.duration;
+        } else if (asset.type === 'audio' || asset.type === 'video') {
+           try {
+              durationSecs = await new Promise<number>((resolve) => {
+                 const media = document.createElement(asset.type === 'audio' ? 'audio' : 'video');
+                 media.src = asset.url;
+                 media.onloadedmetadata = () => resolve(media.duration);
+                 media.onerror = () => resolve(5);
+              });
+           } catch (err) {}
         }
         
-        const newClip: TimelineClip = {
-          id: Math.random().toString(36).substring(7),
-          assetId: asset.id,
-          asset,
-          trackId,
-          startTime,
-          duration: durationSecs
-        };
-        
-        setTimelineClips(prev => [...prev, newClip]);
+        if (trackId === 'V1') {
+          let insertIndex = scenes.length;
+          
+          for (let i = 0; i < scenes.length; i++) {
+             const sceneDuration = scenes[i].video_duration || 5;
+             const sceneLeft = getSceneLeftPosition('V1', i) / scale;
+             const sceneMidpoint = sceneLeft + (sceneDuration / 2);
+             
+             if (startTime < sceneMidpoint) {
+                insertIndex = i;
+                break;
+             }
+          }
+
+          const newScene = {
+            id: Math.random().toString(36).substring(7),
+            sequence_number: 0,
+            video_duration: durationSecs,
+            voice_over_beat: asset.file.name,
+            final_video_prompt: 'Custom Media',
+            generation_status: 'Completed',
+            custom_media_url: asset.url,
+            custom_media_type: asset.type,
+            audio_url: asset.type === 'video' ? asset.url : undefined,
+            assetId: asset.id
+          };
+
+          setScenes(prev => {
+             const newScenes = [...prev];
+             newScenes.splice(insertIndex, 0, newScene);
+             return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
+          });
+        } else {
+          const newClip: TimelineClip = {
+            id: Math.random().toString(36).substring(7),
+            assetId: asset.id,
+            asset,
+            trackId,
+            startTime,
+            duration: durationSecs
+          };
+          
+          setTimelineClips(prev => [...prev, newClip]);
+        }
       } catch (err) {
         console.error("Failed to parse dropped asset data", err);
       }
@@ -239,10 +410,38 @@ export default function TimelineEditor({
       }
     };
     window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
+    
+    const handleGlobalClick = () => setContextMenu(null);
+    window.addEventListener('click', handleGlobalClick);
+    
+    return () => {
+       window.removeEventListener('keydown', handleKeyDown);
+       window.removeEventListener('click', handleGlobalClick);
+    };
   }, []);
 
-  const contentDuration = scenes.reduce((acc, scene) => acc + (scene.video_duration || 5), 0);
+  const handleDeleteItem = () => {
+    if (!contextMenu) return;
+    if (contextMenu.trackId && trackStates[contextMenu.trackId as 'V1'|'A1'|'A2']?.locked) {
+       alert("Track is locked.");
+       setContextMenu(null);
+       return;
+    }
+    if (contextMenu.type === 'scene') {
+      setScenes(prev => {
+        const newScenes = prev.filter(s => s.id !== contextMenu.id);
+        return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
+      });
+      if (selectedScene?.id === contextMenu.id) {
+         setSelectedScene(null);
+      }
+    } else if (contextMenu.type === 'clip') {
+      setTimelineClips(prev => prev.filter(c => c.id !== contextMenu.id));
+    }
+    setContextMenu(null);
+  };
+
+  const contentDuration = scenes.reduce((acc, scene) => acc + getSceneDuration(scene), 0);
   const clipsMaxTime = timelineClips.length > 0 ? Math.max(...timelineClips.map(c => c.startTime + c.duration)) : 0;
   
   // The visual width of the timeline ruler (includes 15s buffer padding)
@@ -285,11 +484,11 @@ export default function TimelineEditor({
       const isOverlapping = currentTime >= startTime && currentTime < (startTime + duration);
 
       if (isPlaying && isOverlapping) {
+         const targetTime = currentTime - startTime;
+         if (Math.abs(media.currentTime - targetTime) > 0.3) {
+            media.currentTime = targetTime;
+         }
          if (media.paused) {
-            const targetTime = currentTime - startTime;
-            if (Math.abs(media.currentTime - targetTime) > 0.3) {
-               media.currentTime = targetTime;
-            }
             media.play().catch(e => console.log("Playback blocked:", e));
          }
       } else {
@@ -306,15 +505,15 @@ export default function TimelineEditor({
     });
   }, [cursorPosition, isPlaying, scale]);
 
-  const activeScene = scenes.find(s => {
-    const startTime = scenes.slice(0, s.sequence_number - 1).reduce((acc, prev) => acc + (prev.video_duration || 5), 0);
+  const activeScene = scenes.find((s, idx) => {
+    const startTime = scenes.slice(0, idx).reduce((acc, prev) => acc + (prev.video_duration || 5), 0);
     const endTime = startTime + (s.video_duration || 5);
     return currentTime >= startTime && currentTime < endTime;
   });
 
   const activeClipV1 = timelineClips.find(c => c.trackId === 'V1' && currentTime >= c.startTime && currentTime < (c.startTime + c.duration));
 
-  const displayScene = isPlaying ? activeScene : (selectedScene || activeScene);
+  const displayScene = activeScene;
 
   const getSceneColor = (status: string) => {
     if (status === 'Completed') return 'border-emerald-400 bg-emerald-50 text-emerald-700';
@@ -335,17 +534,18 @@ export default function TimelineEditor({
     <div className="flex flex-col h-full bg-gray-50 text-gray-900">
       {/* Hidden Media Elements for Audio Sync */}
       <div className="hidden">
-         {/* Scenes Audio */}
-         {scenes.map(scene => scene.audio_url && (
+         {/* Scenes Audio (A1) */}
+         {a1Scenes.map((scene, idx) => scene.audio_url && (
             <audio 
               key={`audio-scene-${scene.id}`}
               src={scene.audio_url}
               ref={el => { mediaRefs.current[`scene-${scene.id}`] = el; }}
-              data-start={scenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
+              data-start={a1Scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
               data-duration={scene.video_duration || 5}
+              muted={trackStates.A1.muted}
             />
          ))}
-         {/* Timeline Audio Clips */}
+         {/* Timeline Audio Clips (A2) */}
          {timelineClips.filter(c => c.asset.type === 'audio').map(clip => (
             <audio
               key={`clip-${clip.id}`}
@@ -353,6 +553,7 @@ export default function TimelineEditor({
               ref={el => { mediaRefs.current[`clip-${clip.id}`] = el; }}
               data-start={clip.startTime}
               data-duration={clip.duration}
+              muted={trackStates.A2.muted}
             />
          ))}
       </div>
@@ -423,44 +624,71 @@ export default function TimelineEditor({
                        }}
                        draggable
                        onDragStart={(e) => {
+                         setDraggingAsset(asset);
                          e.dataTransfer.setData('text/plain', JSON.stringify(asset));
                          e.dataTransfer.effectAllowed = 'copy';
                          
-                         // Create custom drag image to look like a timeline clip
+                         const duration = asset.duration || 5;
+                         const width = duration * scale;
+                         
                          const dragGhost = document.createElement('div');
-                         dragGhost.style.width = '180px';
-                         dragGhost.style.height = '40px';
-                         dragGhost.style.backgroundColor = '#dbeafe'; // blue-100
-                         dragGhost.style.border = '1px solid #60a5fa'; // blue-400
+                         dragGhost.style.width = `${width}px`;
+                         dragGhost.style.height = '50px';
                          dragGhost.style.borderRadius = '6px';
-                         dragGhost.style.display = 'flex';
-                         dragGhost.style.alignItems = 'center';
-                         dragGhost.style.padding = '8px';
-                         dragGhost.style.color = '#1e3a8a'; // blue-900
-                         dragGhost.style.fontSize = '12px';
-                         dragGhost.style.fontWeight = 'bold';
+                         dragGhost.style.border = '2px solid #10b981'; // emerald-500 to match the screenshot
+                         dragGhost.style.overflow = 'hidden';
                          dragGhost.style.position = 'absolute';
                          dragGhost.style.top = '-1000px';
+                         dragGhost.style.backgroundColor = '#ecfdf5';
+                         dragGhost.style.display = 'flex';
                          
-                         let iconSvg = '';
-                         if (asset.type === 'video') {
-                            iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><rect x="2" y="2" width="20" height="20" rx="2.18" ry="2.18"></rect><line x1="7" y1="2" x2="7" y2="22"></line><line x1="17" y1="2" x2="17" y2="22"></line><line x1="2" y1="12" x2="22" y2="12"></line><line x1="2" y1="7" x2="7" y2="7"></line><line x1="2" y1="17" x2="7" y2="17"></line><line x1="17" y1="17" x2="22" y2="17"></line><line x1="17" y1="7" x2="22" y2="7"></line></svg>`;
-                         } else if (asset.type === 'image') {
-                            iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>`;
+                         if (asset.type === 'image' || asset.type === 'video') {
+                             if (asset.type === 'image') {
+                                dragGhost.style.backgroundImage = `url(${asset.url})`;
+                                dragGhost.style.backgroundSize = 'cover';
+                                dragGhost.style.backgroundPosition = 'center';
+                             } else {
+                                const numFrames = Math.max(1, Math.ceil(width / 80));
+                                for(let i=0; i<numFrames; i++) {
+                                   const vid = document.createElement('video');
+                                   vid.src = `${asset.url}#t=${(duration / numFrames) * i + 0.1}`;
+                                   vid.style.height = '100%';
+                                   vid.style.width = `${100 / numFrames}%`;
+                                   vid.style.objectFit = 'cover';
+                                   vid.style.borderRight = '1px solid rgba(0,0,0,0.2)';
+                                   dragGhost.appendChild(vid);
+                                }
+                             }
                          } else {
-                            iconSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-right: 6px;"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
+                             const icon = document.createElement('div');
+                             icon.style.padding = '10px';
+                             icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-blue-500"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
+                             dragGhost.appendChild(icon);
                          }
-                         
-                         // truncate filename if too long
-                         const name = asset.file.name.length > 20 ? asset.file.name.substring(0, 20) + '...' : asset.file.name;
-                         dragGhost.innerHTML = `${iconSvg} <span>${name}</span>`;
+
+                         const label = document.createElement('div');
+                         label.style.position = 'absolute';
+                         label.style.left = '6px';
+                         label.style.top = '6px';
+                         label.style.backgroundColor = 'rgba(0,0,0,0.5)';
+                         label.style.color = 'white';
+                         label.style.padding = '2px 6px';
+                         label.style.borderRadius = '4px';
+                         label.style.fontSize = '10px';
+                         label.style.fontWeight = 'bold';
+                         label.style.zIndex = '10';
+                         label.style.whiteSpace = 'nowrap';
+                         label.innerText = asset.file.name;
+                         dragGhost.appendChild(label);
                          
                          document.body.appendChild(dragGhost);
-                         e.dataTransfer.setDragImage(dragGhost, 20, 20);
-                         
-                         setTimeout(() => {
-                           document.body.removeChild(dragGhost);
-                         }, 0);
+                         e.dataTransfer.setDragImage(dragGhost, 10, 10);
+                         setTimeout(() => { document.body.removeChild(dragGhost); }, 0);
+                       }}
+                       onDragEnd={() => {
+                         setDraggingAsset(null);
+                         setV1DragInsertIndex(null);
+                         setA1DragInsertIndex(null);
                        }}
                        className="flex flex-col items-center gap-1.5 cursor-grab active:cursor-grabbing group/asset w-full"
                      >
@@ -474,13 +702,12 @@ export default function TimelineEditor({
                              src={asset.url} 
                              className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/asset:opacity-100 transition-opacity" 
                              muted 
+                             preload="metadata"
                              onLoadedMetadata={(e) => {
                                if(!asset.duration) {
                                   const d = e.currentTarget.duration;
                                   if (d && !isNaN(d) && d !== Infinity) {
-                                      const m = Math.floor(d / 60).toString().padStart(2, '0');
-                                      const s = Math.floor(d % 60).toString().padStart(2, '0');
-                                      setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: `${m}:${s}` } : a));
+                                      setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
                                   }
                                }
                              }}
@@ -491,13 +718,12 @@ export default function TimelineEditor({
                              <audio 
                                src={asset.url} 
                                className="hidden" 
+                               preload="metadata"
                                onLoadedMetadata={(e) => {
                                  if(!asset.duration) {
                                     const d = e.currentTarget.duration;
                                     if (d && !isNaN(d) && d !== Infinity) {
-                                        const m = Math.floor(d / 60).toString().padStart(2, '0');
-                                        const s = Math.floor(d % 60).toString().padStart(2, '0');
-                                        setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: `${m}:${s}` } : a));
+                                        setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
                                     }
                                  }
                                }}
@@ -508,7 +734,7 @@ export default function TimelineEditor({
                          {/* Duration Badge */}
                          {(asset.type === 'video' || asset.type === 'audio') && (
                             <div className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/60 rounded text-[9px] text-white font-mono font-medium drop-shadow-md z-10">
-                              {asset.duration || '00:00'}
+                              {asset.duration ? formatDuration(asset.duration) : '00:00'}
                             </div>
                          )}
                        </div>
@@ -693,6 +919,7 @@ export default function TimelineEditor({
                          ref={el => { mediaRefs.current[`clip-${activeClipV1.id}`] = el; }}
                          data-start={activeClipV1.startTime}
                          data-duration={activeClipV1.duration}
+                         muted={trackStates.V1.muted}
                        />
                     ) : (
                        <img src={activeClipV1.asset.url} className="w-full h-full object-contain" alt="Asset Preview" />
@@ -700,17 +927,33 @@ export default function TimelineEditor({
                  </div>
                ) : displayScene ? (
                  <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center transition-opacity duration-300">
-                    {displayScene.generation_status === 'Completed' ? (
-                       <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1555529733-0e67056058e1?q=80&w=1000')] bg-cover bg-center opacity-70"></div>
+                    {displayScene.custom_media_url ? (
+                        displayScene.custom_media_type === 'video' ? (
+                           <video 
+                             src={displayScene.custom_media_url} 
+                             className="absolute inset-0 w-full h-full object-contain bg-black"
+                             ref={el => { mediaRefs.current[`scene-video-${displayScene.id}`] = el; }}
+                             data-start={scenes.slice(0, scenes.indexOf(displayScene)).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
+                             data-duration={displayScene.video_duration || 5}
+                             muted={trackStates.V1.muted}
+                           />
+                        ) : (
+                           <img src={displayScene.custom_media_url} className="absolute inset-0 w-full h-full object-contain bg-black" alt="Scene Preview" />
+                        )
                     ) : (
-                       <Film size={48} className="text-gray-700 mb-4 opacity-50" />
+                       <>
+                          {displayScene.generation_status === 'Completed' ? (
+                             <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1555529733-0e67056058e1?q=80&w=1000')] bg-cover bg-center opacity-70"></div>
+                          ) : (
+                             <Film size={48} className="text-gray-700 mb-4 opacity-50" />
+                          )}
+                          <div className="relative z-10 max-w-lg">
+                            <p className="text-yellow-400 text-xl md:text-3xl font-black uppercase tracking-wider drop-shadow-md text-shadow" style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.8)' }}>
+                              {displayScene.voice_over_beat}
+                            </p>
+                          </div>
+                       </>
                     )}
-                    
-                    <div className="relative z-10 max-w-lg">
-                      <p className="text-yellow-400 text-xl md:text-3xl font-black uppercase tracking-wider drop-shadow-md text-shadow" style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.8)' }}>
-                        {displayScene.voice_over_beat}
-                      </p>
-                    </div>
                  </div>
                ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 bg-gray-900">
@@ -811,13 +1054,14 @@ export default function TimelineEditor({
            <div className="min-w-max">
               {/* Ruler Track */}
               <div className="flex items-end mb-1 relative group w-max">
-                 <div className="w-20 shrink-0 sticky left-0 z-30 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]"></div>
+                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]"></div>
                  <div 
                     className="relative h-6 border-b border-gray-200 cursor-pointer"
                     style={{ width: `${timelineDuration * scale}px` }}
                     onClick={(e) => {
                        const rect = e.currentTarget.getBoundingClientRect();
                        setCursorPosition(e.clientX - rect.left);
+                       setSelectedAsset(null);
                     }}
                  >
                     {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => {
@@ -847,11 +1091,17 @@ export default function TimelineEditor({
               {/* Video Track (V1) */}
               <div 
                 className="flex items-center mb-0.5 group relative mt-2"
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDrop(e, 'V1')}
               >
-                 <div className="w-20 shrink-0 sticky left-0 z-30 bg-white py-4 flex flex-col items-center justify-center border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                    <span className="text-[10px] font-bold text-gray-500">V1</span>
+                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+                    <span className="text-[13px] font-bold text-gray-600">V1</span>
+                    <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                    </button>
+                    <button onClick={() => toggleTrackState('V1', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.V1.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
+                    </button>
                  </div>
                  <div 
                    className="flex flex-1 relative h-16 bg-white rounded-r-md items-center cursor-pointer ml-1 border-y border-r border-gray-100 shadow-sm" 
@@ -859,32 +1109,118 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
+                     setSelectedAsset(null);
+                   }}
+                   onDragOver={(e) => {
+                     if (trackStates.V1.locked) return;
+                     handleDragOver(e);
+                     if ((draggingAsset && (draggingAsset.type === 'video' || draggingAsset.type === 'image')) || (draggingScene && draggingScene.track === 'V1')) {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const dropX = e.clientX - rect.left;
+                        let insertIdx = scenes.length;
+                        
+                        for (let i = 0; i < scenes.length; i++) {
+                           const sceneDuration = getSceneDuration(scenes[i]);
+                           const sceneLeft = getSceneLeftPosition('V1', i);
+                           const sceneMidpoint = sceneLeft + (sceneDuration * scale / 2);
+                           if (dropX < sceneMidpoint) {
+                              insertIdx = i;
+                              break;
+                           }
+                        }
+                        if (v1DragInsertIndex !== insertIdx) {
+                           setV1DragInsertIndex(insertIdx);
+                        }
+                     }
+                   }}
+                   onDrop={(e) => {
+                     if (trackStates.V1.locked) return;
+                     handleDrop(e, 'V1')
                    }}
                  >
                     {/* Scene Blocks (AI Generated) */}
-                    {scenes.map((scene) => (
+                    {scenes.map((scene, idx) => (
                        <div 
                          key={`video-${scene.id}`}
+                         draggable={!trackStates.V1.locked}
+                         onDragStart={(e) => {
+                            if (trackStates.V1.locked) {
+                               e.preventDefault();
+                               return;
+                            }
+                            const sceneData = { type: 'reorder', track: 'V1', sceneId: scene.id, index: idx };
+                            e.dataTransfer.setData('text/plain', JSON.stringify(sceneData));
+                            setDraggingScene({ id: scene.id, track: 'V1', duration: getSceneDuration(scene) });
+                            e.dataTransfer.effectAllowed = 'copyMove';
+                         }}
+                         onDragEnd={() => {
+                            setDraggingScene(null);
+                            setV1DragInsertIndex(null);
+                         }}
                          onClick={(e) => {
-                           e.stopPropagation();
                            setSelectedScene(scene);
+                           setSelectedSceneTrack('V1');
                            setSelectedAsset(null);
                            setActiveTab('scene');
                          }}
-                         className={`h-[80%] absolute top-[10%] rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-all overflow-hidden group/block shadow-sm ${selectedScene?.id === scene.id ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:brightness-95 z-10'}`}
+                         onContextMenu={(e) => {
+                           e.preventDefault();
+                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
+                         }}
+                         className={`h-[80%] absolute top-[10%] rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-all overflow-hidden group/block shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'V1' ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:brightness-95 z-10'}`}
                          style={{ 
-                           left: `${scenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * scale}px`,
-                           width: `${(scene.video_duration || 5) * scale}px`
+                           left: `${getSceneLeftPosition('V1', idx)}px`,
+                           width: `${getSceneDuration(scene) * scale}px`,
+                           opacity: draggingScene?.id === scene.id ? 0.001 : 1
                          }}
                        >
                          <div className="w-full h-full p-1.5 flex flex-col relative">
-                            <div className="flex items-center gap-1.5 mb-1 opacity-90">
-                               <ImageIcon size={10} />
-                               <span className="text-[9px] font-bold truncate">Sc {scene.sequence_number}</span>
+                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${scene.custom_media_url ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-black/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
+                               {scene.custom_media_type === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
+                               <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {scene.custom_media_url ? `(${scene.voice_over_beat})` : ''}</span>
                             </div>
+                            {scene.custom_media_url && (
+                               <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
+                                  {scene.custom_media_type === 'video' ? (
+                                     Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
+                                        <video 
+                                          key={i}
+                                          src={`${scene.custom_media_url}#t=${(getSceneDuration(scene) / arr.length) * i + 0.1}`} 
+                                          className="h-full object-cover shrink-0 border-r border-black/20" 
+                                          style={{ width: `${100 / arr.length}%` }}
+                                          preload="metadata"
+                                        />
+                                     ))
+                                  ) : (
+                                     Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
+                                        <img 
+                                          key={i}
+                                          src={scene.custom_media_url} 
+                                          className="h-full object-cover shrink-0 border-r border-black/20" 
+                                          style={{ width: `${100 / arr.length}%` }}
+                                        />
+                                     ))
+                                  )}
+                               </div>
+                            )}
                          </div>
                        </div>
                     ))}
+
+                    {v1DragInsertIndex !== null && (draggingAsset || (draggingScene && draggingScene.track === 'V1')) && (
+                        <div 
+                           className="h-[80%] absolute top-[10%] rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none transition-all flex items-center justify-center overflow-hidden"
+                           style={{
+                              left: `${getUnshiftedLeftPosition('V1', v1DragInsertIndex)}px`,
+                              width: `${(draggingAsset?.duration || draggingScene?.duration || 5) * scale}px`
+                           }}
+                        >
+                           <div className="flex items-center text-purple-400 opacity-50 gap-2">
+                              {draggingAsset?.type === 'video' ? <Film size={16} /> : draggingAsset?.type === 'image' ? <ImageIcon size={16} /> : <LayoutTemplate size={16} />}
+                              <span className="text-xs font-bold">Insert Here</span>
+                           </div>
+                        </div>
+                    )}
 
                     {/* Dropped Custom Media Clips */}
                     {timelineClips.filter(c => c.trackId === 'V1').map(clip => (
@@ -893,6 +1229,7 @@ export default function TimelineEditor({
                         bounds="parent"
                         dragAxis="x"
                         enableResizing={false}
+                        disableDragging={trackStates.V1.locked}
                         size={{ width: clip.duration * scale, height: '80%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
                         onDragStop={(e, d) => {
@@ -903,9 +1240,13 @@ export default function TimelineEditor({
                         style={{ top: '10%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all"
                         onClick={(e: any) => {
-                          e.stopPropagation();
-                          setSelectedAsset(clip.asset);
+                          setSelectedAsset(null);
                           setSelectedScene(null);
+                          setSelectedSceneTrack(null);
+                        }}
+                        onContextMenu={(e: any) => {
+                          e.preventDefault();
+                          setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'V1' });
                         }}
                       >
                          <div className="w-full h-full p-1.5 flex flex-col relative pointer-events-none">
@@ -922,11 +1263,17 @@ export default function TimelineEditor({
               {/* Audio Track (A1) */}
               <div 
                 className="flex items-center mb-0.5 group relative"
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDrop(e, 'A1')}
               >
-                 <div className="w-20 shrink-0 sticky left-0 z-30 bg-white py-4 flex flex-col items-center justify-center border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                    <span className="text-[10px] font-bold text-gray-500">A1</span>
+                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+                    <span className="text-[13px] font-bold text-gray-600">A1</span>
+                    <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.A1.locked ? <Lock size={18} /> : <Unlock size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                    </button>
+                    <button onClick={() => toggleTrackState('A1', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.A1.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
+                    </button>
                  </div>
                  <div 
                    className="flex flex-1 relative h-14 bg-white rounded-r-md items-center cursor-pointer ml-1 border-y border-r border-gray-100 shadow-sm" 
@@ -934,21 +1281,68 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
+                     setSelectedAsset(null);
+                   }}
+                   onDragOver={(e) => { 
+                      if (trackStates.A1.locked) return;
+                      handleDragOver(e); 
+                      if (draggingScene?.track === 'A1') {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const dropX = e.clientX - rect.left;
+                        let insertIdx = a1Scenes.length;
+                        
+                        for (let i = 0; i < a1Scenes.length; i++) {
+                           const sceneDuration = a1Scenes[i].video_duration || 5;
+                           const sceneLeft = getSceneLeftPosition('A1', i);
+                           const sceneMidpoint = sceneLeft + (sceneDuration * scale / 2);
+                           if (dropX < sceneMidpoint) {
+                              insertIdx = i;
+                              break;
+                           }
+                        }
+                        if (a1DragInsertIndex !== insertIdx) {
+                           setA1DragInsertIndex(insertIdx);
+                        }
+                      }
+                   }}
+                   onDrop={(e) => {
+                      if (trackStates.A1.locked) return;
+                      handleDrop(e, 'A1');
                    }}
                  >
-                    {scenes.map((scene) => (
+                    {a1Scenes.map((scene, idx) => (
                        <div 
                          key={`audio-${scene.id}`}
+                         draggable={!trackStates.A1.locked}
+                         onDragStart={(e) => {
+                            if (trackStates.A1.locked) {
+                               e.preventDefault();
+                               return;
+                            }
+                            const sceneData = { type: 'reorder', track: 'A1', sceneId: scene.id, index: idx };
+                            e.dataTransfer.setData('text/plain', JSON.stringify(sceneData));
+                            setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
+                            e.dataTransfer.effectAllowed = 'copyMove';
+                         }}
+                         onDragEnd={() => {
+                            setDraggingScene(null);
+                            setA1DragInsertIndex(null);
+                         }}
                          onClick={(e) => {
-                           e.stopPropagation();
                            setSelectedScene(scene);
+                           setSelectedSceneTrack('A1');
                            setSelectedAsset(null);
                            setActiveTab('scene');
                          }}
-                         className={`h-[70%] absolute top-[15%] rounded-md border border-purple-200 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${selectedScene?.id === scene.id ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:bg-purple-100 z-10'}`}
+                         onContextMenu={(e) => {
+                           e.preventDefault();
+                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
+                         }}
+                         className={`h-[70%] absolute top-[15%] rounded-md border border-purple-200 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'A1' ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:bg-purple-100 z-10'}`}
                          style={{ 
-                           left: `${scenes.slice(0, scene.sequence_number - 1).reduce((acc, s) => acc + (s.video_duration || 5), 0) * scale}px`,
-                           width: `${(scene.video_duration || 5) * scale}px`
+                           left: `${getSceneLeftPosition('A1', idx)}px`,
+                           width: `${(scene.video_duration || 5) * scale}px`,
+                           opacity: draggingScene?.id === scene.id ? 0.001 : 1
                          }}
                        >
                          <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
@@ -957,12 +1351,37 @@ export default function TimelineEditor({
                               {scene.voice_over_beat}
                             </span>
                          </div>
-                         {/* Mock Waveform */}
-                         <div className="absolute bottom-1 left-1 right-1 h-3 opacity-60 flex items-end gap-[1px]">
-                           {[...Array(20)].map((_,i) => <div key={i} className={`flex-1 ${scene.audio_url ? 'bg-purple-400' : 'bg-purple-200'} rounded-t-sm`} style={{ height: `${20 + Math.random() * 80}%` }}></div>)}
+                         {/* Static Symmetrical Waveform */}
+                         <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
+                              <path 
+                                 d={Array.from({length: 250}).map((_, i) => {
+                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
+                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
+                                 }).join(' ')}
+                                 stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} 
+                                 strokeWidth="2.5" 
+                                 strokeLinecap="round"
+                              />
+                           </svg>
                          </div>
                        </div>
                     ))}
+
+                    {a1DragInsertIndex !== null && draggingScene?.track === 'A1' && (
+                        <div 
+                           className="h-[70%] absolute top-[15%] rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none transition-all flex items-center justify-center overflow-hidden"
+                           style={{
+                              left: `${getUnshiftedLeftPosition('A1', a1DragInsertIndex)}px`,
+                              width: `${(draggingScene.duration || 5) * scale}px`
+                           }}
+                        >
+                           <div className="flex items-center text-purple-400 opacity-50 gap-2">
+                              <Volume2 size={16} />
+                              <span className="text-xs font-bold">Move Here</span>
+                           </div>
+                        </div>
+                    )}
 
                     {/* Dropped Custom Media Clips */}
                     {timelineClips.filter(c => c.trackId === 'A1').map(clip => (
@@ -971,6 +1390,7 @@ export default function TimelineEditor({
                         bounds="parent"
                         dragAxis="x"
                         enableResizing={false}
+                        disableDragging={trackStates.A1.locked}
                         size={{ width: clip.duration * scale, height: '70%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
                         onDragStop={(e, d) => {
@@ -981,14 +1401,31 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"
                         onClick={(e: any) => {
-                          e.stopPropagation();
-                          setSelectedAsset(clip.asset);
+                          setSelectedAsset(null);
                           setSelectedScene(null);
+                          setSelectedSceneTrack(null);
+                        }}
+                        onContextMenu={(e: any) => {
+                          e.preventDefault();
+                          setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'A1' });
                         }}
                       >
-                         <div className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 pointer-events-none">
+                         <div className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 pointer-events-none relative z-10">
                             <Music size={9} />
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{clip.asset.file.name}</span>
+                         </div>
+                         <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
+                              <path 
+                                 d={Array.from({length: 250}).map((_, i) => {
+                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
+                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
+                                 }).join(' ')}
+                                 stroke="#3b82f6" 
+                                 strokeWidth="2.5" 
+                                 strokeLinecap="round"
+                              />
+                           </svg>
                          </div>
                       </Rnd>
                     ))}
@@ -998,15 +1435,36 @@ export default function TimelineEditor({
               {/* Music Track (A2) */}
               <div 
                 className="flex items-center group relative"
-                onDragOver={handleDragOver}
-                onDrop={(e) => handleDrop(e, 'A2')}
               >
-                 <div className="w-20 shrink-0 sticky left-0 z-30 bg-white py-4 flex flex-col items-center justify-center border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
-                    <span className="text-[10px] font-bold text-gray-500">A2</span>
+                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+                    <span className="text-[13px] font-bold text-gray-600">A2</span>
+                    <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.A2.locked ? <Lock size={18} /> : <Unlock size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                    </button>
+                    <button onClick={() => toggleTrackState('A2', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                       {trackStates.A2.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
+                    </button>
                  </div>
                  <div 
                    className="flex flex-1 relative h-12 bg-gray-50 rounded-r-md items-center cursor-pointer ml-1 border border-gray-200 border-dashed hover:bg-gray-100 transition-colors" 
                    style={{ width: `${timelineDuration * scale}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                     setSelectedAsset(null);
+                   }}
+                   onDragOver={(e) => { 
+                     if (trackStates.A2.locked) return;
+                     handleDragOver(e); 
+                     setV1DragInsertIndex(null); 
+                     setA1DragInsertIndex(null); 
+                   }}
+                   onDrop={(e) => {
+                      if (trackStates.A2.locked) return;
+                      handleDrop(e, 'A2');
+                   }}
                  >
                     <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50 z-0">
                        <Music size={12} className="mr-2 text-gray-500"/>
@@ -1020,6 +1478,7 @@ export default function TimelineEditor({
                         bounds="parent"
                         dragAxis="x"
                         enableResizing={false}
+                        disableDragging={trackStates.A2.locked}
                         size={{ width: clip.duration * scale, height: '70%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
                         onDragStop={(e, d) => {
@@ -1030,14 +1489,31 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"
                         onClick={(e: any) => {
-                          e.stopPropagation();
-                          setSelectedAsset(clip.asset);
+                          setSelectedAsset(null);
                           setSelectedScene(null);
+                          setSelectedSceneTrack(null);
+                        }}
+                        onContextMenu={(e: any) => {
+                          e.preventDefault();
+                          setContextMenu({ x: e.pageX, y: e.pageY, type: 'clip', id: clip.id, trackId: 'A2' });
                         }}
                       >
-                         <div className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 pointer-events-none">
+                         <div className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 pointer-events-none relative z-10">
                             <Music size={9} />
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{clip.asset.file.name}</span>
+                         </div>
+                         <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
+                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100">
+                              <path 
+                                 d={Array.from({length: 250}).map((_, i) => {
+                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
+                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
+                                 }).join(' ')}
+                                 stroke="#3b82f6" 
+                                 strokeWidth="2.5" 
+                                 strokeLinecap="round"
+                              />
+                           </svg>
                          </div>
                       </Rnd>
                     ))}
@@ -1047,7 +1523,7 @@ export default function TimelineEditor({
               {/* Extra Clickable Space Below Tracks */}
               <div className="flex items-stretch group relative flex-1 mt-2">
                  {/* Invisible sticky spacer to match track headers */}
-                 <div className="w-20 shrink-0 sticky left-0 z-30 bg-transparent pointer-events-none"></div>
+                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-transparent pointer-events-none"></div>
                  {/* Clickable timeline area */}
                  <div 
                    className="flex flex-1 relative min-h-[150px] cursor-pointer"
@@ -1055,6 +1531,7 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
+                     setSelectedAsset(null);
                    }}
                  >
                  </div>
@@ -1063,6 +1540,24 @@ export default function TimelineEditor({
            </div>
         </div>
       </div>
+      
+      {/* Context Menu */}
+      {contextMenu && (
+        <div 
+          className="fixed bg-white border border-gray-200 shadow-xl rounded-lg py-1 z-[9999] min-w-[140px] animate-in fade-in zoom-in-95 duration-100"
+          style={{ top: Math.min(contextMenu.y, window.innerHeight - 50), left: Math.min(contextMenu.x, window.innerWidth - 140) }}
+        >
+          <button 
+            className="w-full text-left px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 transition-colors"
+            onClick={(e) => {
+               e.stopPropagation();
+               handleDeleteItem();
+            }}
+          >
+            <Trash2 size={16} /> Delete {contextMenu.type === 'scene' ? 'Scene' : 'Clip'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }
