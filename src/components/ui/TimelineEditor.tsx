@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, Trash2, Lock, Unlock, VolumeX } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, Trash2, Lock, Unlock, VolumeX, Download } from "lucide-react";
 import { generateSceneAudio } from "@/app/actions/audio-actions";
 import { Rnd } from "react-rnd";
 
@@ -24,6 +24,7 @@ interface TimelineClip {
   trackId: string;
   startTime: number;
   duration: number;
+  trimStart?: number;
 }
 
 export default function TimelineEditor({ 
@@ -78,13 +79,16 @@ export default function TimelineEditor({
   };
   
   const getSceneDuration = (scene: any) => {
+    if (scene.video_duration) {
+      return scene.video_duration;
+    }
     if (scene.custom_media_url && scene.assetId) {
       const asset = mediaAssets.find(a => a.id === scene.assetId);
       if (asset && asset.duration) {
         return asset.duration;
       }
     }
-    return scene.video_duration || 5;
+    return 5;
   };
 
   const getUnshiftedLeftPosition = (track: 'V1' | 'A1', index: number) => {
@@ -111,7 +115,19 @@ export default function TimelineEditor({
         time += (draggingScene.duration || 5);
       }
     }
-    return time * scale;
+    let position = time * scale;
+
+    // Shift position rightward during a left-edge drag to keep the right edge anchored
+    if (isResizing && resizingEdge === 'left' && resizingTrack === track) {
+       const resizeIndex = trackScenes.findIndex(s => s.id === resizingSceneId);
+       if (resizeIndex !== -1 && sceneIndex >= resizeIndex) {
+          const currentDuration = getSceneDuration(trackScenes[resizeIndex]);
+          const durationDiff = initialDuration - currentDuration;
+          position += durationDiff * scale;
+       }
+    }
+
+    return position;
   };
 
   const getVisualSequenceNumber = (track: 'V1' | 'A1', originalIndex: number) => {
@@ -151,6 +167,73 @@ export default function TimelineEditor({
   const [resizingSceneId, setResizingSceneId] = useState<string | null>(null);
   const [resizeStartX, setResizeStartX] = useState<number>(0);
   const [initialDuration, setInitialDuration] = useState<number>(0);
+  const [initialTrimStart, setInitialTrimStart] = useState<number>(0);
+  const [resizingEdge, setResizingEdge] = useState<'left' | 'right' | null>(null);
+  const [resizingTrack, setResizingTrack] = useState<'V1' | 'A1' | null>(null);
+
+  const handleResizeStart = (e: React.PointerEvent, sceneId: string, track: 'V1' | 'A1', edge: 'left' | 'right', duration: number, trimStart: number = 0) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setResizingSceneId(sceneId);
+    setResizingTrack(track);
+    setResizingEdge(edge);
+    setResizeStartX(e.clientX);
+    setInitialDuration(duration);
+    setInitialTrimStart(trimStart);
+    setIsResizing(true);
+  };
+
+  useEffect(() => {
+    if (!isResizing || !resizingSceneId || !resizingTrack || !resizingEdge) return;
+
+    const handlePointerMove = (e: PointerEvent) => {
+      e.preventDefault();
+      const deltaX = e.clientX - resizeStartX;
+      const deltaDuration = deltaX / scale;
+      
+      const setTrackScenes = resizingTrack === 'V1' ? setScenes : setA1Scenes;
+      
+      setTrackScenes(prev => prev.map(scene => {
+        if (scene.id === resizingSceneId) {
+          let newDuration = initialDuration;
+          if (resizingEdge === 'right') {
+            newDuration = initialDuration + deltaDuration;
+          } else if (resizingEdge === 'left') {
+            // Because scenes are sequential, dragging the left edge just trims the duration for now
+            newDuration = initialDuration - deltaDuration;
+          }
+          let maxDuration = 8;
+          if (scene.custom_media_url && scene.assetId) {
+            const asset = mediaAssets.find(a => a.id === scene.assetId);
+            if (asset && asset.duration) maxDuration = asset.duration;
+          }
+          const finalDuration = Math.min(maxDuration, Math.max(0.5, newDuration));
+          
+          let newTrimStart = scene.trim_start || 0;
+          if (resizingEdge === 'left') {
+            newTrimStart = initialTrimStart + (initialDuration - finalDuration);
+            newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
+          }
+          return { ...scene, video_duration: finalDuration, trim_start: newTrimStart };
+        }
+        return scene;
+      }));
+    };
+
+    const handlePointerUp = () => {
+      setIsResizing(false);
+      setResizingSceneId(null);
+      setResizingTrack(null);
+      setResizingEdge(null);
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+    };
+  }, [isResizing, resizingSceneId, resizingTrack, resizingEdge, resizeStartX, initialDuration, scale]);
 
   const formatDuration = (d: number) => {
     const m = Math.floor(d / 60).toString().padStart(2, '0');
@@ -486,11 +569,12 @@ export default function TimelineEditor({
 
       const startTime = parseFloat(media.dataset.start || "0");
       const duration = parseFloat(media.dataset.duration || "0");
+      const trimStart = parseFloat(media.dataset.trimStart || "0");
       
       const isOverlapping = currentTime >= startTime && currentTime < (startTime + duration);
 
       if (isPlaying && isOverlapping) {
-         const targetTime = currentTime - startTime;
+         const targetTime = (currentTime - startTime) + trimStart;
          if (Math.abs(media.currentTime - targetTime) > 0.3) {
             media.currentTime = targetTime;
          }
@@ -502,7 +586,7 @@ export default function TimelineEditor({
             media.pause();
          }
          if (!isPlaying && isOverlapping) {
-             const targetTime = currentTime - startTime;
+             const targetTime = (currentTime - startTime) + trimStart;
              if (Math.abs(media.currentTime - targetTime) > 0.1) {
                  media.currentTime = targetTime;
              }
@@ -522,9 +606,9 @@ export default function TimelineEditor({
   const displayScene = activeScene;
 
   const getSceneColor = (status: string) => {
-    if (status === 'Completed') return 'border-emerald-400 bg-emerald-50 text-emerald-700';
-    if (status === 'Rendering') return 'border-blue-400 bg-blue-50 text-blue-700';
-    return 'border-gray-300 bg-gray-100 text-gray-700'; // Pending
+    if (status === 'Completed') return 'border-gray-800 bg-emerald-50 text-emerald-700';
+    if (status === 'Rendering') return 'border-gray-800 bg-blue-50 text-blue-700';
+    return 'border-gray-800 bg-gray-100 text-gray-700'; // Pending
   };
 
   const getAspectRatioStyle = () => {
@@ -927,6 +1011,7 @@ export default function TimelineEditor({
                          ref={el => { mediaRefs.current[`clip-${activeClipV1.id}`] = el; }}
                          data-start={activeClipV1.startTime}
                          data-duration={activeClipV1.duration}
+                         data-trim-start={activeClipV1.trimStart || 0}
                          data-track="V1"
                          muted={trackStates.V1.muted}
                        />
@@ -944,6 +1029,7 @@ export default function TimelineEditor({
                              ref={el => { mediaRefs.current[`scene-video-${displayScene.id}`] = el; }}
                              data-start={scenes.slice(0, scenes.indexOf(displayScene)).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
                              data-duration={displayScene.video_duration || 5}
+                             data-trim-start={displayScene.trim_start || 0}
                              data-track="V1"
                              muted={trackStates.V1.muted}
                            />
@@ -1067,7 +1153,7 @@ export default function TimelineEditor({
                 className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
                 style={{ left: `calc(8rem + ${cursorPosition}px)`, transform: 'translateX(-50%)' }}
               >
-                 <div className="w-px h-full bg-purple-600/80 shadow-[0_0_8px_rgba(147,51,234,0.4)]"></div>
+                 <div className="w-px h-full bg-black shadow-[0_0_8px_rgba(0,0,0,0.3)]"></div>
               </div>
 
               {/* Ruler Track */}
@@ -1098,8 +1184,8 @@ export default function TimelineEditor({
                       className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
                       style={{ left: `${cursorPosition}px`, transform: 'translateX(-50%)' }}
                     >
-                       <div className="w-3 h-3 bg-purple-600 rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
-                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-purple-600"></div>
+                       <div className="w-3 h-3 bg-black rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
+                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-black"></div>
                        </div>
                     </div>
                  </div>
@@ -1121,7 +1207,7 @@ export default function TimelineEditor({
                     </button>
                  </div>
                  <div 
-                   className="flex flex-1 relative h-16 bg-white rounded-r-md items-center cursor-pointer ml-1 border-y border-r border-gray-100 shadow-sm" 
+                   className={`flex flex-1 relative h-16 rounded-r-md items-center ml-1 border-y border-r shadow-sm transition-all ${trackStates.V1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -1204,7 +1290,7 @@ export default function TimelineEditor({
                                      Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
                                         <video 
                                           key={i}
-                                          src={`${scene.custom_media_url}#t=${(getSceneDuration(scene) / arr.length) * i + 0.1}`} 
+                                          src={`${scene.custom_media_url}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`} 
                                           className="h-full object-cover shrink-0 border-r border-black/20" 
                                           style={{ width: `${100 / arr.length}%` }}
                                           preload="metadata"
@@ -1223,6 +1309,19 @@ export default function TimelineEditor({
                                </div>
                             )}
                          </div>
+                         {/* Resize Handles */}
+                         {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
+                            <>
+                              <div 
+                                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md transition-colors"
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'left', getSceneDuration(scene))}
+                              />
+                              <div 
+                                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md transition-colors"
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'right', getSceneDuration(scene))}
+                              />
+                            </>
+                         )}
                        </div>
                     ))}
 
@@ -1247,7 +1346,9 @@ export default function TimelineEditor({
                         key={clip.id}
                         bounds="parent"
                         dragAxis="x"
-                        enableResizing={false}
+                        minWidth={0.5 * scale}
+                        maxWidth={(clip.asset.duration || 8) * scale}
+                        enableResizing={trackStates.V1.locked ? false : { top:false, right:true, bottom:false, left:true, topRight:false, bottomRight:false, bottomLeft:false, topLeft:false }}
                         disableDragging={trackStates.V1.locked}
                         size={{ width: clip.duration * scale, height: '80%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
@@ -1255,6 +1356,21 @@ export default function TimelineEditor({
                            const newTime = d.x / scale;
                            const snappedTime = applyMagneticSnap('V1', newTime, clip.id);
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime } : c));
+                        }}
+                        onResizeStop={(e, direction, ref, delta, position) => {
+                           const newWidth = ref.offsetWidth;
+                           const newDuration = newWidth / scale;
+                           const newStartTime = position.x / scale;
+                           const maxDuration = clip.asset.duration || 8;
+                           const finalDuration = Math.min(maxDuration, Math.max(0.5, newDuration));
+                           
+                           let newTrimStart = clip.trimStart || 0;
+                           if (direction === 'left' || direction === 'topLeft' || direction === 'bottomLeft') {
+                              newTrimStart += (clip.duration - finalDuration);
+                              newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
+                           }
+                           
+                           setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : c));
                         }}
                         style={{ top: '10%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all"
@@ -1297,7 +1413,7 @@ export default function TimelineEditor({
                     </button>
                  </div>
                  <div 
-                   className="flex flex-1 relative h-14 bg-white rounded-r-md items-center cursor-pointer ml-1 border-y border-r border-gray-100 shadow-sm" 
+                   className={`flex flex-1 relative h-14 rounded-r-md items-center ml-1 border-y border-r shadow-sm transition-all ${trackStates.A1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -1361,7 +1477,7 @@ export default function TimelineEditor({
                            if (trackStates.A1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
                          }}
-                         className={`h-[70%] absolute top-[15%] rounded-md border border-purple-200 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'A1' ? 'ring-2 ring-purple-400 ring-offset-1 z-20 scale-[1.02]' : 'hover:bg-purple-100 z-10'}`}
+                         className={`h-[70%] absolute top-[15%] rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${selectedScene?.id === scene.id && selectedSceneTrack === 'A1' ? 'ring-2 ring-gray-900 ring-offset-1 z-20 scale-[1.02]' : 'hover:bg-purple-100 z-10'}`}
                          style={{ 
                            left: `${getSceneLeftPosition('A1', idx)}px`,
                            width: `${(scene.video_duration || 5) * scale}px`,
@@ -1388,6 +1504,19 @@ export default function TimelineEditor({
                               />
                            </svg>
                          </div>
+                         {/* Resize Handles */}
+                         {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
+                            <>
+                              <div 
+                                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md transition-colors"
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5)}
+                              />
+                              <div 
+                                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md transition-colors"
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5)}
+                              />
+                            </>
+                         )}
                        </div>
                     ))}
 
@@ -1412,7 +1541,9 @@ export default function TimelineEditor({
                         key={clip.id}
                         bounds="parent"
                         dragAxis="x"
-                        enableResizing={false}
+                        minWidth={0.5 * scale}
+                        maxWidth={(clip.asset.duration || 8) * scale}
+                        enableResizing={trackStates.A1.locked ? false : { top:false, right:true, bottom:false, left:true, topRight:false, bottomRight:false, bottomLeft:false, topLeft:false }}
                         disableDragging={trackStates.A1.locked}
                         size={{ width: clip.duration * scale, height: '70%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
@@ -1420,6 +1551,13 @@ export default function TimelineEditor({
                            const newTime = d.x / scale;
                            const snappedTime = applyMagneticSnap('A1', newTime, clip.id);
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime } : c));
+                        }}
+                        onResizeStop={(e, direction, ref, delta, position) => {
+                           const newWidth = ref.offsetWidth;
+                           const newDuration = newWidth / scale;
+                           const newStartTime = position.x / scale;
+                           const maxDuration = clip.asset.duration || 8;
+                           setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: Math.min(maxDuration, Math.max(0.5, newDuration)), startTime: newStartTime } : c));
                         }}
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"
@@ -1473,7 +1611,7 @@ export default function TimelineEditor({
                     </button>
                  </div>
                  <div 
-                   className="flex flex-1 relative h-12 bg-gray-50 rounded-r-md items-center cursor-pointer ml-1 border border-gray-200 border-dashed hover:bg-gray-100 transition-colors" 
+                   className={`flex flex-1 relative h-12 rounded-r-md items-center ml-1 border transition-all ${trackStates.A2.locked ? 'bg-gray-100 border-gray-200 border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-gray-50 border-gray-200 border-dashed hover:bg-gray-100 cursor-pointer'}`} 
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -1502,7 +1640,9 @@ export default function TimelineEditor({
                         key={clip.id}
                         bounds="parent"
                         dragAxis="x"
-                        enableResizing={false}
+                        minWidth={0.5 * scale}
+                        maxWidth={(clip.asset.duration || 8) * scale}
+                        enableResizing={trackStates.A2.locked ? false : { top:false, right:true, bottom:false, left:true, topRight:false, bottomRight:false, bottomLeft:false, topLeft:false }}
                         disableDragging={trackStates.A2.locked}
                         size={{ width: clip.duration * scale, height: '70%' }}
                         position={{ x: clip.startTime * scale, y: 0 }}
@@ -1510,6 +1650,21 @@ export default function TimelineEditor({
                            const newTime = d.x / scale;
                            const snappedTime = applyMagneticSnap('A2', newTime, clip.id);
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime } : c));
+                        }}
+                        onResizeStop={(e, direction, ref, delta, position) => {
+                           const newWidth = ref.offsetWidth;
+                           const newDuration = newWidth / scale;
+                           const newStartTime = position.x / scale;
+                           const maxDuration = clip.asset.duration || 8;
+                           const finalDuration = Math.min(maxDuration, Math.max(0.5, newDuration));
+                           
+                           let newTrimStart = clip.trimStart || 0;
+                           if (direction === 'left' || direction === 'topLeft' || direction === 'bottomLeft') {
+                              newTrimStart += (clip.duration - finalDuration);
+                              newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
+                           }
+                           
+                           setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : c));
                         }}
                         style={{ top: '15%' }}
                         className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all p-1"

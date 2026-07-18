@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { generateTestSpeech } from "@/lib/ai/elevenlabs";
+import { generateSceneSpeech } from "@/lib/ai/elevenlabs";
 
 export default function TestAudioPage() {
   const [text, setText] = useState("");
@@ -16,10 +16,10 @@ export default function TestAudioPage() {
     setAudioUrl(null);
 
     try {
-      const result = await generateTestSpeech(text);
-      if (result.success && result.filePath) {
+      const result = await generateSceneSpeech(text, "test-audio");
+      if (result.success && result.audioUrl) {
         // Add a timestamp query param to bust browser cache
-        setAudioUrl(`${result.filePath}?t=${Date.now()}`);
+        setAudioUrl(`${result.audioUrl}?t=${Date.now()}`);
       } else {
         setError(result.error || "Failed to generate audio.");
       }
