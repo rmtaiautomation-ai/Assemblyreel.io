@@ -68,7 +68,6 @@ export function buildFfmpegCommand(payload: RenderJobPayload): FfmpegCommandSpec
 
   // 1. Process Scene Inputs (V1 Track)
   const sceneVideoLabels: string[] = [];
-  const sceneAudioLabels: string[] = [];
 
   for (let i = 0; i < payload.scenes.length; i++) {
     const scene = payload.scenes[i];
@@ -86,11 +85,6 @@ export function buildFfmpegCommand(payload: RenderJobPayload): FfmpegCommandSpec
       `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps=${fps}${vLabel}`
     );
     sceneVideoLabels.push(vLabel);
-
-    // Ensure audio stream exists or generate silent audio for the scene duration
-    const aLabel = `[a${i}]`;
-    filterLines.push(`aevalsrc=0:d=${duration}[silent_${i}]`);
-    sceneAudioLabels.push(`[silent_${i}]`);
   }
 
   // 2. Concatenate all Scene Video Streams
@@ -170,7 +164,58 @@ export async function isFfmpegAvailable(): Promise<boolean> {
 }
 
 /**
+ * Downloads a remote URL to a local temp file. Returns the local file path.
+ * If the download fails (e.g. 403), generates a local placeholder video using FFmpeg.
+ */
+async function downloadToLocal(url: string, tmpDir: string, index: number, duration = 5): Promise<string> {
+  if (!url.startsWith('http')) return url; // Already a local path
+
+  const ext = url.includes('.mp4') ? '.mp4'
+    : url.includes('.wav') ? '.wav'
+    : url.includes('.mp3') ? '.mp3'
+    : url.includes('.png') ? '.png'
+    : url.includes('.jpg') ? '.jpg'
+    : url.includes('.webp') ? '.webp'
+    : '.mp4';
+
+  const localPath = path.join(tmpDir, `input_${index}${ext}`);
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      },
+    });
+
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    await fs.writeFile(localPath, buffer);
+    console.log(`[Render] Downloaded input ${index}: ${url} -> ${localPath} (${buffer.length} bytes)`);
+    return localPath;
+  } catch (err: any) {
+    // Download failed — generate a local placeholder video with FFmpeg's color source
+    console.warn(`[Render] Download failed for input ${index} (${err.message}). Generating placeholder...`);
+    const placeholderPath = path.join(tmpDir, `input_${index}.mp4`);
+    await execFileAsync('ffmpeg', [
+      '-y',
+      '-f', 'lavfi', '-i', `color=c=black:s=1080x1920:d=${duration}:r=30`,
+      '-f', 'lavfi', '-i', `anullsrc=r=44100:cl=stereo`,
+      '-t', String(duration),
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+      '-c:a', 'aac', '-shortest',
+      placeholderPath,
+    ]);
+    console.log(`[Render] Generated placeholder for input ${index}: ${placeholderPath}`);
+    return placeholderPath;
+  }
+}
+
+/**
  * Executes a local FFmpeg render if the binary is installed (Docker/Linux Serverless/Local Dev).
+ * Downloads all remote URLs to local temp files first, then runs FFmpeg with local paths only.
  * Returns the file path of the compiled MP4.
  */
 export async function executeLocalRender(payload: RenderJobPayload): Promise<{ success: boolean; outputPath?: string; error?: string }> {
@@ -185,7 +230,25 @@ export async function executeLocalRender(payload: RenderJobPayload): Promise<{ s
 
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'render-'));
     const outputPath = path.join(tmpDir, `project-${payload.projectId}.mp4`);
-    const spec = buildFfmpegCommand(payload);
+
+    // 1. Download all remote inputs to local temp files
+    console.log(`[Render] Downloading ${payload.scenes.length} scene(s) and ${payload.audioTracks.length} audio track(s)...`);
+    let dlIndex = 0;
+    const localScenes = await Promise.all(
+      payload.scenes.map(s => downloadToLocal(s.url, tmpDir, dlIndex++, s.duration))
+    );
+    const localAudio = await Promise.all(
+      payload.audioTracks.map(t => downloadToLocal(t.url, tmpDir, dlIndex++))
+    );
+
+    // 2. Build a modified payload with local file paths
+    const localPayload: RenderJobPayload = {
+      ...payload,
+      scenes: payload.scenes.map((s, i) => ({ ...s, url: localScenes[i] })),
+      audioTracks: payload.audioTracks.map((t, i) => ({ ...t, url: localAudio[i] })),
+    };
+
+    const spec = buildFfmpegCommand(localPayload);
 
     const args: string[] = ['-y'];
     for (const input of spec.inputFiles) {
@@ -195,7 +258,8 @@ export async function executeLocalRender(payload: RenderJobPayload): Promise<{ s
     args.push(...spec.outputArgs);
     args.push(outputPath);
 
-    await execFileAsync('ffmpeg', args);
+    console.log(`[Render] Running FFmpeg with ${spec.inputFiles.length} local inputs...`);
+    await execFileAsync('ffmpeg', args, { maxBuffer: 50 * 1024 * 1024 });
 
     return { success: true, outputPath };
   } catch (err: any) {

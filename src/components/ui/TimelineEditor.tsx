@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, Trash2, Lock, Unlock, VolumeX, Download } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { Rnd } from "react-rnd";
 
@@ -71,7 +71,7 @@ export default function TimelineEditor({
   const [isRendering, setIsRendering] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   const [renderOutputPath, setRenderOutputPath] = useState<string | null>(null);
-  const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3'>('fal-luma');
+  const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana'>('fal-luma');
   const [isGeneratingVisualId, setIsGeneratingVisualId] = useState<string | null>(null);
   const [isGeneratingAllVisuals, setIsGeneratingAllVisuals] = useState(false);
   const [exportResolution, setExportResolution] = useState<'1080x1920' | '1920x1080' | '1080x1080'>('1080x1920');
@@ -79,6 +79,10 @@ export default function TimelineEditor({
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [showRatioMenu, setShowRatioMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'scene' | 'clip', id: string, trackId?: string } | null>(null);
+
+  // Accordion collapse states for Scene Info panel
+  const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
+  const [isVisualExpanded, setIsVisualExpanded] = useState(true);
 
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -678,6 +682,32 @@ export default function TimelineEditor({
       setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Rendering' }));
     }
 
+    // Intercept Mock Test Mode
+    if (modelToUse === 'mock-banana') {
+      setTimeout(() => {
+        setScenes(prev => prev.map(s => 
+          s.id === sceneId ? {
+            ...s,
+            custom_media_url: "",
+            custom_media_type: 'image',
+            generation_status: 'Completed',
+            video_duration: duration,
+          } : s
+        ));
+        if (selectedScene?.id === sceneId) {
+          setSelectedScene((prev: any) => ({
+            ...prev,
+            custom_media_url: "",
+            custom_media_type: 'image',
+            generation_status: 'Completed',
+            video_duration: duration,
+          }));
+        }
+        setIsGeneratingVisualId(null);
+      }, 3000); // Simulate a 3-second render time
+      return;
+    }
+
     try {
       const res = await fetch("/api/ai/generate-video", {
         method: "POST",
@@ -741,24 +771,54 @@ export default function TimelineEditor({
     try {
       const payload = {
         projectId: "demo-project-" + Math.random().toString(36).substring(7),
-        scenes: scenes.map((s, idx) => ({
-          id: s.id,
-          url: s.custom_media_url || "https://sample-videos.com/video321/mp4/720/big_buck_bunny_720p_1mb.mp4",
-          duration: s.video_duration || 5,
-          trimStart: s.trim_start || 0,
-          sequenceNumber: idx + 1,
-          type: s.custom_media_type || 'video',
-        })),
-        audioTracks: scenes
-          .filter(s => s.audio_url)
-          .map(s => ({
+        scenes: scenes.map((s, idx) => {
+          // If no custom media, we use a placeholder image that renders the text in the export!
+          const encodedText = encodeURIComponent(s.voice_over_beat?.substring(0, 50) || 'Scene ' + (idx + 1));
+          const fallbackUrl = `https://placehold.co/1080x1920/1a1a1a/FFF200.png?text=${encodedText}`;
+          return {
             id: s.id,
-            url: s.audio_url,
-            startTime: scenes.slice(0, scenes.indexOf(s)).reduce((acc, prev) => acc + (prev.video_duration || 5), 0),
+            url: s.custom_media_url || fallbackUrl,
             duration: s.video_duration || 5,
-            type: 'voiceover' as const,
-            volume: 1.0,
-          })),
+            trimStart: s.trim_start || 0,
+            sequenceNumber: idx + 1,
+            type: s.custom_media_type || 'video',
+          };
+        }),
+        audioTracks: (() => {
+          const totalDuration = scenes.reduce((acc, s) => acc + (s.video_duration || 5), 0);
+          
+          // If we have a master narration (Generate Full Narration), use it as a single track
+          if (masterAudioUrl) {
+            const audioUrl = masterAudioUrl.startsWith('/') 
+              ? `${window.location.origin}${masterAudioUrl}` 
+              : masterAudioUrl;
+            return [{
+              id: 'master-narration',
+              url: audioUrl,
+              startTime: 0,
+              duration: masterAudioDuration || totalDuration,
+              type: 'voiceover' as const,
+              volume: 1.0,
+            }];
+          }
+          
+          // Otherwise use per-scene audio
+          return scenes
+            .filter(s => s.audio_url)
+            .map(s => {
+              const audioUrl = s.audio_url!.startsWith('/') 
+                ? `${window.location.origin}${s.audio_url}` 
+                : s.audio_url!;
+              return {
+                id: s.id,
+                url: audioUrl,
+                startTime: scenes.slice(0, scenes.indexOf(s)).reduce((acc, prev) => acc + (prev.video_duration || 5), 0),
+                duration: s.video_duration || 5,
+                type: 'voiceover' as const,
+                volume: 1.0,
+              };
+            });
+        })(),
         resolution: exportResolution,
         quality: exportQuality,
       };
@@ -1436,8 +1496,8 @@ export default function TimelineEditor({
                      </div>
                    </div>
                 ) : (
-                   <div className="space-y-6">
-                     <div className="flex items-center gap-3 pb-4 border-b border-gray-100">
+                   <div className="flex flex-col gap-4 flex-1">
+                     <div className="flex items-center gap-3 pb-3 border-b border-gray-100">
                         <div className="bg-purple-100 text-purple-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
                           {selectedScene.sequence_number}
                         </div>
@@ -1447,19 +1507,26 @@ export default function TimelineEditor({
                         </div>
                      </div>
                      
-                     <div className="space-y-4">
-                        {/* Voiceover Text */}
-                        <div>
-                           <label className="flex items-center justify-between text-xs font-bold text-gray-600 mb-2">
-                              <span className="flex items-center gap-1.5"><Type size={14} className="text-gray-500"/> Voiceover Text</span>
-                           </label>
+                     {/* ── Voiceover Accordion ── */}
+                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                        <button
+                          onClick={() => setIsVoiceoverExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                            <Volume2 size={14} className="text-green-600" /> Voiceover Text
+                          </span>
+                          {isVoiceoverExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                        </button>
+                        {isVoiceoverExpanded && (
+                          <div className="p-3 bg-white border-t border-gray-100 space-y-3">
                            <textarea 
-                             className="w-full bg-white border border-gray-200 focus:border-purple-400 focus:ring-4 focus:ring-purple-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[100px] shadow-sm"
+                             className="w-full bg-white border border-gray-200 focus:border-purple-400 focus:ring-4 focus:ring-purple-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[80px] shadow-sm"
                              value={selectedScene.voice_over_beat}
                              onChange={(e) => updateSceneDetails(selectedScene.id, 'voice_over_beat', e.target.value)}
                            />
                            {availableVoices.length > 0 && (
-                             <div className="mt-3">
+                             <div>
                                <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
                                  Voice Artist
                                </label>
@@ -1477,7 +1544,7 @@ export default function TimelineEditor({
                                </select>
                              </div>
                            )}
-                           <div className="flex justify-between items-center mt-3">
+                           <div className="flex justify-between items-center">
                               <span className="text-[10px] font-medium text-gray-500 flex items-center gap-1"><Clock size={12}/> Est. duration: {selectedScene.video_duration}s</span>
                               <button 
                                 onClick={() => handleRegenerateSingleAudio(selectedScene.id, selectedScene.voice_over_beat)}
@@ -1489,18 +1556,28 @@ export default function TimelineEditor({
                               </button>
                            </div>
                            {selectedScene.audio_url && (
-                             <div className="mt-3 bg-gray-50 border border-gray-200 rounded-lg p-2 shadow-sm">
+                             <div className="bg-gray-50 border border-gray-200 rounded-lg p-2 shadow-sm">
                                <audio src={selectedScene.audio_url} controls className="w-full h-8 outline-none" />
                              </div>
                            )}
-                        </div>
+                          </div>
+                        )}
+                     </div>
 
-                        {/* Visual Prompt */}
-                        <div className="pt-4 border-t border-gray-100">
-                           <div className="flex items-center justify-between mb-2">
-                              <label className="text-xs font-bold text-gray-600">
-                                 <span className="flex items-center gap-1.5"><ImageIcon size={14} className="text-gray-500"/> Visual Generation Prompt</span>
-                              </label>
+                     {/* ── Visual Generation Accordion ── */}
+                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+                        <button
+                          onClick={() => setIsVisualExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                            <ImageIcon size={14} className="text-blue-500" /> Visual Generation
+                          </span>
+                          {isVisualExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                        </button>
+                        {isVisualExpanded && (
+                          <div className="p-3 bg-white border-t border-gray-100 space-y-3 flex-1 flex flex-col">
+                           <div className="flex items-center justify-end">
                               <button
                                 onClick={handleGenerateAllVisuals}
                                 disabled={isGeneratingAllVisuals}
@@ -1508,12 +1585,12 @@ export default function TimelineEditor({
                                 title="Automatically generate videos for Scene 1 to N"
                               >
                                 {isGeneratingAllVisuals ? <Loader2 size={10} className="animate-spin text-purple-600" /> : <Wand2 size={10} className="text-purple-600" />}
-                                {isGeneratingAllVisuals ? "Generating 1 to N..." : "Generate All (1 to N)"}
+                                {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All (1→N)"}
                               </button>
                            </div>
 
-                           {/* AI Model & Duration Selectors */}
-                           <div className="grid grid-cols-2 gap-2 mb-3">
+                           {/* AI Model & Duration */}
+                           <div className="grid grid-cols-2 gap-2">
                               <div>
                                  <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
                                  <select
@@ -1526,6 +1603,7 @@ export default function TimelineEditor({
                                    <option value="fal-minimax">Fal.ai Minimax</option>
                                    <option value="gemini-veo">Google Gemini / Veo</option>
                                    <option value="runway-gen3">Runway Gen-3</option>
+                                   <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
                                  </select>
                               </div>
                               <div>
@@ -1543,11 +1621,12 @@ export default function TimelineEditor({
                            </div>
 
                            <textarea 
-                             className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[80px] shadow-sm"
+                             className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[200px] flex-1 shadow-sm"
                              value={selectedScene.final_video_prompt}
                              onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
+                             placeholder="Describe the visual scene in detail..."
                            />
-                           <div className="flex justify-between items-center mt-3">
+                           <div className="flex justify-between items-center">
                               <span className={`text-[10px] font-bold px-2 py-1 rounded-md border ${
                                  selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
                                  selectedScene.generation_status === 'Rendering' || isGeneratingVisualId === selectedScene.id ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
@@ -1558,17 +1637,18 @@ export default function TimelineEditor({
                               <button 
                                 onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedAiModel, selectedScene.video_duration || 5)}
                                 disabled={isGeneratingVisualId === selectedScene.id}
-                                className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-700 font-bold rounded-md border border-gray-200 shadow-sm transition-colors flex items-center gap-1.5"
+                                className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
                               >
                                 {isGeneratingVisualId === selectedScene.id ? (
-                                  <Loader2 size={12} className="animate-spin text-blue-500" />
+                                  <Loader2 size={12} className="animate-spin text-white" />
                                 ) : (
-                                  <ImageIcon size={12} className="text-blue-500" />
+                                  <ImageIcon size={12} className="text-white" />
                                 )}
                                 {selectedScene.custom_media_url ? "Regenerate Visual" : "Render Visual"}
                               </button>
                            </div>
-                        </div>
+                          </div>
+                        )}
                      </div>
                    </div>
                 )}
@@ -1623,15 +1703,22 @@ export default function TimelineEditor({
                      </button>
                      
                      {renderStatusMessage && (
-                       <div className="mt-4 p-3 rounded-lg bg-gray-50 border border-gray-200 text-xs text-gray-700 font-medium break-all">
-                         {renderStatusMessage}
-                         {renderOutputPath && (
-                           <div className="mt-2 text-purple-700 font-bold">
-                             Output ready at: {renderOutputPath}
-                           </div>
-                         )}
-                       </div>
-                     )}
+                        <div className={`mt-4 p-4 rounded-xl border text-xs font-medium break-all ${renderOutputPath ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-gray-50 border-gray-200 text-gray-700'}`}>
+                          {renderStatusMessage}
+                          {renderOutputPath && (
+                            <div className="mt-3 flex flex-col gap-2">
+                              <a
+                                href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
+                                download
+                                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                              >
+                                <Download size={16} /> Download Video
+                              </a>
+                              <p className="text-[10px] text-emerald-600 text-center font-medium">Click to save to your computer</p>
+                            </div>
+                          )}
+                        </div>
+                      )}
 
                      <p className="text-center text-[10px] text-gray-500 font-medium mt-3">Estimated cloud render time: 5-15 seconds</p>
                    </div>
@@ -1642,9 +1729,9 @@ export default function TimelineEditor({
           </div>
         </div>
 
-        {/* Right Panel (Main Video Preview) */}
+        {/* Middle Panel (Main Video Preview) */}
         {/* We keep the preview player area dark because it acts like a true screen/monitor */}
-        <div className="flex-1 bg-gray-100 relative flex items-center justify-center p-4 lg:p-8 border-l border-gray-200 shadow-inner overflow-hidden">
+        <div className="flex-1 bg-gray-100 relative flex items-center justify-center p-4 lg:p-8 border-l border-r border-gray-200 shadow-inner overflow-hidden">
            
            {/* Maximized player container that respects aspect ratio */}
            <div className="w-full h-full flex flex-col items-center justify-center pb-4"> {/* reduced pb to make it balanced */}
@@ -1745,6 +1832,135 @@ export default function TimelineEditor({
              </div>
            </div>
         </div>
+
+        {/* Right Panel (CapCut-style File Details / Properties) */}
+        {selectedScene && (!selectedTimelineClip || (selectedSceneTrack !== 'A1' && selectedSceneTrack !== 'A2')) && activeTab === 'scene' && (
+           <div className="w-[300px] lg:w-[320px] bg-white flex flex-col flex-none shadow-[-2px_0_10px_rgba(0,0,0,0.05)] z-10 h-full">
+              {/* Tab Header */}
+              <div className="flex items-center border-b border-gray-100 p-2 gap-1 bg-gray-50/50">
+                 <div className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold bg-white text-gray-900 shadow-sm border border-gray-200">
+                    <Info size={14} className="text-gray-500" /> Details
+                 </div>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                 <div className="space-y-5">
+                    {/* Thumbnail Preview */}
+                    <div className="rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-black aspect-video relative">
+                       {selectedScene.custom_media_url ? (
+                         selectedScene.custom_media_type === 'video' ? (
+                           <video src={selectedScene.custom_media_url} className="w-full h-full object-contain" muted preload="metadata" />
+                         ) : (
+                           <img src={selectedScene.custom_media_url} className="w-full h-full object-contain" alt="Scene thumbnail" />
+                         )
+                       ) : (
+                         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
+                           <Film size={32} className="opacity-40 mb-2" />
+                           <span className="text-[10px] font-medium opacity-60">No media yet</span>
+                         </div>
+                       )}
+                       <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-sm rounded text-[9px] text-white font-mono font-bold">
+                         Scene {selectedScene.sequence_number}
+                       </div>
+                    </div>
+
+                    {/* Properties Table */}
+                    <div className="space-y-0 border border-gray-200 rounded-lg overflow-hidden">
+                       {/* Name */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Name</span>
+                         <span className="text-[11px] font-semibold text-gray-800 text-right truncate max-w-[160px]" title={selectedScene.voice_over_beat}>
+                           {selectedScene.custom_media_url ? (selectedScene.voice_over_beat?.substring(0, 30) || 'Scene ' + selectedScene.sequence_number) : 'Scene ' + selectedScene.sequence_number}
+                         </span>
+                       </div>
+                       {/* Source */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Source</span>
+                         <span className="text-[11px] font-semibold text-gray-800">
+                           {selectedScene.custom_media_url
+                             ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
+                             : 'Draft (No Media)'}
+                         </span>
+                       </div>
+                       {/* Type */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Type</span>
+                         <span className="text-[11px] font-semibold text-gray-800 capitalize">
+                           {selectedScene.custom_media_type || 'text'}
+                         </span>
+                       </div>
+                       {/* Duration */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Duration</span>
+                         <span className="text-[11px] font-bold text-gray-800 font-mono">
+                           {(selectedScene.video_duration || 5).toFixed(1)}s
+                         </span>
+                       </div>
+                       {/* Resolution */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Resolution</span>
+                         <span className="text-[11px] font-semibold text-gray-800">
+                           {aspectRatio === '9:16' ? '1080 × 1920' : aspectRatio === '1:1' ? '1080 × 1080' : '1920 × 1080'}
+                         </span>
+                       </div>
+                       {/* FPS */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Frame Rate</span>
+                         <span className="text-[11px] font-semibold text-gray-800">
+                           {exportQuality === 'High' ? '60 fps' : '30 fps'}
+                         </span>
+                       </div>
+                       {/* Track */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Track</span>
+                         <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                           V1 — Video
+                         </span>
+                       </div>
+                       {/* Status */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-white">
+                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Status</span>
+                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                           selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                           selectedScene.generation_status === 'Rendering' ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
+                           'bg-gray-100 text-gray-600 border-gray-200'
+                         }`}>
+                           {selectedScene.generation_status || 'Pending'}
+                         </span>
+                       </div>
+                    </div>
+
+                    {/* Audio Info (if narration exists) */}
+                    {(selectedScene.audio_url || masterAudioUrl) && (
+                      <div className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-gray-50 border-b border-gray-100">
+                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
+                            <Volume2 size={12} className="text-green-600" /> Audio
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
+                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Type</span>
+                          <span className="text-[11px] font-semibold text-gray-800">
+                            {masterAudioUrl ? 'Full Narration' : 'Per-Scene TTS'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50">
+                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Track</span>
+                          <span className="text-[11px] font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded border border-green-200">
+                            A1 — Audio
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Scene ID */}
+                    <div className="text-center pt-2 border-t border-gray-100">
+                       <span className="text-[9px] font-mono text-gray-400">ID: {selectedScene.id}</span>
+                    </div>
+                 </div>
+              </div>
+           </div>
+        )}
       </div>
 
       {/* Resizer Handle */}
