@@ -47,3 +47,35 @@ To handle the heavy computational requirements and prevent serverless timeouts d
 **Goal:** Hands-off posting to personal production platforms.
 - [ ] Configure OAuth 2.0 (Testing Mode) for YouTube Data API v3 and Instagram/Meta Graph APIs for personal channels.
 - [ ] Deploy a FastAPI background worker/listener that fires when the project output finishes rendering, instantly auto-publishing files, text descriptions, and titles.
+
+---
+
+## Technical Enhancements & Strategic Roadmap (Updated)
+
+### 1. Zero-Cost Local TTS Provider (Voice Studio by MSR)
+- **Endpoint:** `http://localhost:5173` (running via local PowerShell / Python backend).
+- **Integration Strategy:** Implement a TTS provider toggle (`TTS_PROVIDER="local"` in `.env.local`).
+- **Workflow:** Next.js Server Actions send text prompts directly to `http://localhost:5173`, save returning `.mp3`/`.wav` buffers to `/public/audio/`, and populate timeline audio tracks (`A1`) with zero external API fees.
+
+### 2. Long-Form Content Architecture (20–30m Documentaries)
+- **5-Act Modular / Chapterized Scripting:**
+  - Break long scripts (e.g., *"The Book of Enoch & The Resurrection"*) into 4–5 distinct Acts/Chapters to prevent LLM attention fatigue, repetitive dialogue, and TTS memory crashes.
+  - **Act 1 (0–3m):** The Forbidden Hook & Scriptural Context
+  - **Act 2 (3–8m):** Cosmic Prison & The Watchers
+  - **Act 3 (8–14m):** Core Revelation / Descent
+  - **Act 4 (14–19m):** Modern Eschatology & Implications
+  - **Act 5 (19–22m):** Climax & Engagement CTA ("UNVEILED")
+
+### 3. Two-Phase Deployment Roadmap
+- **Phase 1 (Active UI/Feature Development - Current):**
+  - Run Next.js natively on `http://localhost:3000` (`npm.cmd run dev`) and Voice Studio on `http://localhost:5173`.
+  - Enables rapid Hot Module Replacement (HMR) and debugging.
+- **Phase 2 (24/7 Automated YouTube Production):**
+  - Package the full stack into a Docker Compose (`docker-compose.yml`) multi-container environment (`web` + `voice-studio` + `scheduler`) with shared host volumes (`/public/audio`, `/public/videos`) for free, automated daily publishing.
+
+---
+
+## Immediate Next Milestone: Short-Form Prototype (<60s)
+1. **Generate Short-Form Audio:** Call the local Voice Studio endpoint (`http://localhost:5173`) with a short test script (<60 seconds).
+2. **Populate Timeline Track A1:** Directly insert the returning audio asset URL (`/audio/<sceneId>.mp3`) into Audio Track 1 (`A1`) of `TimelineState`.
+3. **Verify Playback:** Load the timeline editor and verify synchronized HTML5 audio playback.

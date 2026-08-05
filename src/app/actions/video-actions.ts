@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { generateScript } from "@/lib/ai/script-writer";
+import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
 
 export async function createAndGenerateVideo(
   workspaceId: string, 
@@ -55,25 +56,12 @@ export async function createAndGenerateVideo(
   }
 
   // === STEP 1: THE SLICER ===
-  // If we successfully generated a script, instantly cut it into scenes
+  // Call our new OpenAI-powered Slicer Agent to intelligently chop the script
   if (masterScript && project) {
-    // Break the text block back into an array of lines
-    const scriptLinesArray = masterScript.split('\n\n').map(line => line.trim()).filter(Boolean);
+    const slicerResult = await sliceScriptIntoScenes(project.id, masterScript);
     
-    // Build the array of Scene objects to insert into the database
-    const scenesToInsert = scriptLinesArray.map((line, index) => ({
-      project_id: project.id,
-      sequence_number: index + 1,
-      voice_over_beat: line,
-      generation_status: 'Pending API'
-    }));
-
-    // Batch insert all scenes at once
-    const { error: scenesError } = await supabaseAdmin.from('scenes').insert(scenesToInsert);
-    
-    if (scenesError) {
-      console.error("Error slicing and inserting scenes:", scenesError);
-      // We don't return an error here because the project was still created successfully
+    if (!slicerResult.success) {
+      console.error("Error slicing scenes:", slicerResult.error);
     }
   }
 

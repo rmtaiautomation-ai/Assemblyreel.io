@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from "react";
 import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, Trash2, Lock, Unlock, VolumeX, Download } from "lucide-react";
-import { generateSceneAudio } from "@/app/actions/audio-actions";
+import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { Rnd } from "react-rnd";
 
 type TabState = 'media' | 'scene' | 'export';
@@ -50,6 +50,23 @@ export default function TimelineEditor({
   const [isResizing, setIsResizing] = useState(false);
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
   const [generatingSceneId, setGeneratingSceneId] = useState<string | null>(null);
+  // Master audio — one continuous narration WAV covering the whole project
+  const [masterAudioUrl, setMasterAudioUrl] = useState<string | null>(initialProject.narration_url || null);
+  const [masterAudioDuration, setMasterAudioDuration] = useState<number>(0);
+  const [isGeneratingNarration, setIsGeneratingNarration] = useState(false);
+  const masterAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const [availableVoices, setAvailableVoices] = useState<any[]>([]);
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string>("");
+
+  useEffect(() => {
+    getAvailableVoices().then((res) => {
+      if (res.success && res.voices) {
+        setAvailableVoices(res.voices);
+      }
+    });
+  }, []);
+
   const [activeTab, setActiveTab] = useState<TabState>('scene');
   const [isRendering, setIsRendering] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
@@ -492,9 +509,28 @@ export default function TimelineEditor({
     setIsGeneratingAll(false);
   };
 
+  // Generates ONE continuous narration WAV and places it as a single A1 block
+  const handleGenerateFullNarration = async () => {
+    setIsGeneratingNarration(true);
+    const res = await generateFullNarration(initialProject.id, scenes, selectedVoiceId || undefined);
+    if (res.success && res.audioUrl) {
+      setMasterAudioUrl(res.audioUrl);
+      // If Deepgram provided exact durations for each scene, apply them immediately to the UI
+      if (res.updatedScenes) {
+         setScenes(prev => prev.map(s => {
+            const update = res.updatedScenes.find((u: any) => u.id === s.id);
+            return update ? { ...s, video_duration: update.video_duration } : s;
+         }));
+      }
+    } else {
+      alert(`Narration error: ${res.error}`);
+    }
+    setIsGeneratingNarration(false);
+  };
+
   const handleRegenerateSingleAudio = async (sceneId: string, voiceOver: string) => {
     setGeneratingSceneId(sceneId);
-    const res = await generateSceneAudio(sceneId, voiceOver);
+    const res = await generateSceneAudio(sceneId, voiceOver, selectedVoiceId || undefined);
     if (res.success) {
       setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, audio_url: res.audioUrl } : s));
       setSelectedScene((prev: any) => ({ ...prev, audio_url: res.audioUrl }));
@@ -954,8 +990,24 @@ export default function TimelineEditor({
     <div className="flex flex-col h-full bg-gray-50 text-gray-900">
       {/* Hidden Media Elements for Audio Sync */}
       <div className="hidden">
-         {/* Scenes Audio (A1) */}
-         {a1Scenes.map((scene, idx) => scene.audio_url && (
+         {/* Master narration audio (single file, audio-first) */}
+         {masterAudioUrl && (
+           <audio
+             key="master-narration"
+             src={masterAudioUrl}
+             ref={el => {
+               masterAudioRef.current = el;
+               mediaRefs.current["master-narration"] = el;
+             }}
+             data-start="0"
+             data-duration={masterAudioDuration || 9999}
+             data-track="A1"
+             muted={trackStates.A1.muted}
+             onLoadedMetadata={(e) => setMasterAudioDuration((e.target as HTMLAudioElement).duration)}
+           />
+         )}
+         {/* Per-scene audio clips — used only when no master narration exists */}
+         {!masterAudioUrl && a1Scenes.map((scene, idx) => scene.audio_url && (
             <audio 
               key={`audio-scene-${scene.id}`}
               src={scene.audio_url}
@@ -1336,16 +1388,51 @@ export default function TimelineEditor({
                      <div className="w-full mt-10 pt-6 border-t border-gray-100 text-left">
                        <h4 className="text-xs font-bold text-gray-400 mb-3 uppercase tracking-wider">Project Summary</h4>
                        <p className="text-sm text-gray-800 font-bold mb-1 line-clamp-2">{initialProject.topic}</p>
-                       <p className="text-xs text-gray-500 mb-4 font-medium">{scenes.length} Scenes • {Math.round(contentDuration)} seconds</p>
-                       
-                       <button 
-                         onClick={handleGenerateAllAudio}
-                         disabled={isGeneratingAll}
-                         className="w-full py-2.5 bg-green-50 hover:bg-green-100 text-green-700 border border-green-200 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+                       <p className="text-xs text-gray-500 mb-2 font-medium">{scenes.length} Scenes • {Math.round(contentDuration)} seconds</p>
+
+                       {/* Master narration status badge */}
+                       {masterAudioUrl && (
+                         <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
+                           <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse flex-none" />
+                           <span className="text-[10px] font-bold text-green-700 truncate">
+                             Narration ready{masterAudioDuration > 0 ? ` · ${Math.round(masterAudioDuration)}s` : ' · on A1'}
+                           </span>
+                         </div>
+                       )}
+
+                        {availableVoices.length > 0 && (
+                          <div className="mb-3">
+                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                              Voice Artist
+                            </label>
+                            <select
+                              value={selectedVoiceId}
+                              onChange={(e) => setSelectedVoiceId(e.target.value)}
+                              className="w-full bg-white border border-gray-200 rounded-lg p-2 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-200"
+                            >
+                              <option value="">Auto (Default for active engine)</option>
+                              {availableVoices.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name} ({v.engine} · {v.gender || "voice"})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                       <button
+                         onClick={handleGenerateFullNarration}
+                         disabled={isGeneratingNarration}
+                         className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 mb-2"
                        >
-                         {isGeneratingAll ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
-                         {isGeneratingAll ? "Generating Voices..." : "Generate All Voices"}
+                         {isGeneratingNarration ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
+                         {isGeneratingNarration
+                           ? 'Generating Narration…'
+                           : masterAudioUrl
+                             ? 'Re-generate Narration'
+                             : 'Generate Full Narration'}
                        </button>
+                       <p className="text-[10px] text-gray-400 text-center">One continuous audio on A1 · align V1 b-roll to match</p>
                      </div>
                    </div>
                 ) : (
@@ -1371,6 +1458,25 @@ export default function TimelineEditor({
                              value={selectedScene.voice_over_beat}
                              onChange={(e) => updateSceneDetails(selectedScene.id, 'voice_over_beat', e.target.value)}
                            />
+                           {availableVoices.length > 0 && (
+                             <div className="mt-3">
+                               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
+                                 Voice Artist
+                               </label>
+                               <select
+                                 value={selectedVoiceId}
+                                 onChange={(e) => setSelectedVoiceId(e.target.value)}
+                                 className="w-full bg-white border border-gray-200 rounded-lg p-1.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-200"
+                               >
+                                 <option value="">Auto (Default for active engine)</option>
+                                 {availableVoices.map((v) => (
+                                   <option key={v.id} value={v.id}>
+                                     {v.name} ({v.engine} · {v.gender || "voice"})
+                                   </option>
+                                 ))}
+                               </select>
+                             </div>
+                           )}
                            <div className="flex justify-between items-center mt-3">
                               <span className="text-[10px] font-medium text-gray-500 flex items-center gap-1"><Clock size={12}/> Est. duration: {selectedScene.video_duration}s</span>
                               <button 
@@ -1812,7 +1918,22 @@ export default function TimelineEditor({
                 className="flex items-center mb-0.5 group relative mt-2"
               >
                  <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
-                    <span className="text-[13px] font-bold text-gray-600">V1</span>
+                    <span 
+                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      onClick={() => {
+                        const allV1Keys = [
+                          ...scenes.map(s => `${s.id}_V1`),
+                          ...timelineClips.filter(c => c.trackId === 'V1').map(c => `${c.id}_V1`)
+                        ];
+                        setSelectedSceneKeys(allV1Keys);
+                        setSelectedScene(null);
+                        setSelectedTimelineClip(null);
+                        setSelectedSceneTrack(null);
+                      }}
+                      title="Select all on V1"
+                    >
+                      V1
+                    </span>
                     <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
                        {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
@@ -2020,7 +2141,22 @@ export default function TimelineEditor({
                 className="flex items-center mb-0.5 group relative"
               >
                  <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
-                    <span className="text-[13px] font-bold text-gray-600">A1</span>
+                    <span 
+                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      onClick={() => {
+                        const allA1Keys = [
+                          ...a1Scenes.map(s => `${s.id}_A1`),
+                          ...timelineClips.filter(c => c.trackId === 'A1').map(c => `${c.id}_A1`)
+                        ];
+                        setSelectedSceneKeys(allA1Keys);
+                        setSelectedScene(null);
+                        setSelectedTimelineClip(null);
+                        setSelectedSceneTrack(null);
+                      }}
+                      title="Select all on A1"
+                    >
+                      A1
+                    </span>
                     <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
                        {trackStates.A1.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
@@ -2066,81 +2202,82 @@ export default function TimelineEditor({
                       handleDrop(e, 'A1');
                    }}
                  >
-                    {a1Scenes.map((scene, idx) => (
-                       <div 
-                         key={`audio-${scene.id}`}
-                         draggable={!trackStates.A1.locked}
-                         onDragStart={(e) => {
-                            if (trackStates.A1.locked) {
-                               e.preventDefault();
-                               return;
-                            }
-                            const sceneData = { type: 'reorder', track: 'A1', sceneId: scene.id, index: idx };
-                            e.dataTransfer.setData('text/plain', JSON.stringify(sceneData));
-                            setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
-                            e.dataTransfer.effectAllowed = 'copyMove';
-                         }}
-                         onDragEnd={() => {
-                            setDraggingScene(null);
-                            setA1DragInsertIndex(null);
-                         }}
-                         onClick={(e) => {
-                           if (trackStates.A1.locked) return;
-                           handleSelectSceneBlock(e, scene, 'A1');
-                         }}
-                         onContextMenu={(e) => {
-                           e.preventDefault();
-                           if (trackStates.A1.locked) return;
-                           setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
-                         }}
-                         className={`h-[70%] absolute top-[15%] rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${
-                           selectedSceneKeys.includes(`${scene.id}_A1`) || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0)
-                             ? 'ring-2 ring-gray-900 ring-offset-1 z-20 scale-[1.02] bg-purple-200'
-                             : 'hover:bg-purple-100 z-10'
-                         }`}
-                         style={{ 
-                           left: `${getSceneLeftPosition('A1', idx)}px`,
-                           width: `${(scene.video_duration || 5) * scale}px`,
-                           opacity: draggingScene?.id === scene.id ? 0.001 : 1
-                         }}
-                       >
-                         <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
-                            <Volume2 size={9} />
-                            <span className="text-[8px] font-bold truncate block whitespace-nowrap">
-                              {scene.voice_over_beat}
-                            </span>
-                         </div>
-                         {/* Static Symmetrical Waveform */}
-                         <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
-                              <path suppressHydrationWarning
-                                 d={Array.from({length: 250}).map((_, i) => {
-                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
-                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
-                                 }).join(' ')}
-                                 stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} 
-                                 strokeWidth="2.5" 
-                                 strokeLinecap="round"
-                              />
-                           </svg>
-                         </div>
-                         {/* Resize Handles */}
-                         {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
-                            <>
-                              <div 
-                                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md transition-colors"
-                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5)}
-                              />
-                              <div 
-                                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md transition-colors"
-                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5)}
-                              />
-                            </>
-                         )}
+                   {/* ─ MASTER NARRATION BLOCK (audio-first) ─ */}
+                   {masterAudioUrl ? (
+                     <div
+                       className="h-[70%] absolute top-[15%] rounded-md border border-purple-600 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 overflow-hidden shadow-sm"
+                       style={{ left: 0, width: `${masterAudioDuration > 0 ? masterAudioDuration * scale : timelineDuration * scale}px` }}
+                     >
+                       <div className="flex items-center gap-1.5 p-1 opacity-90">
+                         <Volume2 size={9} className="flex-none" />
+                         <span className="text-[8px] font-bold truncate">
+                           Full Narration{masterAudioDuration > 0 ? ` · ${Math.round(masterAudioDuration)}s` : ''}
+                         </span>
                        </div>
-                    ))}
+                       <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                         <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                           <path suppressHydrationWarning
+                             d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin(i * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                             stroke="#9333ea" strokeWidth="2.5" strokeLinecap="round"
+                           />
+                         </svg>
+                       </div>
+                       <button
+                         onClick={() => setMasterAudioUrl(null)}
+                         title="Remove master narration"
+                         className="absolute right-1 top-1 text-purple-400 hover:text-red-500 transition-colors z-10"
+                       >
+                         <Trash2 size={10} />
+                       </button>
+                     </div>
+                   ) : (
+                     /* ─ PER-SCENE clips (shown only when no master narration) ─ */
+                     <>
+                     {a1Scenes.map((scene, idx) => (
+                        <div 
+                          key={`audio-${scene.id}`}
+                          draggable={!trackStates.A1.locked}
+                          onDragStart={(e) => {
+                             if (trackStates.A1.locked) { e.preventDefault(); return; }
+                             e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', track: 'A1', sceneId: scene.id, index: idx }));
+                             setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
+                             e.dataTransfer.effectAllowed = 'copyMove';
+                          }}
+                          onDragEnd={() => { setDraggingScene(null); setA1DragInsertIndex(null); }}
+                          onClick={(e) => { if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1'); }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
+                          }}
+                          className={`h-[70%] absolute top-[15%] rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${
+                            selectedSceneKeys.includes(`${scene.id}_A1`) || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0)
+                              ? 'ring-2 ring-gray-900 ring-offset-1 z-20 scale-[1.02] bg-purple-200'
+                              : 'hover:bg-purple-100 z-10'
+                          }`}
+                          style={{ left: `${getSceneLeftPosition('A1', idx)}px`, width: `${(scene.video_duration || 5) * scale}px`, opacity: draggingScene?.id === scene.id ? 0.001 : 1 }}
+                        >
+                          <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
+                             <Volume2 size={9} />
+                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{scene.voice_over_beat}</span>
+                          </div>
+                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                              <path suppressHydrationWarning
+                                d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                                stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} strokeWidth="2.5" strokeLinecap="round"
+                              />
+                            </svg>
+                          </div>
+                          {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
+                            <>
+                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5)} />
+                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5)} />
+                            </>
+                          )}
+                        </div>
+                     ))}
 
-                    {a1DragInsertIndex !== null && draggingScene?.track === 'A1' && (
+                     {a1DragInsertIndex !== null && draggingScene?.track === 'A1' && (
                         <div 
                            className="h-[70%] absolute top-[15%] rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none transition-all flex items-center justify-center overflow-hidden"
                            style={{
@@ -2275,6 +2412,8 @@ export default function TimelineEditor({
                          </div>
                       </Rnd>
                     ))}
+                    </>
+                   )}
                  </div>
               </div>
 
@@ -2283,7 +2422,19 @@ export default function TimelineEditor({
                 className="flex items-center group relative"
               >
                  <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
-                    <span className="text-[13px] font-bold text-gray-600">A2</span>
+                    <span 
+                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      onClick={() => {
+                        const allA2Keys = timelineClips.filter(c => c.trackId === 'A2').map(c => `${c.id}_A2`);
+                        setSelectedSceneKeys(allA2Keys);
+                        setSelectedScene(null);
+                        setSelectedTimelineClip(null);
+                        setSelectedSceneTrack(null);
+                      }}
+                      title="Select all on A2"
+                    >
+                      A2
+                    </span>
                     <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
                        {trackStates.A2.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>

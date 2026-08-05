@@ -10,7 +10,7 @@
 ## 2. External Generation Pipeline (Next.js Code-First)
 All external generative AI tools must route through Next.js Server Actions to safely hide API environment keys from the client.
 - **The AI Engine (7-Agent Logic):** The complex 7-agent workflow (Script Writer, Slicer, Casting, Visual Architect, Cinematic Director, Prompter, Safety) runs entirely in Next.js using Google Gemini 2.5 API with strictly typed JSON Structured Outputs.
-- **The Voice (TTS):** 11Labs or Cartesia AI
+- **The Voice (TTS):** Local Voice Studio (`http://localhost:5173` via MSR / Python backend), 11Labs, or Cartesia AI
 - **The Visuals (Video/Image):** Fal.ai (routing to Seedance, Kling, or Google Veo)
 - **n8n Status:** Deprecated for core AI reasoning due to complex JSON loop requirements. Reserved only for potential background rendering tasks if necessary.
 
