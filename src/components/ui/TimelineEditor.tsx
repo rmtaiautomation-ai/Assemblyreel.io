@@ -682,6 +682,51 @@ export default function TimelineEditor({
       setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Rendering' }));
     }
 
+    // --- GEMINI REAL IMAGE GENERATION ---
+    if (modelToUse === 'gemini-image') {
+      try {
+        const res = await fetch("/api/generate-image", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            prompt: prompt,
+            model: "gemini-3-pro-image"
+          })
+        });
+
+        const data = await res.json();
+        if (data.success && data.url) {
+          setScenes(prev => prev.map(s => 
+            s.id === sceneId ? {
+              ...s,
+              custom_media_url: data.url,
+              custom_media_type: 'image',
+              generation_status: 'Completed',
+              video_duration: duration,
+            } : s
+          ));
+          if (selectedScene?.id === sceneId) {
+            setSelectedScene((prev: any) => ({
+              ...prev,
+              custom_media_url: data.url,
+              custom_media_type: 'image',
+              generation_status: 'Completed',
+              video_duration: duration,
+            }));
+          }
+        } else {
+          alert("Image Generation Error: " + (data.error || "Unknown error"));
+          setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
+        }
+      } catch (err: any) {
+        alert("Image Generation Error: " + err.message);
+        setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
+      } finally {
+        setIsGeneratingVisualId(null);
+      }
+      return;
+    }
+
     // Intercept Mock Test Mode
     if (modelToUse === 'mock-banana') {
       setTimeout(() => {
@@ -1594,10 +1639,11 @@ export default function TimelineEditor({
                               <div>
                                  <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
                                  <select
-                                   value={selectedAiModel}
-                                   onChange={(e: any) => setSelectedAiModel(e.target.value)}
+                                   value={selectedScene.ai_model || globalAiModel}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
                                    className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
                                  >
+                                   <option value="gemini-image">Google Gemini Pro Image (Real)</option>
                                    <option value="fal-luma">Fal.ai Luma Dream</option>
                                    <option value="fal-kling">Fal.ai Kling AI</option>
                                    <option value="fal-minimax">Fal.ai Minimax</option>
@@ -1635,7 +1681,7 @@ export default function TimelineEditor({
                                 {isGeneratingVisualId === selectedScene.id ? "Rendering..." : selectedScene.generation_status}
                               </span>
                               <button 
-                                onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedAiModel, selectedScene.video_duration || 5)}
+                                onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || globalAiModel, selectedScene.video_duration || 5)}
                                 disabled={isGeneratingVisualId === selectedScene.id}
                                 className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
                               >
@@ -1660,6 +1706,20 @@ export default function TimelineEditor({
               <div className="animate-in fade-in duration-200">
                 <h3 className="text-sm font-bold text-gray-800 mb-4">Export Settings</h3>
                 <div className="space-y-4">
+                   <div>
+                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Global AI Model</label>
+                     <select 
+                       value={globalAiModel}
+                       onChange={(e) => setGlobalAiModel(e.target.value)}
+                       className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
+                     >
+                       <option value="gemini-image">Google Gemini Pro Image (Real)</option>
+                       <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                       <option value="runway-gen2">Runway Gen-2</option>
+                       <option value="pika-labs">Pika Labs (v1.0)</option>
+                       <option value="heygen">HeyGen Avatar</option>
+                     </select>
+                   </div>
                    <div>
                      <label className="block text-xs font-bold text-gray-600 mb-1.5">Resolution</label>
                      <select 
