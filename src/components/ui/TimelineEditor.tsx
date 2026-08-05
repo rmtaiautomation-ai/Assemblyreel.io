@@ -1639,7 +1639,7 @@ export default function TimelineEditor({
                               <div>
                                  <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
                                  <select
-                                   value={selectedScene.ai_model || globalAiModel}
+                                   value={selectedScene.ai_model || selectedAiModel}
                                    onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
                                    className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
                                  >
@@ -1681,7 +1681,7 @@ export default function TimelineEditor({
                                 {isGeneratingVisualId === selectedScene.id ? "Rendering..." : selectedScene.generation_status}
                               </span>
                               <button 
-                                onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || globalAiModel, selectedScene.video_duration || 5)}
+                                onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
                                 disabled={isGeneratingVisualId === selectedScene.id}
                                 className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
                               >
@@ -1709,8 +1709,8 @@ export default function TimelineEditor({
                    <div>
                      <label className="block text-xs font-bold text-gray-600 mb-1.5">Global AI Model</label>
                      <select 
-                       value={globalAiModel}
-                       onChange={(e) => setGlobalAiModel(e.target.value)}
+                       value={selectedAiModel}
+                       onChange={(e) => setSelectedAiModel(e.target.value as any)}
                        className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
                      >
                        <option value="gemini-image">Google Gemini Pro Image (Real)</option>
