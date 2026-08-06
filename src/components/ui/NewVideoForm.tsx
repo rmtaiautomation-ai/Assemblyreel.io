@@ -101,7 +101,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
     const result = await createAndGenerateVideo(
       workspace.id,
       workspace.content_theme,
-      workspace.visual_aesthetic,
+      workspace.visual_aesthetic || "",
       formData
     );
 
