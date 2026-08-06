@@ -71,7 +71,7 @@ export default function TimelineEditor({
   const [isRendering, setIsRendering] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   const [renderOutputPath, setRenderOutputPath] = useState<string | null>(null);
-  const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana'>('fal-luma');
+  const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana' | 'gemini-image'>('fal-luma');
   const [isGeneratingVisualId, setIsGeneratingVisualId] = useState<string | null>(null);
   const [isGeneratingAllVisuals, setIsGeneratingAllVisuals] = useState(false);
   const [exportResolution, setExportResolution] = useState<'1080x1920' | '1920x1080' | '1080x1080'>('1080x1920');
