@@ -1,9 +1,13 @@
-"use server";
-
 import { generateObject } from 'ai';
 import { z } from 'zod';
-import { openai } from '@ai-sdk/openai';
-import { createClient } from '@/lib/supabase/server';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import dotenv from 'dotenv';
+dotenv.config({ path: '.env.local' });
+
+// We instantiate the Google provider with the user's specific env var name
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GEMINI_API_KEY,
+});
 
 const SceneSchema = z.object({
   scenes: z.array(
@@ -17,13 +21,15 @@ const SceneSchema = z.object({
   )
 });
 
-export async function sliceScriptIntoScenes(projectId: string, fullScript: string, startingSequenceNumber: number = 1) {
+async function runTest() {
+  const fullScript = `The Book of Enoch reveals a forbidden history. Long ago, 200 fallen angels descended upon Mount Hermon. They traded heavenly secrets for earthly desires, teaching mankind the art of war, the forging of weapons, and the reading of stars. For this ultimate betrayal, they were bound in the depths of the earth, waiting for the final judgment.`;
+
+  console.log("Input Script:\n", fullScript);
+  console.log("\nSending to Gemini Slicer Agent...\n");
+
   try {
-    console.log(`[Slicer Agent] Starting slice for project ${projectId}...`);
-    
-    // Call OpenAI via Vercel AI SDK to get structured JSON
     const { object } = await generateObject({
-      model: openai('gpt-4o-mini'),
+      model: google('gemini-2.5-pro'),
       schema: SceneSchema,
       prompt: `
         You are an expert video editor and cinematic director. 
@@ -42,36 +48,12 @@ export async function sliceScriptIntoScenes(projectId: string, fullScript: strin
       `,
     });
 
-    const slicedScenes = object.scenes;
-    console.log(`[Slicer Agent] Successfully sliced into ${slicedScenes.length} scenes.`);
+    console.log("✅ Success! Gemini returned the following Structured JSON:\n");
+    console.log(JSON.stringify(object.scenes, null, 2));
 
-    const supabase = await createClient();
-    
-    // Format the data to match your Supabase schema
-    const scenesToInsert = slicedScenes.map((scene, index) => ({
-      project_id: projectId,
-      sequence_number: startingSequenceNumber + index,
-      voice_over_beat: scene.voiceOverText,
-      final_video_prompt: scene.visualPrompt,
-      video_duration: scene.estimatedDurationSeconds,
-      custom_media_type: scene.mediaType,
-      generation_status: 'Pending'
-    }));
-
-    // Insert all scenes into the database in one bulk operation
-    const { error: insertError } = await supabase
-      .from('scenes')
-      .insert(scenesToInsert);
-
-    if (insertError) {
-      console.error("[Slicer Agent] Database insertion error:", insertError);
-      return { success: false, error: "Failed to save scenes to database" };
-    }
-
-    return { success: true, scenes: slicedScenes };
-    
   } catch (error) {
-    console.error("[Slicer Agent] Error slicing script:", error);
-    return { success: false, error: (error as Error).message };
+    console.error("❌ Slicer Failed:", error);
   }
 }
+
+runTest();

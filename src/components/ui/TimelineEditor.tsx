@@ -1543,12 +1543,12 @@ export default function TimelineEditor({
                 ) : (
                    <div className="flex flex-col gap-4 flex-1">
                      <div className="flex items-center gap-3 pb-3 border-b border-gray-100">
-                        <div className="bg-purple-100 text-purple-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
+                        <div className="bg-purple-100 text-purple-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm shrink-0">
                           {selectedScene.sequence_number}
                         </div>
-                        <div>
+                        <div className="flex items-center justify-between flex-1">
                           <h3 className="font-bold text-gray-900 text-sm">Scene Properties</h3>
-                          <span className="text-[10px] text-gray-400 font-mono">ID: {selectedScene.id.substring(0,8)}</span>
+                          <span className="text-[10px] text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
                         </div>
                      </div>
                      
@@ -1622,17 +1622,6 @@ export default function TimelineEditor({
                         </button>
                         {isVisualExpanded && (
                           <div className="p-3 bg-white border-t border-gray-100 space-y-3 flex-1 flex flex-col">
-                           <div className="flex items-center justify-end">
-                              <button
-                                onClick={handleGenerateAllVisuals}
-                                disabled={isGeneratingAllVisuals}
-                                className="text-[10px] px-2.5 py-1 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 text-purple-700 font-bold rounded border border-purple-200 shadow-sm transition-all flex items-center gap-1"
-                                title="Automatically generate videos for Scene 1 to N"
-                              >
-                                {isGeneratingAllVisuals ? <Loader2 size={10} className="animate-spin text-purple-600" /> : <Wand2 size={10} className="text-purple-600" />}
-                                {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All (1→N)"}
-                              </button>
-                           </div>
 
                            {/* AI Model & Duration */}
                            <div className="grid grid-cols-2 gap-2">
@@ -1680,18 +1669,29 @@ export default function TimelineEditor({
                               }`}>
                                 {isGeneratingVisualId === selectedScene.id ? "Rendering..." : selectedScene.generation_status}
                               </span>
-                              <button 
-                                onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
-                                disabled={isGeneratingVisualId === selectedScene.id}
-                                className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
-                              >
-                                {isGeneratingVisualId === selectedScene.id ? (
-                                  <Loader2 size={12} className="animate-spin text-white" />
-                                ) : (
-                                  <ImageIcon size={12} className="text-white" />
-                                )}
-                                {selectedScene.custom_media_url ? "Regenerate Visual" : "Render Visual"}
-                              </button>
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={handleGenerateAllVisuals}
+                                  disabled={isGeneratingAllVisuals}
+                                  className="text-[10px] px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 text-purple-700 font-bold rounded-md border border-purple-200 shadow-sm transition-all flex items-center gap-1.5"
+                                  title="Automatically generate videos for Scene 1 to N"
+                                >
+                                  {isGeneratingAllVisuals ? <Loader2 size={12} className="animate-spin text-purple-600" /> : <Wand2 size={12} className="text-purple-600" />}
+                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All (1→N)"}
+                                </button>
+                                <button 
+                                  onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
+                                  disabled={isGeneratingVisualId === selectedScene.id}
+                                  className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
+                                >
+                                  {isGeneratingVisualId === selectedScene.id ? (
+                                    <Loader2 size={12} className="animate-spin text-white" />
+                                  ) : (
+                                    <ImageIcon size={12} className="text-white" />
+                                  )}
+                                  {selectedScene.custom_media_url ? "Regenerate Visual" : "Render Visual"}
+                                </button>
+                              </div>
                            </div>
                           </div>
                         )}

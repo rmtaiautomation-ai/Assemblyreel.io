@@ -8,6 +8,8 @@ export async function generateScript(params: {
   hook: string;
   visualAesthetic: string;
   pov: string;
+  targetDuration?: string;
+  actOutline?: { actNumber: number; description: string };
 }) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -18,29 +20,45 @@ export async function generateScript(params: {
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
+    let lengthRule = "Exactly 12 to 15 lines (total 160-190 words).";
+    if (params.targetDuration && params.targetDuration.includes("Short")) {
+      lengthRule = "Exactly 6 to 8 lines (total 70-100 words).";
+    } else if (params.targetDuration && params.targetDuration.includes("Mid")) {
+      lengthRule = "Exactly 15 to 20 lines (total 200-250 words).";
+    } else if (params.actOutline) {
+      lengthRule = "Exactly 10 to 12 lines (total 130-160 words).";
+    }
+
     const systemInstruction = `
 You are an expert Script Writer for a highly visual, cinematic video channel.
 Your task is to write a master Voiceover (VO) script based on the provided parameters.
 
 ### CRITICAL RULES:
 1. Tone: Plain English (NLT Bible style), 8th-grade reading level. Epic, dramatic, and direct.
-2. Structure: Exactly 12 to 15 lines (total 160-190 words). 
-   - Must follow this 5-part arc: Hook -> Setup -> Escalation -> Divine Turn -> Consequence + CTA.
+2. Structure: ${lengthRule}
 3. Camera-Ready Rule: EVERY SINGLE LINE MUST state WHO (physical subject), WHAT (physical action), and WHERE (visible location). Do not use abstract concepts or metaphors. Describe what is visibly happening on screen.
-4. Money Shot Rule: The final line must combine a visual summary and an explicit Call To Action (CTA): "if you believe [theme], type AMEN and write: [phrase]".
+4. Money Shot Rule: The final line must combine a visual summary and an explicit Call To Action (CTA).
 `;
 
-    const prompt = `
-Write exactly a 12-15 line Voiceover Script based on this Topic and Story Outline.
+    let prompt = `
+Write a Voiceover Script based on this Topic and Story Outline.
 
 Topic: ${params.topic}
 Story Outline: ${params.narrativeArc}
 Hook: ${params.hook}
 Visual Aesthetic: ${params.visualAesthetic}
 POV: ${params.pov}
-
-Generate the script adhering strictly to the rules. Return a JSON array where each element is a line of the script.
 `;
+
+    if (params.actOutline) {
+      prompt += `
+IMPORTANT: You are only writing the script for ACT ${params.actOutline.actNumber}.
+Act Goal: ${params.actOutline.description}
+Do NOT write the entire story. Only cover this specific act!
+`;
+    }
+
+    prompt += `\nGenerate the script adhering strictly to the rules. Return a JSON array where each element is a line of the script.`;
 
     const responseSchema: Schema = {
       type: Type.ARRAY,
@@ -124,6 +142,70 @@ The Script Hook should be 1-2 sentences designed to grab the viewer's attention 
     return { success: true, data };
   } catch (error) {
     console.error("Error generating Arc/Hook:", error);
+    return { success: false, error: (error as Error).message };
+  }
+}
+
+export async function generateActOutlines(topic: string, narrativeArc: string, nicheTheme: string, targetDuration: string) {
+  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+  if (!GEMINI_API_KEY) return { success: false, error: "GEMINI_API_KEY is missing." };
+
+  let actCount = 5;
+  if (targetDuration.includes("15-20m")) actCount = 7;
+  else if (targetDuration.includes("20-25m")) actCount = 9;
+  else if (targetDuration.includes("25-30m")) actCount = 11;
+
+  try {
+    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
+    const prompt = `
+The user is creating a long-form YouTube video about "${topic}".
+Niche/Genre: "${nicheTheme}"
+The core narrative arc is: "${narrativeArc}"
+
+Based on the psychology of high-retention YouTube videos for the "${nicheTheme}" niche, break this story down into exactly ${actCount} distinct Acts (Chapters).
+
+Apply psychological pacing and value stacking tailored to this specific niche (e.g., True Crime relies on suspense/red herrings, History relies on contextual hooks/escalation, Motivation relies on emotional peaks).
+
+Structure Rules for a ${actCount}-Act Video:
+- Act 1: The "Curiosity Gap" / The Hook (Tell them what they will learn, withhold the answer).
+- Act 2: The Setup / Context (Introduce players/conflict without infodumping).
+- Acts 3 to ${actCount - 1}: The Escalation & Value Stacking (Introduce a NEW problem, contradiction, or plot twist in EVERY act. Do not just list events chronologically. Make the story evolve).
+- Act ${actCount}: The Payoff & Conclusion (Deliver the ultimate answer, moral lesson, and CTA).
+
+Return a JSON array of exactly ${actCount} objects. Each object should have:
+- "actNumber" (integer, 1 to ${actCount})
+- "title" (string)
+- "description" (a 2-3 sentence summary of what must happen in this specific act to maintain high retention).
+`;
+    
+    const responseSchema: Schema = {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        properties: {
+          actNumber: { type: Type.INTEGER },
+          title: { type: Type.STRING },
+          description: { type: Type.STRING }
+        },
+        required: ["actNumber", "title", "description"]
+      }
+    };
+
+    const response = await ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: prompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: responseSchema,
+      },
+    });
+
+    if (!response.text) throw new Error("No response generated");
+    
+    const acts = JSON.parse(response.text) as { actNumber: number; title: string; description: string }[];
+    return { success: true, acts };
+  } catch (error) {
+    console.error("Error generating acts:", error);
     return { success: false, error: (error as Error).message };
   }
 }
