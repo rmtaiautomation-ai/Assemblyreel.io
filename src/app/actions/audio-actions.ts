@@ -24,7 +24,11 @@ export async function generateSceneAudio(sceneId: string, text: string, voiceId?
   }
 
   const supabase = await createClient();
-  await supabase.from("scenes").update({ audio_url: result.audioUrl }).eq("id", sceneId);
+  const { error: saveError } = await supabase.from("scenes").update({ audio_url: result.audioUrl }).eq("id", sceneId);
+  if (saveError) {
+    console.error("[Scene Audio] Failed to persist audio_url:", saveError.message);
+    return { success: true, audioUrl: result.audioUrl, persistWarning: saveError.message };
+  }
 
   return { success: true, audioUrl: result.audioUrl };
 }
@@ -66,7 +70,19 @@ export async function generateFullNarration(
 
   const supabase = await createClient();
 
-  // --- DEEPGRAM TRANSCRIPTION & SCENE ALIGNMENT ---
+  // Persist the narration URL immediately — independent of whether Deepgram
+  // alignment below succeeds, so a transient alignment failure can never make
+  // a successfully-generated narration disappear on next page load.
+  const { error: narrationSaveError } = await supabase
+    .from("video_projects")
+    .update({ narration_url: result.audioUrl })
+    .eq("id", projectId);
+
+  if (narrationSaveError) {
+    console.error("[Narration] Failed to persist narration_url:", narrationSaveError.message);
+  }
+
+  // --- DEEPGRAM TRANSCRIPTION & SCENE ALIGNMENT (best-effort enhancement) ---
   try {
     const { createClient: createDeepgramClient } = require('@deepgram/sdk');
     const deepgram = createDeepgramClient(process.env.DEEPGRAM_API_KEY!);
@@ -147,29 +163,39 @@ export async function generateFullNarration(
         }
         
         const duration = Number(Math.max(0.5, durationRaw).toFixed(2));
-        
-        await supabase
+
+        const { error: durationError } = await supabase
           .from("scenes")
           .update({ video_duration: duration })
           .eq("id", match.sceneId);
-          
+        if (durationError) {
+          console.error(`[Narration] Failed to persist video_duration for scene ${match.sceneId}:`, durationError.message);
+        }
+
         sceneUpdates.push({ id: match.sceneId, video_duration: duration });
     }
     console.log(`[Deepgram] Successfully aligned ${scenes.length} scenes to Master Narration.`);
-    
-    // Persist narration URL on the project row
-    await supabase
-      .from("video_projects")
-      .update({ narration_url: result.audioUrl })
-      .eq("id", projectId);
 
-    return { success: true, audioUrl: result.audioUrl, updatedScenes: sceneUpdates };
+    return {
+      success: true,
+      audioUrl: result.audioUrl,
+      updatedScenes: sceneUpdates,
+      persistWarning: narrationSaveError
+        ? `Narration generated but failed to save (${narrationSaveError.message}) — it will disappear if you leave this page.`
+        : undefined,
+    };
   } catch (err) {
     console.error("[Deepgram] Error aligning timestamps:", err);
     // Non-fatal: if Deepgram fails, the user still gets their audio file, but scenes remain at default 5s
   }
 
-  return { success: true, audioUrl: result.audioUrl };
+  return {
+    success: true,
+    audioUrl: result.audioUrl,
+    persistWarning: narrationSaveError
+      ? `Narration generated but failed to save (${narrationSaveError.message}) — it will disappear if you leave this page.`
+      : undefined,
+  };
 }
 
 // Define your curated list of voices here. 

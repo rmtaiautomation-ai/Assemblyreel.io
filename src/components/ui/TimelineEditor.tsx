@@ -1,9 +1,14 @@
 "use client";
 
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useRef, useEffect, useMemo } from "react";
 import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
+import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
+import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
 import { Rnd } from "react-rnd";
+import { Player, PlayerRef } from '@remotion/player';
+import { VideoComposition } from '@/remotion/compositions/VideoComposition';
+import type { VideoCompositionProps, CompositionScene, OverlayPreset, SceneOverlay } from '@/remotion/types';
 
 type TabState = 'media' | 'scene' | 'export';
 type AspectRatio = '16:9' | '9:16' | '1:1';
@@ -11,10 +16,21 @@ type MediaType = 'image' | 'audio' | 'video';
 
 interface MediaAsset {
   id: string;
-  file: File;
+  // Present only for freshly-picked files this session; absent for assets loaded from the DB.
+  file?: File;
+  name: string;
   url: string;
   type: MediaType;
   duration?: number;
+  // Real `media.id` once the upload (or generation) has been persisted. `id`/`url` above are
+  // never mutated after creation — see handleFileUpload — so playback/selection code that
+  // reads them mid-session never sees a value swap out from under it.
+  mediaId?: string;
+  // The durable /media/... URL. Kept separate from `url` (which stays the blob: URL for the
+  // rest of the session) precisely because `url` must not be swapped mid-session; anything
+  // written to the database must use this instead, or a dead blob: URL gets persisted.
+  persistedUrl?: string;
+  uploadStatus?: 'uploading' | 'ready' | 'failed';
 }
 
 interface TimelineClip {
@@ -27,15 +43,58 @@ interface TimelineClip {
   trimStart?: number;
 }
 
-export default function TimelineEditor({ 
-  initialProject, 
-  initialScenes 
-}: { 
-  initialProject: any, 
-  initialScenes: any[] 
+// Only scenes/clips that came from Supabase have UUID ids. Mock preview scenes ("mock-1")
+// and scenes/clips created client-side before their persistence call resolves use short
+// random ids — writing those to a UUID primary key would throw, so they stay local-only
+// until reconciled with the real id the DB assigns.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const isPersistedScene = (sceneId: string) => UUID_PATTERN.test(sceneId);
+
+function mediaRowToAsset(row: any): MediaAsset {
+  return {
+    id: row.id,
+    name: row.original_filename || `${row.media_type}-${String(row.id).slice(0, 8)}`,
+    url: row.url || '',
+    type: row.media_type as MediaType,
+    duration: row.duration_seconds || undefined,
+    mediaId: row.id,
+    persistedUrl: row.url || '',
+    uploadStatus: 'ready',
+  };
+}
+
+function timelineItemToClip(item: any, mediaById: Map<string, any>): TimelineClip | null {
+  const mediaRow = mediaById.get(item.media_id);
+  if (!mediaRow) return null;
+  return {
+    id: item.id,
+    assetId: item.media_id,
+    asset: mediaRowToAsset(mediaRow),
+    trackId: item.track_id,
+    startTime: item.start_time,
+    duration: item.duration,
+    trimStart: item.trim_start || 0,
+  };
+}
+
+export default function TimelineEditor({
+  initialProject,
+  initialScenes,
+  initialMedia = [],
+  initialTimelineItems = [],
+}: {
+  initialProject: any,
+  initialScenes: any[],
+  initialMedia?: any[],
+  initialTimelineItems?: any[],
 }) {
   const [scenes, setScenes] = useState<any[]>(initialScenes);
-  const [timelineClips, setTimelineClips] = useState<TimelineClip[]>([]);
+  const [timelineClips, setTimelineClips] = useState<TimelineClip[]>(() => {
+    const mediaById = new Map(initialMedia.map((m) => [m.id, m]));
+    return initialTimelineItems
+      .map((item) => timelineItemToClip(item, mediaById))
+      .filter((c): c is TimelineClip => c !== null);
+  });
   const [selectedScene, setSelectedScene] = useState<any | null>(null);
   const [selectedSceneTrack, setSelectedSceneTrack] = useState<'V1' | 'A1' | 'A2' | null>(null);
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<TimelineClip | null>(null);
@@ -47,7 +106,10 @@ export default function TimelineEditor({
   const [isPlaying, setIsPlaying] = useState(false);
   const lastTimeRef = useRef<number>(0);
   const animationRef = useRef<number>(0);
+  // Trimming a clip edge and dragging the timeline panel's height are separate
+  // gestures — sharing one flag let a clip trim also resize the panel.
   const [isResizing, setIsResizing] = useState(false);
+  const [isResizingPanel, setIsResizingPanel] = useState(false);
   const [isGeneratingAll, setIsGeneratingAll] = useState(false);
   const [generatingSceneId, setGeneratingSceneId] = useState<string | null>(null);
   // Master audio — one continuous narration WAV covering the whole project
@@ -83,21 +145,29 @@ export default function TimelineEditor({
   // Accordion collapse states for Scene Info panel
   const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
+  const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
 
-  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
+  // The Media panel is the user's imported-asset library, so it shows only files
+  // they actually uploaded. Generated visuals (Fal/Gemini/stock) also get media
+  // rows, but they belong to their scene — surfacing them here would present
+  // every generated clip as a re-importable asset.
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>(
+    () => initialMedia.filter(m => m.source === 'upload').map(mediaRowToAsset)
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const remotionPlayerRef = useRef<PlayerRef>(null);
   
-  const [a1Scenes, setA1Scenes] = useState<any[]>([...initialScenes]);
   const [draggingAsset, setDraggingAsset] = useState<MediaAsset | null>(null);
   const [draggingScene, setDraggingScene] = useState<{ id: string, track: string, duration: number } | null>(null);
   const [v1DragInsertIndex, setV1DragInsertIndex] = useState<number | null>(null);
   const [a1DragInsertIndex, setA1DragInsertIndex] = useState<number | null>(null);
 
   const [trackStates, setTrackStates] = useState({
-    V1: { locked: false, muted: false },
-    A1: { locked: false, muted: false },
-    A2: { locked: false, muted: false }
+    V1: { locked: false, muted: false, volume: 1.0 },
+    A1: { locked: false, muted: false, volume: 1.0 },
+    A2: { locked: false, muted: false, volume: 1.0 }
   });
+  const [activeVolumePopup, setActiveVolumePopup] = useState<'V1' | 'A1' | 'A2' | null>(null);
 
   const toggleTrackState = (trackId: 'V1' | 'A1' | 'A2', key: 'locked' | 'muted') => {
     setTrackStates(prev => ({
@@ -122,8 +192,10 @@ export default function TimelineEditor({
     return 5;
   };
 
+  // V1 and A1 are two views of the same scene rows — A1 renders each scene's
+  // narration, V1 its visual — so both read from the single `scenes` array.
   const getUnshiftedLeftPosition = (track: 'V1' | 'A1', index: number) => {
-    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    const trackScenes = scenes;
     let time = 0;
     for (let i = 0; i < index; i++) {
        if (draggingScene && draggingScene.track === track && trackScenes[i].id === draggingScene.id) {
@@ -136,7 +208,7 @@ export default function TimelineEditor({
 
   const getSceneLeftPosition = (track: 'V1' | 'A1', sceneIndex: number) => {
     let time = getUnshiftedLeftPosition(track, sceneIndex) / scale;
-    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    const trackScenes = scenes;
     const insertIdx = track === 'V1' ? v1DragInsertIndex : a1DragInsertIndex;
     
     if (insertIdx !== null && sceneIndex >= insertIdx) {
@@ -162,7 +234,7 @@ export default function TimelineEditor({
   };
 
   const getVisualSequenceNumber = (track: 'V1' | 'A1', originalIndex: number) => {
-    const trackScenes = track === 'V1' ? scenes : a1Scenes;
+    const trackScenes = scenes;
     const insertIdx = track === 'V1' ? v1DragInsertIndex : a1DragInsertIndex;
     
     if (!draggingScene || draggingScene.track !== track || insertIdx === null) {
@@ -214,6 +286,10 @@ export default function TimelineEditor({
     setIsResizing(true);
   };
 
+  // handlePointerMove records the values it lands on so handlePointerUp can persist
+  // them once, on release, without reading state from inside a setter.
+  const lastResizeValuesRef = useRef<Record<string, any> | null>(null);
+
   useEffect(() => {
     if (!isResizing || !resizingSceneId || !resizingTrack || !resizingEdge) return;
 
@@ -221,7 +297,7 @@ export default function TimelineEditor({
       e.preventDefault();
       const deltaX = e.clientX - resizeStartX;
       const deltaDuration = deltaX / scale;
-      
+
       if (resizingTrack === 'A1_clip' || resizingTrack === 'A2_clip') {
         setTimelineClips(prev => prev.map(clip => {
           if (clip.id === resizingSceneId) {
@@ -241,6 +317,7 @@ export default function TimelineEditor({
               newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
               newStartTime = Math.max(0, clip.startTime + (initialDuration - finalDuration));
             }
+            lastResizeValuesRef.current = { duration: finalDuration, trim_start: newTrimStart, start_time: newStartTime };
             return { ...clip, duration: finalDuration, trimStart: newTrimStart, startTime: newStartTime };
           }
           return clip;
@@ -248,9 +325,8 @@ export default function TimelineEditor({
         return;
       }
 
-      const setTrackScenes = resizingTrack === 'V1' ? setScenes : setA1Scenes;
-      
-      setTrackScenes(prev => prev.map(scene => {
+      // Resizing on either V1 or A1 trims the same underlying scene row.
+      setScenes(prev => prev.map(scene => {
         if (scene.id === resizingSceneId) {
           let newDuration = initialDuration;
           if (resizingEdge === 'right') {
@@ -271,6 +347,7 @@ export default function TimelineEditor({
             newTrimStart = initialTrimStart + (initialDuration - finalDuration);
             newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
           }
+          lastResizeValuesRef.current = { video_duration: finalDuration, trim_start: newTrimStart };
           return { ...scene, video_duration: finalDuration, trim_start: newTrimStart };
         }
         return scene;
@@ -278,6 +355,17 @@ export default function TimelineEditor({
     };
 
     const handlePointerUp = () => {
+      // Persist once on release rather than on every pointermove frame.
+      const finalValues = lastResizeValuesRef.current;
+      if (finalValues && resizingSceneId) {
+        if (resizingTrack === 'A1_clip' || resizingTrack === 'A2_clip') {
+          persistTimelineItemFields(resizingSceneId, finalValues);
+        } else {
+          persistSceneFields(resizingSceneId, finalValues);
+        }
+      }
+      lastResizeValuesRef.current = null;
+
       setIsResizing(false);
       setResizingSceneId(null);
       setResizingTrack(null);
@@ -299,20 +387,47 @@ export default function TimelineEditor({
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      const newAssets: MediaAsset[] = Array.from(e.target.files).map(file => {
-        let type: MediaType = 'image';
-        if (file.type.startsWith('audio/')) type = 'audio';
-        if (file.type.startsWith('video/')) type = 'video';
-        return {
-           file,
-           id: Math.random().toString(36).substring(7),
-           url: URL.createObjectURL(file),
-           type
-        };
-      });
-      setMediaAssets(prev => [...prev, ...newAssets]);
-    }
+    if (!e.target.files) return;
+
+    const newAssets: MediaAsset[] = Array.from(e.target.files).map(file => {
+      let type: MediaType = 'image';
+      if (file.type.startsWith('audio/')) type = 'audio';
+      if (file.type.startsWith('video/')) type = 'video';
+      return {
+         file,
+         id: Math.random().toString(36).substring(7),
+         name: file.name,
+         url: URL.createObjectURL(file),
+         type,
+         uploadStatus: 'uploading' as const,
+      };
+    });
+    // Instant optimistic UX, unchanged — the asset appears immediately with a
+    // blob: URL. `id`/`url` are never touched again below; only mediaId/uploadStatus
+    // get patched once the upload resolves, so anything already reading them mid-session
+    // (selection, the seek-storm-guarded playback effect) never sees a value swap.
+    setMediaAssets(prev => [...prev, ...newAssets]);
+
+    newAssets.forEach(async (asset) => {
+      try {
+        const formData = new FormData();
+        formData.append('file', asset.file!);
+        formData.append('projectId', initialProject.id);
+        const res = await fetch('/api/media/upload', { method: 'POST', body: formData });
+        const data = await res.json();
+
+        if (data.success) {
+          setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, mediaId: data.mediaId, persistedUrl: data.url, uploadStatus: 'ready' } : a));
+          flushPendingMediaCreations(asset.id, data.mediaId, data.url);
+        } else {
+          console.error('[handleFileUpload] Upload failed:', data.error);
+          setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, uploadStatus: 'failed' } : a));
+        }
+      } catch (err) {
+        console.error('[handleFileUpload] Upload request failed:', err);
+        setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, uploadStatus: 'failed' } : a));
+      }
+    });
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -355,9 +470,11 @@ export default function TimelineEditor({
       try {
         const data = JSON.parse(dataStr);
         if (data.type === 'reorder') {
-           const trackScenes = data.track === 'V1' ? scenes : a1Scenes;
-           const setTrackScenes = data.track === 'V1' ? setScenes : setA1Scenes;
-           
+           // Reordering from either lane moves the shared scene row, so the
+           // visual and its narration always travel together.
+           const trackScenes = scenes;
+           const setTrackScenes = setScenes;
+
            const rect = e.currentTarget.getBoundingClientRect();
            const dropX = e.clientX - rect.left;
            const startTime = dropX / scale;
@@ -373,13 +490,20 @@ export default function TimelineEditor({
               }
            }
            
-           setTrackScenes(prev => {
-              const newScenes = [...prev];
-              const [movedScene] = newScenes.splice(data.index, 1);
-              if (insertIndex > data.index) insertIndex -= 1;
-              newScenes.splice(insertIndex, 0, movedScene);
-              return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-           });
+           const reordered = [...trackScenes];
+           const [movedScene] = reordered.splice(data.index, 1);
+           if (insertIndex > data.index) insertIndex -= 1;
+           reordered.splice(insertIndex, 0, movedScene);
+           const renumbered = reordered.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
+
+           setTrackScenes(renumbered);
+           // Reordering shifts every scene between the old and new position — persist
+           // the whole order, not just the moved one, or sequence_numbers collide.
+           reorderScenes(
+              renumbered
+                .map(s => ({ id: s.id, sequence_number: s.sequence_number }))
+                .filter(u => isPersistedScene(u.id))
+           );
            return;
         }
         
@@ -400,6 +524,7 @@ export default function TimelineEditor({
              }
              return c;
            }));
+           persistTimelineItemFields(data.clipId, { track_id: trackId, start_time: newStartTime });
            if (selectedTimelineClip?.id === data.clipId) {
              setSelectedSceneTrack(trackId as 'A1' | 'A2');
              setSelectedSceneKeys([`${data.clipId}_${trackId}`]);
@@ -407,8 +532,12 @@ export default function TimelineEditor({
            return;
          }
 
-        const asset = data as MediaAsset;
-        
+        // `data` is a JSON.parse of a JSON.stringify(asset) drag payload — stringifying a
+        // File object yields {}, so `data.file`/`data.mediaId` can't be trusted. Re-resolve
+        // the live entry from state, which still has the real File and any mediaId that's
+        // since arrived from the upload reconciliation.
+        const asset = (mediaAssets.find(a => a.id === (data as MediaAsset).id) ?? data) as MediaAsset;
+
         // Enforce track rules
         if (asset.type === 'audio' && trackId === 'V1') {
           alert("Audio files cannot be dropped on the video track.");
@@ -456,11 +585,12 @@ export default function TimelineEditor({
              }
           }
 
+          const tempSceneId = Math.random().toString(36).substring(7);
           const newScene = {
-            id: Math.random().toString(36).substring(7),
+            id: tempSceneId,
             sequence_number: 0,
             video_duration: durationSecs,
-            voice_over_beat: asset.file.name,
+            voice_over_beat: asset.name,
             final_video_prompt: 'Custom Media',
             generation_status: 'Completed',
             custom_media_url: asset.url,
@@ -474,17 +604,45 @@ export default function TimelineEditor({
              newScenes.splice(insertIndex, 0, newScene);
              return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
           });
-        } else {
-          const newClip: TimelineClip = {
-            id: Math.random().toString(36).substring(7),
-            assetId: asset.id,
-            asset,
-            trackId,
-            startTime,
-            duration: durationSecs
+
+          const persistNewScene = async (mediaId: string, persistedUrl: string) => {
+            const res = await createSceneWithMedia(initialProject.id, mediaId, {
+              // Matches the position the local renumbering (.map((s,idx) => idx+1)) just gave it.
+              sequence_number: insertIndex + 1,
+              video_duration: durationSecs,
+              voice_over_beat: asset.name,
+              final_video_prompt: 'Custom Media',
+              generation_status: 'Completed',
+              // Must be the durable URL — asset.url is still a blob: for a fresh upload.
+              custom_media_url: persistedUrl,
+              custom_media_type: asset.type,
+              audio_url: asset.type === 'video' ? persistedUrl : undefined,
+            });
+            if (res.success && res.scene) {
+              // Swap the temp id for the real UUID so future edits/deletes can persist.
+              setScenes(prev => prev.map(s => s.id === tempSceneId ? { ...s, id: res.scene.id } : s));
+
+              // The insert shifted every scene at/after insertIndex. Persist the whole
+              // ordering, or those siblings keep stale sequence_numbers and collide.
+              const finalOrder = [...scenes];
+              finalOrder.splice(insertIndex, 0, { id: res.scene.id });
+              reorderScenes(
+                finalOrder
+                  .map((s, idx) => ({ id: s.id, sequence_number: idx + 1 }))
+                  .filter(u => isPersistedScene(u.id))
+              );
+            } else {
+              console.error('[handleDrop] Failed to persist new V1 scene:', res.error);
+            }
           };
-          
-          setTimelineClips(prev => [...prev, newClip]);
+
+          if (asset.mediaId && asset.persistedUrl) {
+            persistNewScene(asset.mediaId, asset.persistedUrl);
+          } else {
+            queuePendingMediaCreation(asset.id, persistNewScene);
+          }
+        } else {
+          addTimelineClip(asset, trackId as 'A1' | 'A2', startTime, durationSecs);
         }
       } catch (err) {
         console.error("Failed to parse dropped asset data", err);
@@ -526,6 +684,9 @@ export default function TimelineEditor({
             return update ? { ...s, video_duration: update.video_duration } : s;
          }));
       }
+      if (res.persistWarning) {
+        alert(res.persistWarning);
+      }
     } else {
       alert(`Narration error: ${res.error}`);
     }
@@ -542,16 +703,123 @@ export default function TimelineEditor({
     setGeneratingSceneId(null);
   };
 
+  // Pending writes are merged per scene so a debounced textarea save never drops
+  // a field that was changed while the timer was running.
+  const pendingSavesRef = useRef<{ [sceneId: string]: Record<string, any> }>({});
+  const saveTimersRef = useRef<{ [sceneId: string]: ReturnType<typeof setTimeout> }>({});
+
+  const persistSceneFields = (sceneId: string, fields: Record<string, any>, debounce = false) => {
+    if (!isPersistedScene(sceneId)) return;
+
+    pendingSavesRef.current[sceneId] = { ...pendingSavesRef.current[sceneId], ...fields };
+
+    const flush = () => {
+      const payload = pendingSavesRef.current[sceneId];
+      delete pendingSavesRef.current[sceneId];
+      delete saveTimersRef.current[sceneId];
+      if (!payload || Object.keys(payload).length === 0) return;
+      updateScene(sceneId, payload).then(res => {
+        if (!res.success) console.error("[Scene Save]", res.error);
+      });
+    };
+
+    if (saveTimersRef.current[sceneId]) clearTimeout(saveTimersRef.current[sceneId]);
+    if (debounce) {
+      saveTimersRef.current[sceneId] = setTimeout(flush, 800);
+    } else {
+      flush();
+    }
+  };
+
   const updateSceneDetails = (sceneId: string, field: string, value: any) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, [field]: value } : s));
     setSelectedScene((prev: any) => ({ ...prev, [field]: value }));
+    // Typing debounces; dropdowns save straight away.
+    const isFreeText = field === 'voice_over_beat' || field === 'final_video_prompt';
+    persistSceneFields(sceneId, { [field]: value }, isFreeText);
   };
 
-  const handleSelectSceneBlock = (e: React.MouseEvent, scene: any, track: 'V1' | 'A1') => {
+  // Same merge-and-debounce shape as persistSceneFields, for timeline_items rows.
+  const pendingTimelineSavesRef = useRef<{ [clipId: string]: Record<string, any> }>({});
+  const timelineSaveTimersRef = useRef<{ [clipId: string]: ReturnType<typeof setTimeout> }>({});
+
+  const persistTimelineItemFields = (clipId: string, fields: Record<string, any>, debounce = false) => {
+    if (!isPersistedScene(clipId)) return;
+
+    pendingTimelineSavesRef.current[clipId] = { ...pendingTimelineSavesRef.current[clipId], ...fields };
+
+    const flush = () => {
+      const payload = pendingTimelineSavesRef.current[clipId];
+      delete pendingTimelineSavesRef.current[clipId];
+      delete timelineSaveTimersRef.current[clipId];
+      if (!payload || Object.keys(payload).length === 0) return;
+      updateTimelineItem(clipId, payload).then(res => {
+        if (!res.success) console.error("[Timeline Item Save]", res.error);
+      });
+    };
+
+    if (timelineSaveTimersRef.current[clipId]) clearTimeout(timelineSaveTimersRef.current[clipId]);
+    if (debounce) {
+      timelineSaveTimersRef.current[clipId] = setTimeout(flush, 800);
+    } else {
+      flush();
+    }
+  };
+
+  // Dropping a just-uploaded asset onto the timeline before its upload request
+  // resolves means we don't have a real mediaId to create the scene/clip row
+  // with yet. Queue the deferred creation keyed by the asset's temp id and
+  // run it once the upload reconciliation supplies the real mediaId.
+  const pendingMediaCreationsRef = useRef<{ [assetTempId: string]: Array<(mediaId: string, persistedUrl: string) => void> }>({});
+
+  const queuePendingMediaCreation = (assetTempId: string, callback: (mediaId: string, persistedUrl: string) => void) => {
+    if (!pendingMediaCreationsRef.current[assetTempId]) pendingMediaCreationsRef.current[assetTempId] = [];
+    pendingMediaCreationsRef.current[assetTempId].push(callback);
+  };
+
+  const flushPendingMediaCreations = (assetTempId: string, mediaId: string, persistedUrl: string) => {
+    const queued = pendingMediaCreationsRef.current[assetTempId];
+    if (!queued) return;
+    delete pendingMediaCreationsRef.current[assetTempId];
+    queued.forEach(cb => cb(mediaId, persistedUrl));
+  };
+
+  // Shared by handleDrop's A1/A2 branch and the Media panel's quick-add buttons:
+  // optimistic add + fire-and-forget persistence, queued if the asset's upload
+  // hasn't resolved to a real mediaId yet.
+  const addTimelineClip = (asset: MediaAsset, trackId: 'A1' | 'A2', startTime: number, duration: number) => {
+    const tempClipId = Math.random().toString(36).substring(7);
+    const newClip: TimelineClip = { id: tempClipId, assetId: asset.id, asset, trackId, startTime, duration };
+    setTimelineClips(prev => [...prev, newClip]);
+
+    const persist = async (mediaId: string) => {
+      const res = await createTimelineItem(initialProject.id, mediaId, { trackId, startTime, duration });
+      if (res.success && res.timelineItem) {
+        setTimelineClips(prev => prev.map(c => c.id === tempClipId ? { ...c, id: res.timelineItem.id } : c));
+      } else {
+        console.error('[addTimelineClip] Failed to persist timeline item:', res.error);
+      }
+    };
+
+    // timeline_items reference media by id and hold no URL of their own, so the
+    // persisted URL isn't needed here.
+    if (asset.mediaId) {
+      persist(asset.mediaId);
+    } else {
+      queuePendingMediaCreation(asset.id, persist);
+    }
+  };
+
+  const handleSelectSceneBlock = (e: React.MouseEvent, scene: any, track: 'V1' | 'A1', index: number) => {
     e.stopPropagation();
     setSelectedAsset(null);
     setSelectedTimelineClip(null);
     const key = `${scene.id}_${track}`;
+
+    // Park the playhead on the clicked scene so the preview shows it. The
+    // existing cursor sync effect drives the Remotion player from here.
+    setIsPlaying(false);
+    setCursorPosition(getUnshiftedLeftPosition(track, index));
 
     if (e.ctrlKey || e.metaKey || e.shiftKey) {
       setSelectedSceneKeys(prev => 
@@ -565,6 +833,31 @@ export default function TimelineEditor({
     setActiveTab('scene');
   };
 
+  // Removing a scene both deletes its row and renumbers the survivors — persisting
+  // only one of those leaves the timeline inconsistent after a reload.
+  const removeScenesAndPersist = (idsToDelete: string[]) => {
+    const renumbered = scenes
+      .filter(s => !idsToDelete.includes(s.id))
+      .map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
+
+    setScenes(renumbered);
+
+    const persistedDeletes = idsToDelete.filter(isPersistedScene);
+    if (persistedDeletes.length === 0) return;
+
+    deleteScenes(persistedDeletes).then(res => {
+      if (!res.success) {
+        console.error('[removeScenesAndPersist] Delete failed:', res.error);
+        return;
+      }
+      reorderScenes(
+        renumbered
+          .map(s => ({ id: s.id, sequence_number: s.sequence_number }))
+          .filter(u => isPersistedScene(u.id))
+      );
+    });
+  };
+
   const handleDeleteSelectedScenes = () => {
     if (selectedSceneKeys.length === 0) return;
 
@@ -576,23 +869,15 @@ export default function TimelineEditor({
       .filter(k => k.endsWith('_A1'))
       .map(k => k.split('_')[0]);
 
+    // Deleting on V1 removes the whole scene; deleting on A1 only clears its
+    // narration, leaving the visual in place.
     if (v1IdsToDelete.length > 0) {
-      setScenes(prev => {
-        const newScenes = prev.filter(s => !v1IdsToDelete.includes(s.id));
-        return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-      });
-      setA1Scenes(prev => {
-        const newScenes = prev.filter(s => !v1IdsToDelete.includes(s.id));
-        return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-      });
+      removeScenesAndPersist(v1IdsToDelete);
     }
 
     if (a1IdsToDelete.length > 0) {
-      setA1Scenes(prev => {
-        const newScenes = prev.filter(s => !a1IdsToDelete.includes(s.id));
-        return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-      });
       setScenes(prev => prev.map(s => a1IdsToDelete.includes(s.id) ? { ...s, audio_url: undefined } : s));
+      a1IdsToDelete.filter(isPersistedScene).forEach(id => persistSceneFields(id, { audio_url: null }));
     }
 
     const clipIdsToDelete = selectedSceneKeys
@@ -601,6 +886,7 @@ export default function TimelineEditor({
 
     if (clipIdsToDelete.length > 0) {
       setTimelineClips(prev => prev.filter(c => !clipIdsToDelete.includes(c.id)));
+      clipIdsToDelete.filter(isPersistedScene).forEach(id => { deleteTimelineItem(id); });
       if (selectedTimelineClip && clipIdsToDelete.includes(selectedTimelineClip.id)) {
         setSelectedTimelineClip(null);
       }
@@ -620,7 +906,7 @@ export default function TimelineEditor({
         e.preventDefault();
         const allKeys: string[] = [
           ...scenes.map(s => `${s.id}_V1`),
-          ...a1Scenes.map(s => `${s.id}_A1`),
+          ...scenes.map(s => `${s.id}_A1`),
           ...timelineClips.map(c => `${c.id}_${c.trackId}`)
         ];
         setSelectedSceneKeys(allKeys);
@@ -641,26 +927,17 @@ export default function TimelineEditor({
           .map(k => k.split('_')[0]);
 
         if (v1IdsToDelete.length > 0) {
-          setScenes(prev => {
-            const newScenes = prev.filter(s => !v1IdsToDelete.includes(s.id));
-            return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-          });
-          setA1Scenes(prev => {
-            const newScenes = prev.filter(s => !v1IdsToDelete.includes(s.id));
-            return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-          });
+          removeScenesAndPersist(v1IdsToDelete);
         }
 
         if (a1IdsToDelete.length > 0) {
-          setA1Scenes(prev => {
-            const newScenes = prev.filter(s => !a1IdsToDelete.includes(s.id));
-            return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-          });
           setScenes(prev => prev.map(s => a1IdsToDelete.includes(s.id) ? { ...s, audio_url: undefined } : s));
+          a1IdsToDelete.filter(isPersistedScene).forEach(id => persistSceneFields(id, { audio_url: null }));
         }
 
         if (clipIdsToDelete.length > 0) {
           setTimelineClips(prev => prev.filter(c => !clipIdsToDelete.includes(c.id)));
+          clipIdsToDelete.filter(isPersistedScene).forEach(id => { deleteTimelineItem(id); });
           if (selectedTimelineClip && clipIdsToDelete.includes(selectedTimelineClip.id)) {
             setSelectedTimelineClip(null);
           }
@@ -673,7 +950,24 @@ export default function TimelineEditor({
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedSceneKeys, scenes, a1Scenes, timelineClips, selectedTimelineClip]);
+  }, [selectedSceneKeys, scenes, timelineClips, selectedTimelineClip]);
+
+  // Polls /api/media/[mediaId]/status until the generation reaches a terminal
+  // state. Only entered for genuinely async providers (real Fal.ai); everything
+  // else already comes back terminal from the initial POST.
+  const pollMediaStatus = async (mediaId: string, intervalMs = 3000, maxAttempts = 60) => {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+      try {
+        const res = await fetch(`/api/media/${mediaId}/status`);
+        const data = await res.json();
+        if (data.status === 'ready' || data.status === 'failed') return data;
+      } catch (err) {
+        console.error('[pollMediaStatus] Status check failed:', err);
+      }
+    }
+    return { status: 'failed', error: 'Generation timed out' };
+  };
 
   const handleGenerateSceneVisual = async (sceneId: string, prompt: string, modelToUse = selectedAiModel, duration = 5) => {
     setIsGeneratingVisualId(sceneId);
@@ -682,117 +976,53 @@ export default function TimelineEditor({
       setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Rendering' }));
     }
 
-    // --- GEMINI REAL IMAGE GENERATION ---
-    if (modelToUse === 'gemini-image') {
-      try {
-        const res = await fetch("/api/generate-image", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            prompt: prompt,
-            model: "gemini-3-pro-image"
-          })
-        });
-
-        const data = await res.json();
-        if (data.success && data.url) {
-          setScenes(prev => prev.map(s => 
-            s.id === sceneId ? {
-              ...s,
-              custom_media_url: data.url,
-              custom_media_type: 'image',
-              generation_status: 'Completed',
-              video_duration: duration,
-            } : s
-          ));
-          if (selectedScene?.id === sceneId) {
-            setSelectedScene((prev: any) => ({
-              ...prev,
-              custom_media_url: data.url,
-              custom_media_type: 'image',
-              generation_status: 'Completed',
-              video_duration: duration,
-            }));
-          }
-        } else {
-          alert("Image Generation Error: " + (data.error || "Unknown error"));
-          setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
-        }
-      } catch (err: any) {
-        alert("Image Generation Error: " + err.message);
-        setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
-      } finally {
-        setIsGeneratingVisualId(null);
+    const applyFailure = (message: string) => {
+      alert("Visual Generation Error: " + message);
+      setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
+      if (selectedScene?.id === sceneId) {
+        setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Failed' }));
       }
-      return;
-    }
-
-    // Intercept Mock Test Mode
-    if (modelToUse === 'mock-banana') {
-      setTimeout(() => {
-        setScenes(prev => prev.map(s => 
-          s.id === sceneId ? {
-            ...s,
-            custom_media_url: "",
-            custom_media_type: 'image',
-            generation_status: 'Completed',
-            video_duration: duration,
-          } : s
-        ));
-        if (selectedScene?.id === sceneId) {
-          setSelectedScene((prev: any) => ({
-            ...prev,
-            custom_media_url: "",
-            custom_media_type: 'image',
-            generation_status: 'Completed',
-            video_duration: duration,
-          }));
-        }
-        setIsGeneratingVisualId(null);
-      }, 3000); // Simulate a 3-second render time
-      return;
-    }
+      persistSceneFields(sceneId, { generation_status: 'Failed' });
+    };
 
     try {
-      const res = await fetch("/api/ai/generate-video", {
+      const res = await fetch("/api/media/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          sceneId,
-          prompt,
-          model: modelToUse,
-          duration,
-          aspectRatio,
-        }),
+        body: JSON.stringify({ sceneId, projectId: initialProject.id, prompt, model: modelToUse, duration, aspectRatio }),
       });
 
-      const data = await res.json();
-      if (data.success && data.videoUrl) {
-        setScenes(prev => prev.map(s => 
-          s.id === sceneId ? {
-            ...s,
-            custom_media_url: data.videoUrl,
-            custom_media_type: 'video',
-            generation_status: 'Completed',
-            video_duration: data.duration || duration,
-          } : s
-        ));
-        if (selectedScene?.id === sceneId) {
-          setSelectedScene((prev: any) => ({
-            ...prev,
-            custom_media_url: data.videoUrl,
-            custom_media_type: 'video',
-            generation_status: 'Completed',
-            video_duration: data.duration || duration,
-          }));
-        }
-      } else {
-        alert("Visual Generation Error: " + (data.error || "Unknown error"));
-        setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
+      let data = await res.json();
+      if (!data.success) {
+        applyFailure(data.error || "Unknown error");
+        return;
       }
+
+      const mediaId = data.mediaId;
+      if (data.status === 'generating') {
+        data = { ...data, ...(await pollMediaStatus(mediaId)) };
+      }
+
+      if (data.status !== 'ready') {
+        applyFailure(data.error || "Generation failed");
+        return;
+      }
+
+      const result = {
+        media_id: mediaId,
+        custom_media_url: data.url || "",
+        custom_media_type: data.mediaType === 'image' ? 'image' : 'video',
+        // Stock placeholders are labeled honestly — never shown as a real render.
+        generation_status: data.simulated ? 'Simulated' : 'Completed',
+        video_duration: duration,
+      };
+      setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, ...result } : s));
+      if (selectedScene?.id === sceneId) {
+        setSelectedScene((prev: any) => ({ ...prev, ...result }));
+      }
+      persistSceneFields(sceneId, result);
     } catch (err: any) {
-      alert("Visual Generation Error: " + err.message);
-      setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
+      applyFailure(err.message);
     } finally {
       setIsGeneratingVisualId(null);
     }
@@ -810,65 +1040,16 @@ export default function TimelineEditor({
 
   const handleRenderVideo = async () => {
     setIsRendering(true);
-    setRenderStatusMessage("Submitting render job to serverless engine...");
+    setRenderStatusMessage("Submitting render job to Remotion engine...");
     setRenderOutputPath(null);
 
     try {
       const payload = {
         projectId: "demo-project-" + Math.random().toString(36).substring(7),
-        scenes: scenes.map((s, idx) => {
-          // If no custom media, we use a placeholder image that renders the text in the export!
-          const encodedText = encodeURIComponent(s.voice_over_beat?.substring(0, 50) || 'Scene ' + (idx + 1));
-          const fallbackUrl = `https://placehold.co/1080x1920/1a1a1a/FFF200.png?text=${encodedText}`;
-          return {
-            id: s.id,
-            url: s.custom_media_url || fallbackUrl,
-            duration: s.video_duration || 5,
-            trimStart: s.trim_start || 0,
-            sequenceNumber: idx + 1,
-            type: s.custom_media_type || 'video',
-          };
-        }),
-        audioTracks: (() => {
-          const totalDuration = scenes.reduce((acc, s) => acc + (s.video_duration || 5), 0);
-          
-          // If we have a master narration (Generate Full Narration), use it as a single track
-          if (masterAudioUrl) {
-            const audioUrl = masterAudioUrl.startsWith('/') 
-              ? `${window.location.origin}${masterAudioUrl}` 
-              : masterAudioUrl;
-            return [{
-              id: 'master-narration',
-              url: audioUrl,
-              startTime: 0,
-              duration: masterAudioDuration || totalDuration,
-              type: 'voiceover' as const,
-              volume: 1.0,
-            }];
-          }
-          
-          // Otherwise use per-scene audio
-          return scenes
-            .filter(s => s.audio_url)
-            .map(s => {
-              const audioUrl = s.audio_url!.startsWith('/') 
-                ? `${window.location.origin}${s.audio_url}` 
-                : s.audio_url!;
-              return {
-                id: s.id,
-                url: audioUrl,
-                startTime: scenes.slice(0, scenes.indexOf(s)).reduce((acc, prev) => acc + (prev.video_duration || 5), 0),
-                duration: s.video_duration || 5,
-                type: 'voiceover' as const,
-                volume: 1.0,
-              };
-            });
-        })(),
-        resolution: exportResolution,
-        quality: exportQuality,
+        ...remotionInputProps,
       };
 
-      const res = await fetch("/api/render", {
+      const res = await fetch("/api/render-remotion", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -876,7 +1057,7 @@ export default function TimelineEditor({
 
       const data = await res.json();
       if (data.success) {
-        if (data.mode === "local-ffmpeg") {
+        if (data.mode === "local-remotion") {
           setRenderStatusMessage("Render completed! File saved locally at: " + data.outputPath);
           setRenderOutputPath(data.outputPath);
         } else {
@@ -892,37 +1073,23 @@ export default function TimelineEditor({
     }
   };
 
+  // Panel height only — scene/clip trimming is handled by the pointer effect above.
   useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (isResizing) {
-        setTimelineHeight(prev => Math.max(200, Math.min(prev - e.movementY, window.innerHeight - 300)));
-      }
-      
-      if (resizingSceneId) {
-        const deltaX = e.clientX - resizeStartX;
-        const deltaSeconds = deltaX / scale;
-        const newDuration = Math.max(1, initialDuration + deltaSeconds);
+    if (!isResizingPanel) return;
 
-        setScenes(prev => prev.map(s => 
-          s.id === resizingSceneId ? { ...s, video_duration: newDuration } : s
-        ));
-      }
+    const handleMouseMove = (e: MouseEvent) => {
+      setTimelineHeight(prev => Math.max(200, Math.min(prev - e.movementY, window.innerHeight - 300)));
     };
-    
-    const handleMouseUp = () => {
-      setIsResizing(false);
-      setResizingSceneId(null);
-    };
-    
-    if (isResizing || resizingSceneId) {
-      window.addEventListener('mousemove', handleMouseMove);
-      window.addEventListener('mouseup', handleMouseUp);
-    }
+
+    const handleMouseUp = () => setIsResizingPanel(false);
+
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
     return () => {
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
     };
-  }, [isResizing, resizingSceneId, resizeStartX, initialDuration, scale]);
+  }, [isResizingPanel]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -936,7 +1103,10 @@ export default function TimelineEditor({
     };
     window.addEventListener('keydown', handleKeyDown);
     
-    const handleGlobalClick = () => setContextMenu(null);
+    const handleGlobalClick = () => {
+       setContextMenu(null);
+       setActiveVolumePopup(null);
+    };
     window.addEventListener('click', handleGlobalClick);
     
     return () => {
@@ -954,26 +1124,17 @@ export default function TimelineEditor({
     }
     if (contextMenu.type === 'scene') {
       if (contextMenu.trackId === 'A1') {
-        setA1Scenes(prev => {
-          const newScenes = prev.filter(s => s.id !== contextMenu.id);
-          return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-        });
         setScenes(prev => prev.map(s => s.id === contextMenu.id ? { ...s, audio_url: undefined } : s));
+        if (isPersistedScene(contextMenu.id)) persistSceneFields(contextMenu.id, { audio_url: null });
       } else {
-        setScenes(prev => {
-          const newScenes = prev.filter(s => s.id !== contextMenu.id);
-          return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-        });
-        setA1Scenes(prev => {
-          const newScenes = prev.filter(s => s.id !== contextMenu.id);
-          return newScenes.map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
-        });
+        removeScenesAndPersist([contextMenu.id]);
       }
       if (selectedScene?.id === contextMenu.id) {
          setSelectedScene(null);
       }
     } else if (contextMenu.type === 'clip') {
       setTimelineClips(prev => prev.filter(c => c.id !== contextMenu.id));
+      if (isPersistedScene(contextMenu.id)) deleteTimelineItem(contextMenu.id);
     }
     setContextMenu(null);
   };
@@ -1013,24 +1174,62 @@ export default function TimelineEditor({
   const currentTime = cursorPosition / scale;
 
   useEffect(() => {
+    // 1. Sync the Remotion Player
+    if (remotionPlayerRef.current) {
+      // The Player carries V1 scene-video audio only (narration is stripped from
+      // remotionPreviewProps), so the V1 track's mute button governs it.
+      if (trackStates.V1.muted || trackStates.V1.volume === 0) {
+        if (!remotionPlayerRef.current.isMuted()) remotionPlayerRef.current.mute();
+      } else {
+        if (remotionPlayerRef.current.isMuted()) remotionPlayerRef.current.unmute();
+        // Fallback for setVolume if it exists in Remotion Player v4
+        if (typeof remotionPlayerRef.current.setVolume === 'function') {
+           remotionPlayerRef.current.setVolume(trackStates.V1.volume ?? 1);
+        }
+      }
+      const currentFrame = Math.max(0, Math.round(currentTime * (exportQuality === 'High' ? 60 : 30)));
+      if (isPlaying) {
+        remotionPlayerRef.current.play();
+        // If it drifts by more than 5 frames, snap it back
+        if (Math.abs(remotionPlayerRef.current.getCurrentFrame() - currentFrame) > 5) {
+          remotionPlayerRef.current.seekTo(currentFrame);
+        }
+      } else {
+        remotionPlayerRef.current.pause();
+        remotionPlayerRef.current.seekTo(currentFrame);
+      }
+    }
+
+    // 2. Sync Native DOM Media Elements
     Object.values(mediaRefs.current).forEach(media => {
       if (!media) return;
 
       const track = media.dataset.track as 'V1' | 'A1' | 'A2';
       if (track && trackStates[track]) {
-        media.muted = trackStates[track].muted;
+        media.muted = trackStates[track].muted || trackStates[track].volume === 0;
+        media.volume = trackStates[track].volume !== undefined ? trackStates[track].volume : 1.0;
       }
 
       const startTime = parseFloat(media.dataset.start || "0");
       const duration = parseFloat(media.dataset.duration || "0");
       const trimStart = parseFloat(media.dataset.trimStart || "0");
       
+      // Never trust `duration` alone — it may be a placeholder set before metadata loaded.
+      // The element's own duration is authoritative once known, and a target past the end
+      // is unreachable: the browser clamps the seek, the drift never closes, and we'd seek
+      // again every frame (a futile loop that sounds like static).
+      const realDuration = Number.isFinite(media.duration) && media.duration > 0 ? media.duration : Infinity;
       const isOverlapping = currentTime >= startTime && currentTime < (startTime + duration);
+      const rawTarget = (currentTime - startTime) + trimStart;
+      const isWithinMedia = rawTarget < realDuration;
 
-      if (isPlaying && isOverlapping) {
-         const targetTime = (currentTime - startTime) + trimStart;
-         // Avoid InvalidStateError by only setting currentTime when readyState >= 1 (metadata loaded)
-         if (media.readyState >= 1 && !isNaN(targetTime)) {
+      if (isPlaying && isOverlapping && isWithinMedia) {
+         const targetTime = rawTarget;
+         // Avoid InvalidStateError by only setting currentTime when readyState >= 1 (metadata loaded).
+         // `media.seeking` is essential: assigning currentTime starts an async seek that doesn't
+         // update currentTime right away, so without this guard the next frame reads the stale
+         // value, seeks again, and repeats ~60x/sec — a seek storm that sounds like static.
+         if (media.readyState >= 1 && !isNaN(targetTime) && !media.seeking) {
             if (Math.abs(media.currentTime - targetTime) > 0.3) {
                media.currentTime = targetTime;
             }
@@ -1054,9 +1253,9 @@ export default function TimelineEditor({
          if (!media.paused) {
             media.pause();
          }
-         if (!isPlaying && isOverlapping) {
-             const targetTime = (currentTime - startTime) + trimStart;
-             if (media.readyState >= 1 && !isNaN(targetTime)) {
+         if (!isPlaying && isOverlapping && isWithinMedia) {
+             const targetTime = rawTarget;
+             if (media.readyState >= 1 && !isNaN(targetTime) && !media.seeking) {
                  if (Math.abs(media.currentTime - targetTime) > 0.1) {
                      media.currentTime = targetTime;
                  }
@@ -1064,21 +1263,13 @@ export default function TimelineEditor({
          }
       }
     });
-  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset]);
-
-  const activeScene = scenes.find((s, idx) => {
-    const startTime = scenes.slice(0, idx).reduce((acc, prev) => acc + (prev.video_duration || 5), 0);
-    const endTime = startTime + (s.video_duration || 5);
-    return currentTime >= startTime && currentTime < endTime;
-  });
-
-  const activeClipV1 = timelineClips.find(c => c.trackId === 'V1' && currentTime >= c.startTime && currentTime < (c.startTime + c.duration));
-
-  const displayScene = activeScene;
+  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality]);
 
   const getSceneColor = (status: string) => {
     if (status === 'Completed') return 'border-gray-800 bg-emerald-50 text-emerald-700';
+    if (status === 'Simulated') return 'border-gray-800 bg-amber-50 text-amber-700';
     if (status === 'Rendering') return 'border-gray-800 bg-blue-50 text-blue-700';
+    if (status === 'Failed') return 'border-red-400 bg-red-50 text-red-700';
     return 'border-gray-800 bg-gray-100 text-gray-700'; // Pending
   };
 
@@ -1091,6 +1282,58 @@ export default function TimelineEditor({
     }
   };
 
+  // Derive Remotion composition data from scenes state
+  const remotionFps = exportQuality === 'High' ? 60 : 30;
+  const remotionDimensions = (() => {
+    switch (exportResolution) {
+      case '1080x1920': return { width: 1080, height: 1920 };
+      case '1080x1080': return { width: 1080, height: 1080 };
+      default: return { width: 1920, height: 1080 };
+    }
+  })();
+
+  const remotionScenes: CompositionScene[] = useMemo(() =>
+    scenes.map(s => ({
+      id: s.id,
+      mediaUrl: s.custom_media_url || '',
+      mediaType: (s.custom_media_type || 'image') as 'video' | 'image',
+      durationInSeconds: s.video_duration || 5,
+      trimStartInSeconds: s.trim_start || 0,
+      overlay: s.overlay_text && s.overlay_preset !== 'none' ? {
+        text: s.overlay_text,
+        preset: (s.overlay_preset || 'none') as OverlayPreset,
+        color: s.overlay_color || '#FFFFFF',
+      } : undefined,
+    })),
+    [scenes]
+  );
+
+  const remotionTotalDurationInFrames = useMemo(() => {
+    const v1Duration = remotionScenes.reduce((acc, s) => acc + s.durationInSeconds, 0);
+    const maxDuration = Math.max(v1Duration, masterAudioDuration || 0);
+    return Math.max(1, Math.round(maxDuration * remotionFps));
+  }, [remotionScenes, masterAudioDuration, remotionFps]);
+
+  const remotionInputProps: VideoCompositionProps = useMemo(() => ({
+    scenes: remotionScenes,
+    audioUrl: masterAudioUrl || undefined,
+    fps: remotionFps,
+    width: remotionDimensions.width,
+    height: remotionDimensions.height,
+    durationInFrames: remotionTotalDurationInFrames,
+  }), [remotionScenes, masterAudioUrl, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
+
+  // The preview Player deliberately gets NO narration track: the hidden <audio>
+  // element is the single source of narration while editing, and feeding the same
+  // file to both made it play twice, out of sync. Dropping only `audioUrl` lets the
+  // Player stay unmuted so V1 scene videos keep their own soundtracks — which is
+  // otherwise silenced entirely, since the per-scene <audio> fallback below only
+  // renders when there's no master narration. The render payload keeps audioUrl.
+  const remotionPreviewProps: VideoCompositionProps = useMemo(
+    () => ({ ...remotionInputProps, audioUrl: undefined }),
+    [remotionInputProps]
+  );
+
   return (
     <div className="flex flex-col h-full bg-gray-50 text-gray-900">
       {/* Hidden Media Elements for Audio Sync */}
@@ -1100,24 +1343,46 @@ export default function TimelineEditor({
            <audio
              key="master-narration"
              src={masterAudioUrl}
+             // The element lives in a display:none wrapper, where browsers are free to
+             // resolve preload to "none" — without this the duration is never learned,
+             // which leaves the A1 block spanning the whole ruler and makes the sync
+             // effect chase seek targets past the end of the file.
+             preload="auto"
              ref={el => {
                masterAudioRef.current = el;
                mediaRefs.current["master-narration"] = el;
+               if (el && el.readyState >= 1) {
+                 const d = el.duration;
+                 if (Number.isFinite(d) && d > 0) {
+                    setMasterAudioDuration(d);
+                 }
+               }
              }}
              data-start="0"
              data-duration={masterAudioDuration || 9999}
              data-track="A1"
              muted={trackStates.A1.muted}
-             onLoadedMetadata={(e) => setMasterAudioDuration((e.target as HTMLAudioElement).duration)}
+             onLoadedMetadata={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
+             onCanPlay={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
+             onDurationChange={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
            />
          )}
          {/* Per-scene audio clips — used only when no master narration exists */}
-         {!masterAudioUrl && a1Scenes.map((scene, idx) => scene.audio_url && (
-            <audio 
+         {!masterAudioUrl && scenes.map((scene, idx) => scene.audio_url && (
+            <audio
               key={`audio-scene-${scene.id}`}
               src={scene.audio_url}
               ref={el => { mediaRefs.current[`scene-${scene.id}`] = el; }}
-              data-start={a1Scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
+              data-start={scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
               data-duration={scene.video_duration || 5}
               data-track="A1"
               muted={trackStates.A1.muted}
@@ -1257,7 +1522,7 @@ export default function TimelineEditor({
                          label.style.fontWeight = 'bold';
                          label.style.zIndex = '10';
                          label.style.whiteSpace = 'nowrap';
-                         label.innerText = asset.file.name;
+                         label.innerText = asset.name;
                          dragGhost.appendChild(label);
                          
                          document.body.appendChild(dragGhost);
@@ -1316,21 +1581,24 @@ export default function TimelineEditor({
                               {asset.duration ? formatDuration(asset.duration) : '00:00'}
                             </div>
                          )}
+                         {/* Upload state — a failed upload means this asset won't survive a reload */}
+                         {asset.uploadStatus === 'uploading' && (
+                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-black/60 rounded text-[9px] text-white font-bold flex items-center gap-1 z-10">
+                              <Loader2 size={9} className="animate-spin" /> Saving
+                            </div>
+                         )}
+                         {asset.uploadStatus === 'failed' && (
+                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-red-600 rounded text-[9px] text-white font-bold z-10" title="Upload failed — this file won't persist after a reload">
+                              Not saved
+                            </div>
+                         )}
                          {/* Audio Quick Add Buttons */}
                          {asset.type === 'audio' && (
                            <div className="absolute bottom-1 right-1 flex items-center gap-1 z-20">
                              <button
                                onClick={(e) => {
                                  e.stopPropagation();
-                                 const newClip: TimelineClip = {
-                                   id: Math.random().toString(36).substring(7),
-                                   assetId: asset.id,
-                                   asset,
-                                   trackId: 'A1',
-                                   startTime: 0,
-                                   duration: Math.min(asset.duration || 5, 5)
-                                 };
-                                 setTimelineClips(prev => [...prev, newClip]);
+                                 addTimelineClip(asset, 'A1', 0, Math.min(asset.duration || 5, 5));
                                }}
                                className="px-1.5 py-0.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-[9px] font-bold transition-colors shadow-sm"
                                title="Add to Track A1 at 0s"
@@ -1340,15 +1608,7 @@ export default function TimelineEditor({
                              <button
                                onClick={(e) => {
                                  e.stopPropagation();
-                                 const newClip: TimelineClip = {
-                                   id: Math.random().toString(36).substring(7),
-                                   assetId: asset.id,
-                                   asset,
-                                   trackId: 'A2',
-                                   startTime: 0,
-                                   duration: Math.min(asset.duration || 5, 5)
-                                 };
-                                 setTimelineClips(prev => [...prev, newClip]);
+                                 addTimelineClip(asset, 'A2', 0, Math.min(asset.duration || 5, 5));
                                }}
                                className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[9px] font-bold transition-colors shadow-sm"
                                title="Add to Track A2 at 0s"
@@ -1360,8 +1620,8 @@ export default function TimelineEditor({
                        </div>
                        
                        {/* Filename Below */}
-                       <span className="text-[10px] text-gray-600 group-hover/asset:text-purple-600 font-medium truncate w-full text-center px-0.5 transition-colors" title={asset.file.name}>
-                         {asset.file.name}
+                       <span className="text-[10px] text-gray-600 group-hover/asset:text-purple-600 font-medium truncate w-full text-center px-0.5 transition-colors" title={asset.name}>
+                         {asset.name}
                        </span>
                      </div>
                    ))}
@@ -1383,7 +1643,7 @@ export default function TimelineEditor({
                       </div>
                       <div>
                         <h3 className="font-bold text-gray-900 text-sm">{selectedSceneTrack === 'A1' ? 'A1 Audio Clip' : 'A2 Custom Audio'}</h3>
-                        <span className="text-[10px] text-gray-400 font-mono">FILE: {selectedTimelineClip.asset.file.name}</span>
+                        <span className="text-[10px] text-gray-400 font-mono">FILE: {selectedTimelineClip.asset.name}</span>
                       </div>
                     </div>
 
@@ -1412,6 +1672,7 @@ export default function TimelineEditor({
                             const newDur = parseFloat(e.target.value);
                             setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, duration: newDur } : c));
                             setSelectedTimelineClip(prev => prev ? { ...prev, duration: newDur } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, { duration: newDur }, true);
                           }}
                           className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
                         />
@@ -1444,6 +1705,10 @@ export default function TimelineEditor({
                               trimStart: newTrim,
                               duration: Math.min(prev.duration, remainingDur)
                             } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, {
+                              trim_start: newTrim,
+                              duration: Math.min(selectedTimelineClip.duration, remainingDur),
+                            }, true);
                           }}
                           className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
                         />
@@ -1465,6 +1730,7 @@ export default function TimelineEditor({
                             const newStart = Math.max(0, parseFloat(e.target.value) || 0);
                             setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, startTime: newStart } : c));
                             setSelectedTimelineClip(prev => prev ? { ...prev, startTime: newStart } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, { start_time: newStart }, true);
                           }}
                           className="w-full p-2 text-xs border border-gray-200 rounded-md font-mono"
                         />
@@ -1569,6 +1835,7 @@ export default function TimelineEditor({
                              className="w-full bg-white border border-gray-200 focus:border-purple-400 focus:ring-4 focus:ring-purple-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[80px] shadow-sm"
                              value={selectedScene.voice_over_beat}
                              onChange={(e) => updateSceneDetails(selectedScene.id, 'voice_over_beat', e.target.value)}
+                             onBlur={(e) => persistSceneFields(selectedScene.id, { voice_over_beat: e.target.value })}
                            />
                            {availableVoices.length > 0 && (
                              <div>
@@ -1609,7 +1876,69 @@ export default function TimelineEditor({
                         )}
                      </div>
 
-                     {/* ── Visual Generation Accordion ── */}
+                     {/* ── Text Overlay Accordion ── */}
+                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                        <button
+                          onClick={() => setIsOverlayExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                            <Type size={14} className="text-amber-500" /> Text Overlay
+                          </span>
+                          {isOverlayExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                        </button>
+                        {isOverlayExpanded && (
+                          <div className="p-3 bg-white border-t border-gray-100 space-y-3">
+                            {/* Overlay Text */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Overlay Text</label>
+                              <input
+                                type="text"
+                                className="w-full bg-white border border-gray-200 focus:border-amber-400 focus:ring-4 focus:ring-amber-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
+                                value={selectedScene.overlay_text || ''}
+                                onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_text', e.target.value)}
+                                placeholder="e.g. Welcome to the future!"
+                              />
+                            </div>
+                            {/* Preset & Color */}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-bold text-gray-500 mb-1">Animation</label>
+                                <select
+                                  value={selectedScene.overlay_preset || 'none'}
+                                  onChange={(e: any) => updateSceneDetails(selectedScene.id, 'overlay_preset', e.target.value)}
+                                  className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                >
+                                  <option value="none">None</option>
+                                  <option value="slide">Slide In</option>
+                                  <option value="pop">Pop In (Hormozi)</option>
+                                  <option value="typewriter">Typewriter</option>
+                                  <option value="lower-third">Lower Third</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-gray-500 mb-1">Color</label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={selectedScene.overlay_color || '#FFFFFF'}
+                                    onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_color', e.target.value)}
+                                    className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
+                                  />
+                                  <span className="text-[10px] text-gray-500 font-mono">{selectedScene.overlay_color || '#FFFFFF'}</span>
+                                </div>
+                              </div>
+                            </div>
+                            {selectedScene.overlay_text && selectedScene.overlay_preset !== 'none' && (
+                              <p className="text-[10px] text-amber-600 font-medium bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
+                                ✨ Preview this overlay in the main video player above.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                     </div>
+
+                      {/* ── Visual Generation Accordion ── */}
                      <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
                         <button
                           onClick={() => setIsVisualExpanded(prev => !prev)}
@@ -1632,13 +1961,17 @@ export default function TimelineEditor({
                                    onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
                                    className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
                                  >
-                                   <option value="gemini-image">Google Gemini Pro Image (Real)</option>
-                                   <option value="fal-luma">Fal.ai Luma Dream</option>
-                                   <option value="fal-kling">Fal.ai Kling AI</option>
-                                   <option value="fal-minimax">Fal.ai Minimax</option>
-                                   <option value="gemini-veo">Google Gemini / Veo</option>
-                                   <option value="runway-gen3">Runway Gen-3</option>
-                                   <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                                   <optgroup label="Live — real render">
+                                     <option value="gemini-image">Google Gemini Pro Image</option>
+                                   </optgroup>
+                                   <optgroup label="Simulated — no API key configured">
+                                     <option value="fal-luma">Fal.ai Luma Dream</option>
+                                     <option value="fal-kling">Fal.ai Kling AI</option>
+                                     <option value="fal-minimax">Fal.ai Minimax</option>
+                                     <option value="gemini-veo">Google Gemini / Veo</option>
+                                     <option value="runway-gen3">Runway Gen-3</option>
+                                     <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                                   </optgroup>
                                  </select>
                               </div>
                               <div>
@@ -1648,6 +1981,14 @@ export default function TimelineEditor({
                                    onChange={(e: any) => updateSceneDetails(selectedScene.id, 'video_duration', Number(e.target.value))}
                                    className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
                                  >
+                                   {/* Deepgram writes exact narration-aligned durations (e.g. 4.7s).
+                                       Surface that value so the select isn't blank and picking it back
+                                       doesn't silently snap the scene off the voiceover. */}
+                                   {selectedScene.video_duration != null && ![5, 8, 10].includes(Number(selectedScene.video_duration)) && (
+                                     <option value={selectedScene.video_duration}>
+                                       {Number(selectedScene.video_duration).toFixed(1)}s (narration-aligned)
+                                     </option>
+                                   )}
                                    <option value={5}>5 seconds</option>
                                    <option value={8}>8 seconds</option>
                                    <option value={10}>10 seconds</option>
@@ -1659,15 +2000,21 @@ export default function TimelineEditor({
                              className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[200px] flex-1 shadow-sm"
                              value={selectedScene.final_video_prompt}
                              onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
+                             onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
                              placeholder="Describe the visual scene in detail..."
                            />
                            <div className="flex justify-between items-center">
                               <span className={`text-[10px] font-bold px-2 py-1 rounded-md border ${
                                  selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                 selectedScene.generation_status === 'Simulated' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                                  selectedScene.generation_status === 'Rendering' || isGeneratingVisualId === selectedScene.id ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
                                  'bg-gray-100 text-gray-600 border-gray-200'
                               }`}>
-                                {isGeneratingVisualId === selectedScene.id ? "Rendering..." : selectedScene.generation_status}
+                                {isGeneratingVisualId === selectedScene.id
+                                  ? "Rendering..."
+                                  : selectedScene.generation_status === 'Simulated'
+                                    ? "Simulated — not a real render"
+                                    : selectedScene.generation_status}
                               </span>
                               <div className="flex items-center gap-2">
                                 <button
@@ -1707,18 +2054,23 @@ export default function TimelineEditor({
                 <h3 className="text-sm font-bold text-gray-800 mb-4">Export Settings</h3>
                 <div className="space-y-4">
                    <div>
-                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Global AI Model</label>
-                     <select 
+                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Default AI Model</label>
+                     <select
                        value={selectedAiModel}
-                       onChange={(e) => setSelectedAiModel(e.target.value as any)}
+                       onChange={(e) => setSelectedAiModel(e.target.value as typeof selectedAiModel)}
                        className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
                      >
                        <option value="gemini-image">Google Gemini Pro Image (Real)</option>
                        <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
-                       <option value="runway-gen2">Runway Gen-2</option>
-                       <option value="pika-labs">Pika Labs (v1.0)</option>
-                       <option value="heygen">HeyGen Avatar</option>
+                       <option value="fal-luma">Fal.ai — Luma Dream Machine</option>
+                       <option value="fal-kling">Fal.ai — Kling Video</option>
+                       <option value="fal-minimax">Fal.ai — MiniMax</option>
+                       <optgroup label="Simulated — no API key configured">
+                         <option value="gemini-veo">Google Gemini / Veo</option>
+                         <option value="runway-gen3">Runway Gen-3</option>
+                       </optgroup>
                      </select>
+                     <p className="text-[10px] text-gray-400 mt-1">Used by &ldquo;Generate All&rdquo; and as the fallback for scenes with no model set.</p>
                    </div>
                    <div>
                      <label className="block text-xs font-bold text-gray-600 mb-1.5">Resolution</label>
@@ -1746,37 +2098,35 @@ export default function TimelineEditor({
                    </div>
                    
                    <div className="pt-6 mt-4 border-t border-gray-100">
-                     <button 
-                       onClick={handleRenderVideo}
-                       disabled={isRendering}
-                       className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                     >
-                       {isRendering ? (
-                         <>
-                           <Loader2 size={18} className="animate-spin" /> Rendering Video...
-                         </>
-                       ) : (
-                         <>
-                           <Download size={18} /> Render & Export Video
-                         </>
-                       )}
-                     </button>
+                     {renderOutputPath ? (
+                        <a
+                          href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
+                          download
+                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                        >
+                          <Download size={18} /> Download Video
+                        </a>
+                     ) : (
+                       <button 
+                         onClick={handleRenderVideo}
+                         disabled={isRendering}
+                         className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                       >
+                         {isRendering ? (
+                           <>
+                             <Loader2 size={18} className="animate-spin" /> Rendering Video...
+                           </>
+                         ) : (
+                           <>
+                             <Download size={18} /> Render & Export Video
+                           </>
+                         )}
+                       </button>
+                     )}
                      
-                     {renderStatusMessage && (
-                        <div className={`mt-4 p-4 rounded-xl border text-xs font-medium break-all ${renderOutputPath ? 'bg-emerald-50 border-emerald-200 text-emerald-800' : 'bg-gray-50 border-gray-200 text-gray-700'}`}>
+                     {renderStatusMessage && !renderOutputPath && (
+                        <div className="mt-4 p-4 rounded-xl border text-xs font-medium break-all bg-gray-50 border-gray-200 text-gray-700">
                           {renderStatusMessage}
-                          {renderOutputPath && (
-                            <div className="mt-3 flex flex-col gap-2">
-                              <a
-                                href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
-                                download
-                                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                              >
-                                <Download size={16} /> Download Video
-                              </a>
-                              <p className="text-[10px] text-emerald-600 text-center font-medium">Click to save to your computer</p>
-                            </div>
-                          )}
                         </div>
                       )}
 
@@ -1789,21 +2139,20 @@ export default function TimelineEditor({
           </div>
         </div>
 
-        {/* Middle Panel (Main Video Preview) */}
-        {/* We keep the preview player area dark because it acts like a true screen/monitor */}
+        {/* Middle Panel (Main Video Preview — Remotion Player) */}
         <div className="flex-1 bg-gray-100 relative flex items-center justify-center p-4 lg:p-8 border-l border-r border-gray-200 shadow-inner overflow-hidden">
            
            {/* Maximized player container that respects aspect ratio */}
-           <div className="w-full h-full flex flex-col items-center justify-center pb-4"> {/* reduced pb to make it balanced */}
+           <div className="w-full h-full flex flex-col items-center justify-center pb-4">
              <div 
                className="bg-black rounded-2xl overflow-hidden shadow-2xl relative flex flex-col items-center justify-center border border-gray-800 transition-all duration-300 w-full max-h-full"
                style={{ 
                  aspectRatio: getAspectRatioStyle(),
-                 maxWidth: aspectRatio === '16:9' ? '100%' : 'min(100%, 80vh)' // Limit width for taller formats so they don't get cut off vertically
+                 maxWidth: aspectRatio === '16:9' ? '100%' : 'min(100%, 80vh)'
                }}
              >
                
-               {/* Media Asset Preview / Mock Video content based on selected scene */}
+               {/* Media Asset Preview (when an asset is explicitly selected from the media panel) */}
                {selectedAsset ? (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-black">
                      {selectedAsset.type === 'video' ? (
@@ -1813,74 +2162,33 @@ export default function TimelineEditor({
                      ) : (
                         <div className="flex flex-col items-center text-gray-400 bg-gray-900 w-full h-full justify-center">
                            <Music size={64} className="mb-6 opacity-50 text-purple-500" />
-                           <p className="text-sm font-bold mb-4">{selectedAsset.file.name}</p>
+                           <p className="text-sm font-bold mb-4">{selectedAsset.name}</p>
                            <audio src={selectedAsset.url} controls className="w-3/4 max-w-sm outline-none" autoPlay />
                         </div>
                      )}
                   </div>
-               ) : activeClipV1 ? (
-                 <div className="absolute inset-0 flex flex-col items-center justify-center bg-black">
-                    {activeClipV1.asset.type === 'video' ? (
-                       <video 
-                         src={activeClipV1.asset.url} 
-                         className="w-full h-full object-contain"
-                         playsInline
-                         ref={el => { 
-                            if (el) {
-                              mediaRefs.current[`clip-${activeClipV1.id}`] = el;
-                            } else {
-                              delete mediaRefs.current[`clip-${activeClipV1.id}`];
-                            }
-                         }}
-                         data-start={activeClipV1.startTime}
-                         data-duration={activeClipV1.duration}
-                         data-trim-start={activeClipV1.trimStart || 0}
-                         data-track="V1"
-                         muted={trackStates.V1.muted}
-                       />
-                    ) : (
-                       <img src={activeClipV1.asset.url} className="w-full h-full object-contain" alt="Asset Preview" />
-                    )}
-                 </div>
-               ) : displayScene ? (
-                 <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center transition-opacity duration-300">
-                    {displayScene.custom_media_url ? (
-                        displayScene.custom_media_type === 'video' ? (
-                           <video 
-                             src={displayScene.custom_media_url} 
-                             className="absolute inset-0 w-full h-full object-contain bg-black"
-                             playsInline
-                             ref={el => { 
-                                if (el) {
-                                  mediaRefs.current[`scene-video-${displayScene.id}`] = el;
-                                } else {
-                                  delete mediaRefs.current[`scene-video-${displayScene.id}`];
-                                }
-                             }}
-                             data-start={scenes.slice(0, scenes.indexOf(displayScene)).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
-                             data-duration={displayScene.video_duration || 5}
-                             data-trim-start={displayScene.trim_start || 0}
-                             data-track="V1"
-                             muted={trackStates.V1.muted}
-                           />
-                        ) : (
-                           <img src={displayScene.custom_media_url} className="absolute inset-0 w-full h-full object-contain bg-black" alt="Scene Preview" />
-                        )
-                    ) : (
-                       <>
-                          {displayScene.generation_status === 'Completed' ? (
-                             <div className="absolute inset-0 bg-[url('https://images.unsplash.com/photo-1555529733-0e67056058e1?q=80&w=1000')] bg-cover bg-center opacity-70"></div>
-                          ) : (
-                             <Film size={48} className="text-gray-700 mb-4 opacity-50" />
-                          )}
-                          <div className="relative z-10 max-w-lg">
-                            <p className="text-yellow-400 text-xl md:text-3xl font-black uppercase tracking-wider drop-shadow-md text-shadow" style={{ textShadow: '2px 2px 4px rgba(0,0,0,0.8)' }}>
-                              {displayScene.voice_over_beat}
-                            </p>
-                          </div>
-                       </>
-                    )}
-                 </div>
+               ) : scenes.length > 0 ? (
+                  /* Remotion Player — renders the full composition with all scenes and overlays */
+                  <div className="absolute inset-0">
+                    <Player
+                      ref={remotionPlayerRef}
+                      component={VideoComposition}
+                      inputProps={remotionPreviewProps}
+                      durationInFrames={remotionTotalDurationInFrames}
+                      compositionWidth={remotionDimensions.width}
+                      compositionHeight={remotionDimensions.height}
+                      fps={remotionFps}
+                      style={{ width: '100%', height: '100%' }}
+                      controls={false}
+                      autoPlay={false}
+                      loop={false}
+                      // Remotion's Player has no `muted` prop — only `initiallyMuted`,
+                      // plus imperative mute()/unmute() applied in the sync effect.
+                      // The Player supplies V1 scene-video audio only (narration is
+                      // stripped from remotionPreviewProps), so the V1 mute button drives it.
+                      initiallyMuted={trackStates.V1.muted}
+                    />
+                  </div>
                ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 bg-gray-900">
                      <MonitorPlay size={48} className="mb-4 opacity-50" />
@@ -1888,10 +2196,10 @@ export default function TimelineEditor({
                   </div>
                )}
 
-               {/* Native controls are used instead of custom overlay */}
              </div>
            </div>
         </div>
+
 
         {/* Right Panel (CapCut-style File Details / Properties) */}
         {selectedScene && (!selectedTimelineClip || (selectedSceneTrack !== 'A1' && selectedSceneTrack !== 'A2')) && activeTab === 'scene' && (
@@ -1937,9 +2245,11 @@ export default function TimelineEditor({
                        <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Source</span>
                          <span className="text-[11px] font-semibold text-gray-800">
-                           {selectedScene.custom_media_url
-                             ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
-                             : 'Draft (No Media)'}
+                           {selectedScene.generation_status === 'Simulated'
+                             ? 'Simulated Placeholder'
+                             : selectedScene.custom_media_url
+                               ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
+                               : 'Draft (No Media)'}
                          </span>
                        </div>
                        {/* Type */}
@@ -1982,6 +2292,7 @@ export default function TimelineEditor({
                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Status</span>
                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
                            selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                           selectedScene.generation_status === 'Simulated' ? 'bg-amber-50 text-amber-700 border-amber-200' :
                            selectedScene.generation_status === 'Rendering' ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
                            'bg-gray-100 text-gray-600 border-gray-200'
                          }`}>
@@ -2026,7 +2337,7 @@ export default function TimelineEditor({
       {/* Resizer Handle */}
       <div 
         className="h-1.5 w-full bg-gray-200 border-y border-gray-300 cursor-row-resize hover:bg-purple-200 transition-colors flex items-center justify-center flex-none z-20"
-        onMouseDown={() => setIsResizing(true)}
+        onMouseDown={() => setIsResizingPanel(true)}
       >
         <div className="w-12 h-0.5 rounded-full bg-gray-400"></div>
       </div>
@@ -2048,7 +2359,7 @@ export default function TimelineEditor({
                 onClick={() => {
                   const allKeys: string[] = [
                     ...scenes.map(s => `${s.id}_V1`),
-                    ...a1Scenes.map(s => `${s.id}_A1`),
+                    ...scenes.map(s => `${s.id}_A1`),
                     ...timelineClips.map(c => `${c.id}_${c.trackId}`)
                   ];
                   setSelectedSceneKeys(allKeys);
@@ -2155,7 +2466,7 @@ export default function TimelineEditor({
 
               {/* Ruler Track */}
               <div className="flex items-end mb-1 relative group w-max">
-                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]"></div>
+                 <div className="w-32 shrink-0 sticky left-0 z-50 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] before:absolute before:-inset-y-4 before:inset-x-0 before:bg-white before:-z-10 before:border-r before:border-gray-200"></div>
                  <div 
                     className="relative h-6 border-b border-gray-200 cursor-pointer"
                     style={{ width: `${timelineDuration * scale}px` }}
@@ -2190,10 +2501,8 @@ export default function TimelineEditor({
               </div>
 
               {/* Video Track (V1) */}
-              <div 
-                className="flex items-center mb-0.5 group relative mt-2"
-              >
-                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+              <div className="flex items-stretch group relative">
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
@@ -2214,10 +2523,28 @@ export default function TimelineEditor({
                        {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
-                    <button onClick={() => toggleTrackState('V1', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
-                       {trackStates.V1.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
-                    </button>
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'V1' ? null : 'V1'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.muted || trackStates.V1.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                         {trackStates.V1.muted || trackStates.V1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                      </button>
+                      {activeVolumePopup === 'V1' && (
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.V1.volume ?? 1) * 100)}</span>
+                          <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
+                             <input 
+                               type="range" min="0" max="1" step="0.05" 
+                               value={trackStates.V1.volume ?? 1} 
+                               onChange={e => {
+                                  const vol = parseFloat(e.target.value);
+                                  setTrackStates(prev => ({...prev, V1: {...prev.V1, volume: vol, muted: vol === 0}}));
+                               }} 
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
+                             />
+                          </div>
+                        </div>
+                      )}
+                    </div>
                  </div>
                  <div 
                    className={`flex flex-1 relative h-16 rounded-r-md items-center border-y border-r shadow-sm transition-all ${trackStates.V1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
@@ -2276,7 +2603,7 @@ export default function TimelineEditor({
                          }}
                          onClick={(e) => {
                            if (trackStates.V1.locked) return;
-                           handleSelectSceneBlock(e, scene, 'V1');
+                           handleSelectSceneBlock(e, scene, 'V1', idx);
                          }}
                          onContextMenu={(e) => {
                            e.preventDefault();
@@ -2305,10 +2632,11 @@ export default function TimelineEditor({
                                      Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
                                         <video 
                                           key={i}
-                                          src={`${scene.custom_media_url}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`} 
-                                          className="h-full object-cover shrink-0 border-r border-black/20" 
+                                          src={`${scene.custom_media_url}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
+                                          className="h-full object-cover shrink-0 border-r border-black/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                           preload="metadata"
+                                          muted
                                         />
                                      ))
                                   ) : (
@@ -2404,7 +2732,7 @@ export default function TimelineEditor({
                          <div className="w-full h-full p-1.5 flex flex-col relative pointer-events-none">
                             <div className="flex items-center gap-1.5 mb-1 opacity-90 text-blue-900">
                                {clip.asset.type === 'video' ? <Film size={10} /> : clip.asset.type === 'image' ? <ImageIcon size={10} /> : <Music size={10} />}
-                               <span className="text-[9px] font-bold truncate">{clip.asset.file.name}</span>
+                               <span className="text-[9px] font-bold truncate">{clip.asset.name}</span>
                             </div>
                          </div>
                       </Rnd>
@@ -2413,15 +2741,13 @@ export default function TimelineEditor({
               </div>
 
               {/* Audio Track (A1) */}
-              <div 
-                className="flex items-center mb-0.5 group relative"
-              >
-                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+              <div className="flex items-stretch group relative">
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
                         const allA1Keys = [
-                          ...a1Scenes.map(s => `${s.id}_A1`),
+                          ...scenes.map(s => `${s.id}_A1`),
                           ...timelineClips.filter(c => c.trackId === 'A1').map(c => `${c.id}_A1`)
                         ];
                         setSelectedSceneKeys(allA1Keys);
@@ -2437,10 +2763,28 @@ export default function TimelineEditor({
                        {trackStates.A1.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
-                    <button onClick={() => toggleTrackState('A1', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
-                       {trackStates.A1.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
-                    </button>
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A1' ? null : 'A1'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.muted || trackStates.A1.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                         {trackStates.A1.muted || trackStates.A1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                      </button>
+                      {activeVolumePopup === 'A1' && (
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.A1.volume ?? 1) * 100)}</span>
+                          <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
+                             <input 
+                               type="range" min="0" max="1" step="0.05" 
+                               value={trackStates.A1.volume ?? 1} 
+                               onChange={e => {
+                                  const vol = parseFloat(e.target.value);
+                                  setTrackStates(prev => ({...prev, A1: {...prev.A1, volume: vol, muted: vol === 0}}));
+                               }} 
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
+                             />
+                          </div>
+                        </div>
+                      )}
+                    </div>
                  </div>
                  <div 
                    className={`flex flex-1 relative h-14 rounded-r-md items-center border-y border-r shadow-sm transition-all ${trackStates.A1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
@@ -2457,10 +2801,10 @@ export default function TimelineEditor({
                       if (draggingScene?.track === 'A1') {
                         const rect = e.currentTarget.getBoundingClientRect();
                         const dropX = e.clientX - rect.left;
-                        let insertIdx = a1Scenes.length;
-                        
-                        for (let i = 0; i < a1Scenes.length; i++) {
-                           const sceneDuration = a1Scenes[i].video_duration || 5;
+                        let insertIdx = scenes.length;
+
+                        for (let i = 0; i < scenes.length; i++) {
+                           const sceneDuration = scenes[i].video_duration || 5;
                            const sceneLeft = getSceneLeftPosition('A1', i);
                            const sceneMidpoint = sceneLeft + (sceneDuration * scale / 2);
                            if (dropX < sceneMidpoint) {
@@ -2482,7 +2826,8 @@ export default function TimelineEditor({
                    {masterAudioUrl ? (
                      <div
                        className="h-[70%] absolute top-[15%] rounded-md border border-purple-600 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 overflow-hidden shadow-sm"
-                       style={{ left: 0, width: `${masterAudioDuration > 0 ? masterAudioDuration * scale : timelineDuration * scale}px` }}
+                       // Use timelineDuration as a visual fallback so it doesn't shrink with V1 scenes if duration is missing.
+                       style={{ left: 0, width: `${(masterAudioDuration || timelineDuration) * scale}px` }}
                      >
                        <div className="flex items-center gap-1.5 p-1 opacity-90">
                          <Volume2 size={9} className="flex-none" />
@@ -2509,7 +2854,7 @@ export default function TimelineEditor({
                    ) : (
                      /* ─ PER-SCENE clips (shown only when no master narration) ─ */
                      <>
-                     {a1Scenes.map((scene, idx) => (
+                     {scenes.map((scene, idx) => (
                         <div 
                           key={`audio-${scene.id}`}
                           draggable={!trackStates.A1.locked}
@@ -2520,7 +2865,7 @@ export default function TimelineEditor({
                              e.dataTransfer.effectAllowed = 'copyMove';
                           }}
                           onDragEnd={() => { setDraggingScene(null); setA1DragInsertIndex(null); }}
-                          onClick={(e) => { if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1'); }}
+                          onClick={(e) => { if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1', idx); }}
                           onContextMenu={(e) => {
                             e.preventDefault();
                             if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
@@ -2583,7 +2928,9 @@ export default function TimelineEditor({
                         onDragStop={(e, d) => {
                            const newTime = d.x / scale;
                            const snappedTime = applyMagneticSnap('A1', newTime, clip.id);
-                           setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime < 0.2 ? 0 : snappedTime } : c));
+                           const finalStart = snappedTime < 0.2 ? 0 : snappedTime;
+                           setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: finalStart } : c));
+                           persistTimelineItemFields(clip.id, { start_time: finalStart });
                         }}
                         onResizeStop={(e, direction, ref, delta, position) => {
                            const newWidth = ref.offsetWidth;
@@ -2602,6 +2949,7 @@ export default function TimelineEditor({
                            if (selectedTimelineClip?.id === clip.id) {
                               setSelectedTimelineClip(prev => prev ? { ...prev, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : null);
                            }
+                           persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
                         className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-all p-1 ${
@@ -2653,7 +3001,7 @@ export default function TimelineEditor({
                            title="Drag to move between Track A1 and A2"
                          >
                             <Music size={9} className="shrink-0 pointer-events-none" />
-                            <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.file.name}</span>
+                            <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
@@ -2694,10 +3042,8 @@ export default function TimelineEditor({
               </div>
 
               {/* Music Track (A2) */}
-              <div 
-                className="flex items-center group relative"
-              >
-                 <div className="w-32 shrink-0 sticky left-0 z-30 bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+              <div className="flex items-stretch group relative">
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
@@ -2715,10 +3061,28 @@ export default function TimelineEditor({
                        {trackStates.A2.locked ? <Lock size={18} /> : <Unlock size={18} />}
                        <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
-                    <button onClick={() => toggleTrackState('A2', 'muted')} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.muted ? 'text-purple-600 hover:text-purple-700' : ''}`}>
-                       {trackStates.A2.muted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Mute Track</div>
-                    </button>
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A2' ? null : 'A2'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.muted || trackStates.A2.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                         {trackStates.A2.muted || trackStates.A2.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                      </button>
+                      {activeVolumePopup === 'A2' && (
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.A2.volume ?? 1) * 100)}</span>
+                          <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
+                             <input 
+                               type="range" min="0" max="1" step="0.05" 
+                               value={trackStates.A2.volume ?? 1} 
+                               onChange={e => {
+                                  const vol = parseFloat(e.target.value);
+                                  setTrackStates(prev => ({...prev, A2: {...prev.A2, volume: vol, muted: vol === 0}}));
+                               }} 
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
+                             />
+                          </div>
+                        </div>
+                      )}
+                    </div>
                  </div>
                  <div 
                    className={`flex flex-1 relative h-12 rounded-r-md items-center border transition-all ${trackStates.A2.locked ? 'bg-gray-100 border-gray-200 border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-gray-50 border-gray-200 border-dashed hover:bg-gray-100 cursor-pointer'}`} 
@@ -2762,6 +3126,7 @@ export default function TimelineEditor({
                            const newTime = d.x / scale;
                            const snappedTime = applyMagneticSnap('A2', newTime, clip.id);
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime } : c));
+                           persistTimelineItemFields(clip.id, { start_time: snappedTime });
                            if (selectedTimelineClip?.id === clip.id) {
                               setSelectedTimelineClip(prev => prev ? { ...prev, startTime: snappedTime } : null);
                            }
@@ -2783,6 +3148,7 @@ export default function TimelineEditor({
                            if (selectedTimelineClip?.id === clip.id) {
                               setSelectedTimelineClip(prev => prev ? { ...prev, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : null);
                            }
+                           persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
                         className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-all p-1 ${
@@ -2852,7 +3218,7 @@ export default function TimelineEditor({
                            title="Drag to move between Track A1 and A2"
                          >
                             <Music size={9} className="shrink-0 pointer-events-none" />
-                            <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.file.name}</span>
+                            <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>

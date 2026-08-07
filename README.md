@@ -1,6 +1,23 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# AI Video Generation SaaS (Assemblyreel.io)
 
-## Getting Started
+An advanced, automated personal content engine that generates highly tailored video drafts for niche social media channels. It features an automated multi-agent AI pipeline for scripting and visual generation, alongside a robust web-based timeline editor.
+
+## Tech Stack
+
+- **Frontend & Routing:** Next.js (App Router), React 19
+- **Styling:** Tailwind CSS
+- **Database & Auth:** Supabase (PostgreSQL)
+- **Video Rendering Engine:** Remotion (`@remotion/player`, `@remotion/renderer`) - Provides real-time interactive canvas previews and server-side kinetic typography composition. *(Note: We recently migrated from FFmpeg to Remotion for advanced programmatic control).*
+- **AI Core (External Services):** Google Gemini 2.5 API (Scripting), Fal.ai (Visual Generation), Cartesia / ElevenLabs / Local Voice Studio (TTS).
+
+## Features
+
+- **Workspace Wizard:** Easily spin up customized channel profiles (True Crime, Finance, etc.) with default voices, aspect ratios, and styles.
+- **7-Agent AI Engine:** A multi-step generative workflow that creates scripts, parses them into scene beats, maintains character consistency, and assembles rich prompts.
+- **Timeline Editor:** A bespoke, browser-based drag-and-drop video editor featuring programmatic kinetic overlays (Slide, Pop In, Typewriter, Lower Thirds).
+- **Automated Social Distribution:** Once a video is rendered via Remotion, it can be scheduled or auto-published directly to YouTube or Instagram.
+
+## Development
 
 First, run the development server:
 
@@ -15,22 +32,3 @@ bun dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
-
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
-
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
-
-## Learn More
-
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.

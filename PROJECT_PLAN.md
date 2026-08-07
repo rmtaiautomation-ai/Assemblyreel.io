@@ -41,7 +41,7 @@ To handle the heavy computational requirements and prevent serverless timeouts d
 - [ ] Enable clip replacement, allowing users to swap out a specific timestamp's video clip or regenerate a scene (sending a request back to FastAPI).
 - [ ] Build capabilities to adjust video timing (trimming or extending clips).
 - [ ] Integrate background music capabilities (uploading or generating tracks) and simple transitions between clips.
-- [ ] Wire up FFmpeg.wasm (running in browser) or Shotstack API to compile the edits into one finalized `.mp4` file.
+- [x] Integrate Remotion (`@remotion/renderer`) to programmatically compile the timeline edits and kinetic typography into one finalized `.mp4` file, completely replacing the legacy FFmpeg workflow.
 
 ## Phase 4: Automation & Social Distribution (Weeks 10-11)
 **Goal:** Hands-off posting to personal production platforms.

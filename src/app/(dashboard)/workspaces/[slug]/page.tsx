@@ -1,12 +1,28 @@
 import React from "react";
 import Link from "next/link";
-import { Settings, Mic, Layout, Palette, Image as ImageIcon, MonitorPlay, Activity, CheckCircle2, Loader2, Lightbulb, BarChart2, Flame, ImagePlus } from "lucide-react";
+import { Settings, Mic, Palette, MonitorPlay, Activity, CheckCircle2, Ratio, Clock3 } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import NewVideoForm from "@/components/ui/NewVideoForm";
 
+function timeAgo(dateString: string) {
+  const diffMs = Date.now() - new Date(dateString).getTime();
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
+function prettify(value: string | null | undefined) {
+  if (!value) return "Not set";
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 export default async function WorkspaceHubPage({ params }: { params: { slug: string } }) {
   const { slug: workspaceId } = await params;
-  
+
   const supabase = await createClient();
   const { data: workspace } = await supabase
     .from('workspaces')
@@ -31,9 +47,15 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
     );
   }
 
+  const totalVideos = videoProjects?.length ?? 0;
+  const completedCount = videoProjects?.filter((v) => v.status === 'completed').length ?? 0;
+  const renderingCount = videoProjects?.filter((v) => v.status === 'rendering').length ?? 0;
+  const draftingCount = totalVideos - completedCount - renderingCount;
+  const recentActivity = videoProjects?.slice(0, 4) ?? [];
+
   return (
     <div className="w-full max-w-[1600px] mx-auto">
-      
+
       {/* Top Navigation Row */}
       <div className="mb-6 flex items-center justify-between">
         {/* Breadcrumb */}
@@ -63,140 +85,109 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
 
       <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
 
-        {/* Left Sidebar: Command Center & Video Library */}
+        {/* Left Sidebar: Workspace Pulse & Video Library */}
         <div className="lg:col-span-1 flex flex-col gap-6">
-          
-          {/* Workspace Command Center */}
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5 flex flex-col flex-1">
-            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm">
-              <Activity size={16} className="text-purple-600" />
-              Command Center
-            </h3>
-            
-            <div className="flex flex-col items-center justify-center mb-6">
-              <div className="relative w-28 h-28 flex items-center justify-center mb-3">
-                <svg className="w-full h-full transform -rotate-90" viewBox="0 0 36 36">
-                  <path
-                    className="text-gray-100"
-                    strokeWidth="3"
-                    stroke="currentColor"
-                    fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  />
-                  <path
-                    className="text-purple-600 drop-shadow-sm"
-                    strokeDasharray="60, 100"
-                    strokeWidth="3"
-                    strokeLinecap="round"
-                    stroke="currentColor"
-                    fill="none"
-                    d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"
-                  />
-                </svg>
-                <div className="absolute flex flex-col items-center justify-center">
-                  <span className="text-xl font-black text-gray-900">45</span>
-                  <span className="text-[9px] uppercase font-bold text-gray-500 tracking-wider">Mins</span>
+
+          {/* Workspace Pulse: production stats, real activity, style reference */}
+          <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col flex-1 min-h-[600px]">
+
+            {/* Production Snapshot */}
+            <div className="p-5">
+              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm">
+                <Activity size={16} className="text-purple-600" />
+                Production Snapshot
+              </h3>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-gray-50 border border-gray-100 rounded-lg py-2.5">
+                  <p className="text-lg font-black text-gray-900">{totalVideos}</p>
+                  <p className="text-[9px] uppercase font-bold text-gray-500 tracking-wider">Total</p>
+                </div>
+                <div className="bg-blue-50 border border-blue-100 rounded-lg py-2.5">
+                  <p className="text-lg font-black text-blue-700">{renderingCount}</p>
+                  <p className="text-[9px] uppercase font-bold text-blue-600 tracking-wider">Rendering</p>
+                </div>
+                <div className="bg-green-50 border border-green-100 rounded-lg py-2.5">
+                  <p className="text-lg font-black text-green-700">{completedCount}</p>
+                  <p className="text-[9px] uppercase font-bold text-green-600 tracking-wider">Done</p>
                 </div>
               </div>
-              <div className="text-center">
-                <p className="text-xs font-bold text-gray-800">Monthly Output</p>
-                <p className="text-[10px] text-gray-500 mt-0.5">45 / 120 mins used</p>
-              </div>
+              {draftingCount > 0 && (
+                <p className="text-[10px] text-gray-500 mt-2 text-center">{draftingCount} in draft / queued</p>
+              )}
             </div>
 
-            <div className="border-t border-gray-100 pt-4 flex-1">
+            {/* Recent Activity (real data) */}
+            <div className="px-5 pb-5 border-t border-gray-100 pt-4">
               <h4 className="font-bold text-gray-900 text-xs mb-4">Recent Activity</h4>
-              <div className="space-y-4">
-                <div className="flex gap-3 relative">
-                  <div className="absolute top-6 left-2.5 bottom-[-16px] w-px bg-gray-200"></div>
-                  <div className="bg-green-100 p-1.5 rounded-full z-10 shrink-0 h-fit">
-                    <CheckCircle2 size={12} className="text-green-600" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-gray-800">Video Rendered</p>
-                    <p className="text-[10px] text-gray-500">The Fall of Jericho &bull; 2h ago</p>
-                  </div>
+              {recentActivity.length === 0 ? (
+                <p className="text-[10px] text-gray-400">No activity yet — create your first video to get started.</p>
+              ) : (
+                <div className="space-y-4">
+                  {recentActivity.map((video, idx) => (
+                    <div key={video.id} className="flex gap-3 relative">
+                      {idx < recentActivity.length - 1 && (
+                        <div className="absolute top-6 left-2.5 bottom-[-16px] w-px bg-gray-200"></div>
+                      )}
+                      <div className={`p-1.5 rounded-full z-10 shrink-0 h-fit ${
+                        video.status === 'completed' ? 'bg-green-100' :
+                        video.status === 'rendering' ? 'bg-blue-100' : 'bg-gray-100'
+                      }`}>
+                        <CheckCircle2 size={12} className={
+                          video.status === 'completed' ? 'text-green-600' :
+                          video.status === 'rendering' ? 'text-blue-600' : 'text-gray-400'
+                        } />
+                      </div>
+                      <div>
+                        <p className="text-xs font-bold text-gray-800">
+                          {video.status === 'completed' ? 'Video Rendered' : video.status === 'rendering' ? 'Rendering In Progress' : 'Draft Created'}
+                        </p>
+                        <p className="text-[10px] text-gray-500">{video.topic || 'Untitled'} &bull; {timeAgo(video.created_at)}</p>
+                      </div>
+                    </div>
+                  ))}
                 </div>
-                <div className="flex gap-3 relative">
-                  <div className="absolute top-6 left-2.5 bottom-[-16px] w-px bg-gray-200"></div>
-                  <div className="bg-purple-100 p-1.5 rounded-full z-10 shrink-0 h-fit">
-                    <Activity size={12} className="text-purple-600" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-gray-800">Script Generated</p>
-                    <p className="text-[10px] text-gray-500">Samson&apos;s Final Stand &bull; 5h ago</p>
-                  </div>
+              )}
+            </div>
+
+            {/* Style Reference (real workspace config) */}
+            <div className="px-5 pb-5 border-t border-gray-100 pt-4 flex-1">
+              <h4 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-xs">
+                <Palette size={14} className="text-purple-600" />
+                Style Reference
+              </h4>
+              <div className="space-y-3">
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Niche</span>
+                  <span className="text-xs font-semibold text-gray-800 text-right">{prettify(workspace.content_theme)}</span>
                 </div>
-                <div className="flex gap-3">
-                  <div className="bg-gray-100 p-1.5 rounded-full z-10 shrink-0 h-fit">
-                    <CheckCircle2 size={12} className="text-gray-400" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-bold text-gray-800">Workspace Created</p>
-                    <p className="text-[10px] text-gray-500">Throne of Glory &bull; 2d ago</p>
-                  </div>
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Voice</span>
+                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
+                    <Mic size={11} className="text-gray-400" />
+                    {prettify(workspace.narration_voice_id)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Art Style</span>
+                  <span className="text-xs font-semibold text-gray-800 text-right">{prettify(workspace.visual_aesthetic)}</span>
+                </div>
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Aspect Ratio</span>
+                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
+                    <Ratio size={11} className="text-gray-400" />
+                    {prettify(workspace.aspect_ratio)}
+                  </span>
+                </div>
+                <div className="flex justify-between items-start gap-2">
+                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Duration</span>
+                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
+                    <Clock3 size={11} className="text-gray-400" />
+                    {prettify(workspace.duration_pref)}
+                  </span>
                 </div>
               </div>
             </div>
           </div>
-
-          {/* AI Insights Brain */}
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5 relative overflow-hidden">
-            <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-indigo-600"></div>
-            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm">
-              <Lightbulb size={16} className="text-purple-600 fill-purple-100" />
-              AI Insights
-            </h3>
-            <div className="space-y-3">
-              <div className="bg-purple-50 border border-purple-100 p-3 rounded-lg flex gap-3 items-start">
-                <span className="text-lg">🎯</span>
-                <p className="text-xs text-purple-900 font-medium leading-relaxed">Hooks under 5s have 30% higher retention in this niche.</p>
-              </div>
-              <div className="bg-blue-50 border border-blue-100 p-3 rounded-lg flex gap-3 items-start">
-                <span className="text-lg">💡</span>
-                <p className="text-xs text-blue-900 font-medium leading-relaxed">Audiences love historical analogies. Use them in Act 2.</p>
-              </div>
-            </div>
-          </div>
-
-          {/* Channel Demographics */}
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm p-5">
-            <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm">
-              <BarChart2 size={16} className="text-purple-600" />
-              Audience Demographics
-            </h3>
-            <div className="space-y-3">
-              <div>
-                <div className="flex justify-between text-xs font-bold text-gray-700 mb-1">
-                  <span>18-24</span>
-                  <span>45%</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-2">
-                  <div className="bg-purple-500 h-2 rounded-full" style={{ width: '45%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs font-bold text-gray-700 mb-1">
-                  <span>25-34</span>
-                  <span>35%</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-2">
-                  <div className="bg-purple-400 h-2 rounded-full" style={{ width: '35%' }}></div>
-                </div>
-              </div>
-              <div>
-                <div className="flex justify-between text-xs font-bold text-gray-700 mb-1">
-                  <span>35-44</span>
-                  <span>20%</span>
-                </div>
-                <div className="w-full bg-gray-100 rounded-full h-2">
-                  <div className="bg-purple-300 h-2 rounded-full" style={{ width: '20%' }}></div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-
 
         </div>
 
@@ -207,7 +198,7 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
 
         {/* Right Sidebar: Video Library */}
         <div className="lg:col-span-1 flex flex-col gap-6">
-          
+
           {/* Dedicated Video Library */}
           <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col h-full min-h-[600px]">
             <div className="p-3 border-b border-gray-100 flex items-center justify-between bg-gray-50 rounded-t-xl">

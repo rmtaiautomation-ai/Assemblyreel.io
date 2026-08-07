@@ -21,6 +21,16 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
     .eq('project_id', videoId)
     .order('sequence_number', { ascending: true });
 
+  const { data: media } = await supabase
+    .from('media')
+    .select('*')
+    .eq('project_id', videoId);
+
+  const { data: timelineItems } = await supabase
+    .from('timeline_items')
+    .select('*')
+    .eq('project_id', videoId);
+
   if (!project) {
     return (
       <div className="flex flex-col items-center justify-center h-[50vh]">
@@ -97,7 +107,7 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
       </div>
 
       <div className="flex-1 flex flex-col min-h-0 relative">
-         <TimelineEditor initialProject={project} initialScenes={scenes} />
+         <TimelineEditor initialProject={project} initialScenes={scenes} initialMedia={media || []} initialTimelineItems={timelineItems || []} />
       </div>
     </div>
   );
