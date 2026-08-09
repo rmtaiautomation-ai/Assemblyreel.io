@@ -1528,6 +1528,16 @@ export default function TimelineEditor({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
+          {/* Additive nav only — no state or effects touched, so it can't reintroduce
+              the sync/seek-storm class of bug this component has already been through. */}
+          <Link
+            href={`/workspaces/${workspaceId}/videos/${initialProject.id}/whiteboard`}
+            className="hidden sm:flex items-center gap-1.5 text-[11px] font-bold text-gray-500 hover:text-purple-700 hover:bg-purple-50 px-2.5 py-1.5 rounded-md transition-colors mr-1"
+            title="Back to the Story Whiteboard"
+          >
+            <Layers size={13} />
+            Whiteboard
+          </Link>
           <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mr-1">
             <Clock size={12} />
             {formatDuration(contentDuration)}

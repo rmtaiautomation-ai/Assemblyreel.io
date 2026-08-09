@@ -88,42 +88,53 @@ export async function createProjectWithActs(params: {
 
   // Short and mid-form are a single pass — one "Act" covering the whole script, so the
   // Whiteboard renders one card and the same per-act code path still applies.
-  if (!duration.isLongForm) {
-    return {
-      success: true,
-      projectId: project.id,
-      isSinglePass: true,
-      acts: [
-        {
-          actNumber: 1,
-          title: duration.label,
-          description: narrativeArc || topic,
-        },
-      ],
-    };
+  const isSinglePass = !duration.isLongForm;
+  let acts: ActOutline[];
+
+  if (isSinglePass) {
+    acts = [
+      {
+        actNumber: 1,
+        title: duration.label,
+        description: narrativeArc || topic,
+      },
+    ];
+  } else {
+    const actOutlinesRes = await generateActOutlines(
+      topic,
+      narrativeArc,
+      workspaceTheme,
+      targetDuration
+    );
+
+    if (!actOutlinesRes.success || !actOutlinesRes.acts) {
+      return {
+        success: false,
+        projectId: project.id,
+        error: actOutlinesRes.error || "Failed to generate Act outlines.",
+      };
+    }
+
+    acts = actOutlinesRes.acts;
   }
 
-  const actOutlinesRes = await generateActOutlines(
-    topic,
-    narrativeArc,
-    workspaceTheme,
-    targetDuration
-  );
+  // Best-effort: `act_outlines`/`target_duration` need db/add-act-persistence.sql. A
+  // project generated before that migration runs still works — it just cannot be
+  // resumed from the Whiteboard route later, same degrade-gracefully pattern as the
+  // agent-pipeline columns.
+  const { error: persistError } = await supabase
+    .from("video_projects")
+    .update({ act_outlines: acts, target_duration: targetDuration })
+    .eq("id", project.id);
 
-  if (!actOutlinesRes.success || !actOutlinesRes.acts) {
-    return {
-      success: false,
-      projectId: project.id,
-      error: actOutlinesRes.error || "Failed to generate Act outlines.",
-    };
+  if (persistError) {
+    console.warn(
+      "[Whiteboard] act_outlines/target_duration not saved — run db/add-act-persistence.sql:",
+      persistError.message
+    );
   }
 
-  return {
-    success: true,
-    projectId: project.id,
-    isSinglePass: false,
-    acts: actOutlinesRes.acts,
-  };
+  return { success: true, projectId: project.id, isSinglePass, acts };
 }
 
 export interface GeneratedActScene {
@@ -162,6 +173,8 @@ export async function generateAct(params: {
   visualAesthetic: string;
   targetDuration: string;
   startingSequenceNumber: number;
+  /** Which Act these scenes belong to — tags every scene this call creates. */
+  actNumber: number;
   /** Omitted for single-pass (short/mid-form) generation. */
   act?: ActOutline;
 }): Promise<GenerateActResult> {
@@ -174,6 +187,7 @@ export async function generateAct(params: {
     visualAesthetic,
     targetDuration,
     startingSequenceNumber,
+    actNumber,
     act,
   } = params;
 
@@ -235,8 +249,23 @@ export async function generateAct(params: {
     warnings.push(enrichment.error);
   }
 
-  // Read back so the Whiteboard shows what is actually stored, not what we hoped was.
   const supabase = await createClient();
+
+  // Best-effort: needs db/add-act-persistence.sql. Without it every scene defaults to
+  // act_number 1, which only matters for resuming — this act's scenes are already
+  // correctly grouped in the response below regardless.
+  const { error: actTagError } = await supabase
+    .from("scenes")
+    .update({ act_number: actNumber })
+    .in("id", sceneIds);
+
+  if (actTagError) {
+    warnings.push(
+      `Act grouping not saved (${actTagError.message}). Run db/add-act-persistence.sql to enable resuming.`
+    );
+  }
+
+  // Read back so the Whiteboard shows what is actually stored, not what we hoped was.
   const { data: storedScenes } = await supabase
     .from("scenes")
     .select("id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt")
@@ -289,6 +318,140 @@ export async function finalizeProjectScript(params: {
   }
 
   return { success: true };
+}
+
+export interface ResumedWhiteboard {
+  projectId: string;
+  workspaceId: string;
+  workspaceTheme: string;
+  topic: string;
+  narrativeArc: string;
+  scriptHook: string;
+  visualAesthetic: string;
+  targetDuration: string;
+  isSinglePass: boolean;
+  acts: Array<{
+    outline: ActOutline;
+    scriptLines: string[];
+    scenes: GeneratedActScene[];
+  }>;
+}
+
+/**
+ * Rebuilds a Whiteboard session from the database, so leaving the page and coming
+ * back — or a hard refresh — does not lose which scenes belong to which Act.
+ *
+ * Degrades in three independent ways when `db/add-act-persistence.sql` has not run
+ * yet: `act_outlines` comes back null (via `select("*")`, so a missing column is just
+ * an absent key, not an error), so a single synthetic Act is reconstructed from
+ * whatever scenes exist; `target_duration` comes back null for the same reason, so
+ * pacing rules fall back to `generation-rules.ts`'s short-form default; and the scene
+ * query below retries without `act_number` if that column doesn't exist yet, since
+ * PostgREST fails an entire `select()` when *any* named column is missing — a first
+ * live run of this route showed the scenes list coming back completely empty because
+ * of exactly that, not because there were no scenes.
+ */
+export async function loadProjectForWhiteboard(
+  projectId: string
+): Promise<{ success: boolean; data?: ResumedWhiteboard; error?: string }> {
+  const supabase = await createClient();
+
+  const { data: project, error: projectError } = await supabase
+    .from("video_projects")
+    .select("*")
+    .eq("id", projectId)
+    .single();
+
+  if (projectError || !project) {
+    return { success: false, error: projectError?.message || "Project not found." };
+  }
+
+  const { data: workspace } = await supabase
+    .from("workspaces")
+    .select("content_theme")
+    .eq("id", project.workspace_id)
+    .single();
+
+  const SCENE_BASE_COLUMNS =
+    "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt";
+
+  let sceneRows: Array<Record<string, unknown>> | null = null;
+
+  const { data: sceneRowsWithAct, error: sceneError } = await supabase
+    .from("scenes")
+    .select(`${SCENE_BASE_COLUMNS}, act_number`)
+    .eq("project_id", projectId)
+    .order("sequence_number");
+
+  if (sceneError) {
+    const { data: fallbackRows } = await supabase
+      .from("scenes")
+      .select(SCENE_BASE_COLUMNS)
+      .eq("project_id", projectId)
+      .order("sequence_number");
+    sceneRows = fallbackRows;
+  } else {
+    sceneRows = sceneRowsWithAct;
+  }
+
+  const scenes: (GeneratedActScene & { actNumber: number })[] = (sceneRows ?? []).map(
+    (row) => ({
+      id: row.id as string,
+      sequenceNumber: row.sequence_number as number,
+      voiceOverText: (row.voice_over_beat as string) ?? "",
+      sceneType: (row.scene_type as string) ?? "",
+      estimatedDurationSeconds: Number(row.video_duration ?? 0),
+      finalVideoPrompt: (row.final_video_prompt as string) ?? "",
+      // Read-back has no access to the slicer's original prompt, so a resumed session
+      // cannot tell fallback scenes from enriched ones — the amber badge only ever
+      // appears live, during generation. Acceptable: it is informational, and the
+      // finalVideoPrompt itself is correct either way.
+      usedFallback: false,
+      actNumber: (row.act_number as number) ?? 1,
+    })
+  );
+
+  const storedOutlines = project.act_outlines as ActOutline[] | null;
+  const distinctActNumbers = [...new Set(scenes.map((s) => s.actNumber))].sort(
+    (a, b) => a - b
+  );
+
+  const outlines: ActOutline[] =
+    storedOutlines && storedOutlines.length > 0
+      ? storedOutlines
+      : distinctActNumbers.length > 0
+        ? distinctActNumbers.map((n) => ({
+            actNumber: n,
+            title: `Act ${n}`,
+            description: "",
+          }))
+        : [{ actNumber: 1, title: "Act 1", description: project.narrative_arc || project.topic }];
+
+  const acts = outlines.map((outline) => ({
+    outline,
+    scriptLines: scenes
+      .filter((s) => s.actNumber === outline.actNumber)
+      .map((s) => s.voiceOverText),
+    scenes: scenes
+      .filter((s) => s.actNumber === outline.actNumber)
+      .map(({ actNumber: _actNumber, ...scene }) => scene),
+  }));
+
+  return {
+    success: true,
+    data: {
+      projectId: project.id,
+      workspaceId: project.workspace_id,
+      workspaceTheme: workspace?.content_theme ?? "",
+      topic: project.topic ?? "",
+      narrativeArc: project.narrative_arc ?? "",
+      scriptHook: project.story_hook ?? "",
+      visualAesthetic: project.visual_aesthetic ?? "",
+      targetDuration: (project.target_duration as string) ?? "Short (< 60s)",
+      isSinglePass: outlines.length <= 1,
+      acts,
+    },
+  };
 }
 
 /**

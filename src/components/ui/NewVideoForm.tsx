@@ -145,9 +145,6 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
         visualAesthetic={visualAesthetic || workspace.visual_aesthetic || ""}
         targetDuration={targetDuration}
         isSinglePass={whiteboardState.isSinglePass}
-        onOpenTimeline={() =>
-          router.push(`/workspaces/${workspace.id}/videos/${whiteboardState.projectId}`)
-        }
       />
     );
   }

@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useCallback, useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
   Check,
@@ -31,6 +32,13 @@ interface ActCardState {
   error?: string;
 }
 
+/** A previously generated Act, as returned by `loadProjectForWhiteboard`. */
+export interface ResumedAct {
+  outline: ActOutline;
+  scriptLines: string[];
+  scenes: GeneratedActScene[];
+}
+
 export interface WhiteboardProps {
   projectId: string;
   workspaceId: string;
@@ -42,11 +50,18 @@ export interface WhiteboardProps {
   visualAesthetic: string;
   targetDuration: string;
   isSinglePass: boolean;
-  onOpenTimeline: () => void;
+  /**
+   * Acts already generated in a previous session. When present, seeds each matching
+   * card as "complete" instead of "queued" so mounting this component again — after a
+   * refresh, or navigating back from the Timeline — does not re-run acts that already
+   * have scenes and burn more of the same rate-limited quota for nothing.
+   */
+  resumedActs?: ResumedAct[];
 }
 
 export default function Whiteboard({
   projectId,
+  workspaceId,
   acts,
   workspaceTheme,
   topic,
@@ -55,16 +70,20 @@ export default function Whiteboard({
   visualAesthetic,
   targetDuration,
   isSinglePass,
-  onOpenTimeline,
+  resumedActs,
 }: WhiteboardProps) {
+  const router = useRouter();
   const [cards, setCards] = useState<ActCardState[]>(() =>
-    acts.map((outline) => ({
-      outline,
-      status: "queued" as ActStatus,
-      scriptLines: [],
-      scenes: [],
-      warnings: [],
-    }))
+    acts.map((outline) => {
+      const resumed = resumedActs?.find((r) => r.outline.actNumber === outline.actNumber);
+      return {
+        outline,
+        status: resumed && resumed.scenes.length > 0 ? "complete" : "queued",
+        scriptLines: resumed?.scriptLines ?? [],
+        scenes: resumed?.scenes ?? [],
+        warnings: [],
+      };
+    })
   );
   const [expandedActs, setExpandedActs] = useState<Set<number>>(new Set([1]));
   const [isRunning, setIsRunning] = useState(false);
@@ -73,6 +92,12 @@ export default function Whiteboard({
   // Guards React 18 StrictMode's double-effect in dev from launching the whole
   // pipeline twice — which would double every Gemini call and the DB rows.
   const hasStartedRef = useRef(false);
+
+  // `runAllActs` needs each act's *current* status to skip already-resumed ones, but
+  // adding `cards` to its own dependency array would recreate it — and the mount
+  // effect that calls it — on every generation tick. A ref sidesteps that.
+  const cardsRef = useRef(cards);
+  cardsRef.current = cards;
 
   const completedCount = cards.filter((card) => card.status === "complete").length;
   const failedCount = cards.filter((card) => card.status === "failed").length;
@@ -98,6 +123,7 @@ export default function Whiteboard({
         visualAesthetic,
         targetDuration,
         startingSequenceNumber,
+        actNumber: acts[index].actNumber,
         ...(isSinglePass ? {} : { act: acts[index] }),
       });
 
@@ -139,6 +165,16 @@ export default function Whiteboard({
     // parallel would multiply the rate-limit pressure that already forces scenes to
     // fall back to unenriched prompts.
     for (let i = 0; i < acts.length; i++) {
+      const existingCard = cardsRef.current[i];
+
+      // Resumed acts already have their scenes — skip regenerating them, but still
+      // count their scenes toward sequence numbering so a later, genuinely-queued act
+      // doesn't collide with sequence_number values this act already wrote.
+      if (existingCard?.status === "complete") {
+        sequenceNumber += existingCard.scenes.length;
+        continue;
+      }
+
       const sceneCount = await runActAtIndex(i, sequenceNumber);
       sequenceNumber += sceneCount;
     }
@@ -149,6 +185,12 @@ export default function Whiteboard({
   useEffect(() => {
     if (hasStartedRef.current) return;
     hasStartedRef.current = true;
+
+    // A fully resumed session (every act already has scenes) has nothing to generate
+    // — skip the run entirely rather than a no-op pass through every act.
+    const allActsAlreadyComplete = cardsRef.current.every((card) => card.status === "complete");
+    if (allActsAlreadyComplete) return;
+
     void runAllActs();
   }, [runAllActs]);
 
@@ -175,7 +217,7 @@ export default function Whiteboard({
 
     if (result.success) {
       setIsFinalized(true);
-      onOpenTimeline();
+      router.push(`/workspaces/${workspaceId}/videos/${projectId}`);
     }
   };
 
