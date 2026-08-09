@@ -3,6 +3,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
+import { enrichAndPersistScenes } from "@/app/actions/orchestrator-actions";
+import { resolveDurationProfile } from "@/lib/ai/generation-rules";
 import type { TrackStates, ProjectStatus } from "@/lib/timeline-types";
 
 export async function createAndGenerateVideo(
@@ -23,7 +25,13 @@ export async function createAndGenerateVideo(
   // "supabaseAdmin" implied service-role privileges it has never had, which made
   // silent RLS denials look impossible when reading this code.
   const supabase = await createClient();
-  const isLongForm = targetDuration.includes("Long");
+  // Derived from the shared rules module rather than a local substring check, so the
+  // long-form branch can never disagree with the pacing the agents are given.
+  const { isLongForm } = resolveDurationProfile(targetDuration);
+
+  // Non-fatal problems from agents 3-7. Collected rather than thrown: a video whose
+  // characters drifted is still worth delivering, but the user must be told.
+  const pipelineWarnings: string[] = [];
 
   if (isLongForm) {
     // 1. Generate 5-Act Structure (or 7, 9, 11 based on duration and niche)
@@ -61,6 +69,8 @@ export async function createAndGenerateVideo(
         hook: scriptHook,
         visualAesthetic: visualAesthetic || "Cinematic",
         pov: "Third-person omnipresent",
+        nicheTheme: workspaceTheme,
+        targetDuration,
         actOutline: act
       });
 
@@ -69,9 +79,30 @@ export async function createAndGenerateVideo(
         combinedScript += `\n\n=== ACT ${act.actNumber}: ${act.title} ===\n\n` + actScriptText;
         
         // Slice just this Act
-        const slicerResult = await sliceScriptIntoScenes(project.id, actScriptText, startingSequenceNumber);
-        if (slicerResult.success && slicerResult.scenes) {
+        const slicerResult = await sliceScriptIntoScenes({
+          projectId: project.id,
+          fullScript: actScriptText,
+          startingSequenceNumber,
+          nicheTheme: workspaceTheme,
+          targetDuration,
+        });
+        if (slicerResult.success && slicerResult.scenes && slicerResult.sceneIds) {
           startingSequenceNumber += slicerResult.scenes.length;
+
+          // Agents 3-7 run per Act, so a long-form video enriches incrementally
+          // instead of holding every scene in memory until the last Act lands.
+          const enrichment = await enrichAndPersistScenes({
+            projectId: project.id,
+            sceneIds: slicerResult.sceneIds,
+            slicedScenes: slicerResult.scenes,
+            topic,
+            visualAesthetic: visualAesthetic || "Cinematic",
+            nicheTheme: workspaceTheme,
+          });
+          pipelineWarnings.push(...enrichment.warnings);
+          if (!enrichment.success && enrichment.error) {
+            pipelineWarnings.push(`Act ${act.actNumber}: ${enrichment.error}`);
+          }
         }
       }
     }
@@ -81,7 +112,12 @@ export async function createAndGenerateVideo(
       .update({ status: 'drafting', master_script: combinedScript.trim() })
       .eq('id', project.id);
 
-    return { success: true, projectId: project.id, masterScript: combinedScript.trim() };
+    return {
+      success: true,
+      projectId: project.id,
+      masterScript: combinedScript.trim(),
+      warnings: pipelineWarnings,
+    };
 
   } else {
     // STANDARD / SHORT-FORM EXECUTION
@@ -91,6 +127,7 @@ export async function createAndGenerateVideo(
       hook: scriptHook,
       visualAesthetic: visualAesthetic || "Cinematic",
       pov: "Third-person omnipresent",
+      nicheTheme: workspaceTheme,
       targetDuration
     });
 
@@ -118,13 +155,37 @@ export async function createAndGenerateVideo(
     }
 
     if (masterScript) {
-      const slicerResult = await sliceScriptIntoScenes(project.id, masterScript, 1);
+      const slicerResult = await sliceScriptIntoScenes({
+        projectId: project.id,
+        fullScript: masterScript,
+        startingSequenceNumber: 1,
+        nicheTheme: workspaceTheme,
+        targetDuration,
+      });
       if (!slicerResult.success) {
         console.error("Error slicing scenes:", slicerResult.error);
+      } else if (slicerResult.scenes && slicerResult.sceneIds) {
+        const enrichment = await enrichAndPersistScenes({
+          projectId: project.id,
+          sceneIds: slicerResult.sceneIds,
+          slicedScenes: slicerResult.scenes,
+          topic,
+          visualAesthetic: visualAesthetic || "Cinematic",
+          nicheTheme: workspaceTheme,
+        });
+        pipelineWarnings.push(...enrichment.warnings);
+        if (!enrichment.success && enrichment.error) {
+          pipelineWarnings.push(enrichment.error);
+        }
       }
     }
 
-    return { success: true, projectId: project.id, masterScript: masterScript };
+    return {
+      success: true,
+      projectId: project.id,
+      masterScript: masterScript,
+      warnings: pipelineWarnings,
+    };
   }
 }
 

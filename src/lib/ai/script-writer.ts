@@ -2,6 +2,11 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ScriptWriterSchema } from "./schemas";
+import { resolveDurationProfile, resolveNicheProfile } from "./generation-rules";
+// These three functions call `@google/genai` directly rather than the Vercel AI SDK,
+// but they draw on the same provider quota as every other agent — so they share the
+// same throttle.
+import { acquireCallSlot } from "./concurrency";
 
 export async function generateScript(params: {
   topic: string;
@@ -22,31 +27,16 @@ export async function generateScript(params: {
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    let lengthRule = "Exactly 12 to 15 lines (total 160-190 words).";
-    if (params.targetDuration) {
-      const dur = params.targetDuration.toLowerCase();
-      if (dur.includes("30-60") || dur.includes("short")) {
-        lengthRule = "Exactly 6 to 10 lines (total 75-150 words). Focus on 1 Act structure: Hook -> Core Concept -> Climax/CTA.";
-      } else if (dur.includes("2-3") || dur.includes("mid-form short")) {
-        lengthRule = "Exactly 20 to 25 lines (total 300-450 words). Focus on 3 Act structure: Hook & Context -> Deep Dive -> Conclusion.";
-      } else if (dur.includes("3-5") || dur.includes("4-5") || dur.includes("mid-form long")) {
-        lengthRule = "Exactly 35 to 45 lines (total 600-750 words). Focus on 3 Act structure: Hook & Context -> Deep Dive -> Conclusion with extended tension.";
-      }
-    } else if (params.actOutline) {
-      lengthRule = "Exactly 15 to 25 lines (total 300-500 words) strictly for this specific Act.";
-    }
+    const niche = resolveNicheProfile(params.nicheTheme);
+    const duration = resolveDurationProfile(params.targetDuration);
 
-    let toneMatrixRule = "Epic, dramatic, and direct.";
-    if (params.nicheTheme) {
-      const niche = params.nicheTheme.toLowerCase();
-      if (niche.includes("mythology") || niche.includes("ancient") || niche.includes("religion")) {
-        toneMatrixRule = "Epic, NLT Bible style, grandiose, and poetic scale.";
-      } else if (niche.includes("crime") || niche.includes("investigation")) {
-        toneMatrixRule = "Grounded, suspenseful, analytical, and gripping.";
-      } else if (niche.includes("psychology") || niche.includes("dark")) {
-        toneMatrixRule = "Intense, psychological, slow-burn, and thought-provoking.";
-      }
-    }
+    // An Act request narrows the target to a single chapter, so the whole-video word
+    // count does not apply — but the line count still comes from the duration tier.
+    const lengthRule = params.actOutline
+      ? `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines strictly for this single Act.`
+      : `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines (total ${duration.targetWordCount.min}-${duration.targetWordCount.max} words). Structure: ${duration.structureRule}`;
+
+    const toneMatrixRule = niche.scriptTone;
 
     const systemInstruction = `
 You are an expert Script Writer for a highly visual, cinematic video channel.
@@ -78,6 +68,8 @@ Do NOT write the entire story. Only cover this specific act!
     }
 
     prompt += `\nGenerate the script adhering strictly to the rules. Return a JSON array where each element is a line of the script.`;
+
+    await acquireCallSlot();
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
@@ -138,6 +130,8 @@ The Script Hook should be 1-2 sentences designed to grab the viewer's attention 
       required: ["narrativeArc", "scriptHook"],
     };
 
+    await acquireCallSlot();
+
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
@@ -161,10 +155,7 @@ export async function generateActOutlines(topic: string, narrativeArc: string, n
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) return { success: false, error: "GEMINI_API_KEY is missing." };
 
-  let actCount = 5;
-  if (targetDuration.includes("15-20m")) actCount = 7;
-  else if (targetDuration.includes("20-25m")) actCount = 9;
-  else if (targetDuration.includes("25-30m")) actCount = 11;
+  const { actCount } = resolveDurationProfile(targetDuration);
 
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
@@ -201,6 +192,8 @@ Return a JSON array of exactly ${actCount} objects. Each object should have:
         required: ["actNumber", "title", "description"]
       }
     };
+
+    await acquireCallSlot();
 
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",

@@ -8,18 +8,6 @@ export const ScriptWriterSchema: Schema = {
   },
 };
 
-export const SceneSlicerSchema: Schema = {
-  type: Type.ARRAY,
-  description: "Array of distinct scenes sliced organically from the master script.",
-  items: {
-    type: Type.OBJECT,
-    properties: {
-      sceneNumber: { type: Type.INTEGER, description: "Sequential scene number, starting at 1" },
-      voiceoverText: { type: Type.STRING, description: "The exact voiceover script fragment to be spoken during this scene. Must match original script words exactly." },
-      estimatedDurationMs: { type: Type.INTEGER, description: "Estimated duration of this scene in milliseconds (assume 150 words per minute / 2.5 words per second)." },
-      sceneType: { type: Type.STRING, description: "Type of scene: ESTABLISH, ACTION, DIALOGUE, DIVINE, CLOSEUP, MACRO, etc." },
-      visualDescription: { type: Type.STRING, description: "A highly visual description of what happens on screen to assist the Prompt Assembler later." }
-    },
-    required: ["sceneNumber", "voiceoverText", "estimatedDurationMs", "sceneType", "visualDescription"]
-  }
-};
+// The Scene Slicer's schema now lives with the agent itself, as a Zod schema in
+// `src/app/actions/slicer-actions.ts` — Zod gives it runtime validation and inferred
+// types, which the hand-written Google `Schema` objects here cannot.

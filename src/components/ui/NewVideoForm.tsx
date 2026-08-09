@@ -3,7 +3,8 @@
 import React, { useState } from "react";
 import { Sparkles, Wand2, Loader2, Bot, X, Send, Zap, Layout, Mic, Image as ImageIcon, MonitorPlay, Settings } from "lucide-react";
 import { generateArcAndHook } from "@/lib/ai/script-writer";
-import { createAndGenerateVideo } from "@/app/actions/video-actions";
+import { createProjectWithActs, type ActOutline } from "@/app/actions/whiteboard-actions";
+import Whiteboard from "@/components/ui/Whiteboard";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -18,9 +19,14 @@ interface NewVideoFormProps {
   };
 }
 
+// `value` must stay byte-identical to the keys in `src/lib/ai/generation-rules.ts`.
+// The old single "Mid (2-5m)" option was split because plan 07 defines 2-3m and 4-5m
+// as separate tiers with different word counts (300-450 vs 600-750) and different
+// pacing (4-6s vs 5-8s clips) — one collapsed option was always wrong for one of them.
 const DURATION_OPTIONS = [
   { label: "60s", value: "Short (< 60s)", desc: "Short" },
-  { label: "2-5m", value: "Mid (2-5m)", desc: "Mid" },
+  { label: "2-3m", value: "Mid (2-3m)", desc: "Mid" },
+  { label: "4-5m", value: "Mid (4-5m)", desc: "Mid" },
   { label: "10-15m", value: "Long (10-15m)", desc: "Long" },
   { label: "15-20m", value: "Long (15-20m)", desc: "Long" },
   { label: "20-25m", value: "Long (20-25m)", desc: "Long" },
@@ -37,9 +43,14 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  const [generatedScript, setGeneratedScript] = useState<string[] | null>(null);
-  const [generatedProjectId, setGeneratedProjectId] = useState<string | null>(null);
-  
+  // Whiteboard handoff: once the project shell and Act outlines exist, the Whiteboard
+  // takes over and drives generation act by act.
+  const [whiteboardState, setWhiteboardState] = useState<{
+    projectId: string;
+    acts: ActOutline[];
+    isSinglePass: boolean;
+  } | null>(null);
+
   const [targetDuration, setTargetDuration] = useState("Short (< 60s)");
   
   // AI Sidebar state
@@ -94,31 +105,52 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
     e.preventDefault();
     setIsSubmitting(true);
     setError(null);
-    setGeneratedScript(null);
-    
-    const formData = new FormData(e.currentTarget);
-    
-    const result = await createAndGenerateVideo(
-      workspace.id,
-      workspace.content_theme,
-      workspace.visual_aesthetic || "",
-      formData
-    );
+
+    // Only plans the Act structure — the Whiteboard runs the agent chain per Act so a
+    // long-form video shows progress instead of blocking on one very long request.
+    const result = await createProjectWithActs({
+      workspaceId: workspace.id,
+      workspaceTheme: workspace.content_theme,
+      topic,
+      narrativeArc,
+      scriptHook,
+      visualAesthetic: visualAesthetic || workspace.visual_aesthetic || "",
+      targetDuration,
+    });
 
     setIsSubmitting(false);
 
-    if (result.success && result.projectId) {
-      if (result.masterScript) {
-        // Split the plain text script into an array of lines for the UI
-        const lines = result.masterScript.split("\n").filter(line => line.trim() !== "");
-        setGeneratedScript(lines);
-      }
-      setGeneratedProjectId(result.projectId);
+    if (result.success && result.projectId && result.acts) {
+      setWhiteboardState({
+        projectId: result.projectId,
+        acts: result.acts,
+        isSinglePass: Boolean(result.isSinglePass),
+      });
       router.refresh();
     } else {
-      setError(result.error || "Failed to generate video project.");
+      setError(result.error || "Failed to create video project.");
     }
   };
+
+  if (whiteboardState) {
+    return (
+      <Whiteboard
+        projectId={whiteboardState.projectId}
+        workspaceId={workspace.id}
+        acts={whiteboardState.acts}
+        workspaceTheme={workspace.content_theme}
+        topic={topic}
+        narrativeArc={narrativeArc}
+        scriptHook={scriptHook}
+        visualAesthetic={visualAesthetic || workspace.visual_aesthetic || ""}
+        targetDuration={targetDuration}
+        isSinglePass={whiteboardState.isSinglePass}
+        onOpenTimeline={() =>
+          router.push(`/workspaces/${workspace.id}/videos/${whiteboardState.projectId}`)
+        }
+      />
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -261,43 +293,12 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
               className="bg-gray-900 hover:bg-gray-800 text-white font-bold px-8 py-3.5 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-[1px]"
             >
               {isSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Wand2 size={18} />}
-              Generate Script
+              {isSubmitting ? "Planning acts…" : "Generate Story"}
             </button>
           </div>
         </form>
       </div>
 
-      {generatedScript && generatedProjectId && (
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg p-6 sm:p-8 animate-in fade-in slide-in-from-bottom-8 duration-700">
-          <div className="flex items-center justify-between mb-6 pb-4 border-b border-gray-100">
-            <h3 className="text-2xl font-bold text-gray-900 flex items-center gap-2">
-              <Sparkles className="text-purple-600" size={24} />
-              Generated Script
-            </h3>
-            <button 
-              onClick={() => router.push(`/workspaces/${workspace.id}/videos/${generatedProjectId}`)}
-              className="text-sm bg-purple-600 hover:bg-purple-700 text-white px-5 py-2.5 rounded-xl font-bold transition-all shadow-md hover:-translate-y-[1px]"
-            >
-              Open Video Workspace →
-            </button>
-          </div>
-          
-          <div className="space-y-4">
-            {generatedScript.map((line, idx) => (
-              <div key={idx} className="flex gap-4 items-start group">
-                <div className="bg-gray-100 text-gray-500 group-hover:bg-purple-100 group-hover:text-purple-700 text-xs font-bold w-6 h-6 flex items-center justify-center rounded-md mt-2 shrink-0 transition-colors">
-                  {idx + 1}
-                </div>
-                <textarea 
-                  readOnly
-                  defaultValue={line}
-                  className="w-full bg-gray-50/50 border border-gray-200 rounded-xl p-4 text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-200 resize-none min-h-[72px] shadow-sm"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {/* AI Sidebar Overlay */}
       {isAiSidebarOpen && (
         <div className="fixed inset-0 z-50 flex justify-end">
