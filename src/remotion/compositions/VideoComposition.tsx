@@ -20,6 +20,7 @@ import { LowerThird } from '../overlays/LowerThird';
 export const VideoComposition: React.FC<VideoCompositionProps> = ({
   scenes,
   audioUrl,
+  audioClips,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -70,7 +71,8 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
             {scene.mediaType === 'video' && scene.mediaUrl ? (
               <OffthreadVideo
                 src={scene.mediaUrl}
-                startFrom={Math.round((scene.trimStartInSeconds || 0) * fps)}
+                // `startFrom` is deprecated in Remotion 4.x in favour of `trimBefore`.
+                trimBefore={Math.round((scene.trimStartInSeconds || 0) * fps)}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />
             ) : scene.mediaUrl ? (
@@ -93,10 +95,28 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         </Sequence>
       ))}
 
-      {/* Global audio track (voiceover / narration) */}
+      {/* Global audio track (voiceover / narration) — always starts at frame 0 */}
       {audioUrl && (
         <Audio src={audioUrl} volume={1} />
       )}
+
+      {/* A1/A2 clips dragged in from the Media panel.
+          Each is wrapped in its own <Sequence> so it starts at its timeline
+          position; `trimBefore` then offsets playback within the source file, so
+          at timeline frame `from` the clip is heard from `trimStartInSeconds`. */}
+      {(audioClips ?? []).map((clip) => (
+        <Sequence
+          key={`clip-${clip.id}`}
+          from={Math.max(0, Math.round(clip.startInSeconds * fps))}
+          durationInFrames={Math.max(1, Math.round(clip.durationInSeconds * fps))}
+        >
+          <Audio
+            src={clip.src}
+            trimBefore={Math.max(0, Math.round(clip.trimStartInSeconds * fps))}
+            volume={clip.volume}
+          />
+        </Sequence>
+      ))}
     </AbsoluteFill>
   );
 };

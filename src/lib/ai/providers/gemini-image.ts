@@ -46,7 +46,11 @@ export const geminiImageProvider: VideoProvider = {
       const fileName = `${input.mediaId}.${ext}`;
       await fs.writeFile(path.join(mediaDir, fileName), buffer);
 
-      return { status: "completed", url: `/media/${input.projectId}/${fileName}` };
+      return {
+        status: "completed",
+        url: `/media/${input.projectId}/${fileName}`,
+        storagePath: `media/${input.projectId}/${fileName}`,
+      };
     } catch (error: any) {
       console.error("Gemini image generation failed:", error);
       return { status: "failed", error: error.message || "Failed to generate image" };

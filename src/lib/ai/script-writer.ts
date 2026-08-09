@@ -1,6 +1,7 @@
 "use server";
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { ScriptWriterSchema } from "./schemas";
 
 export async function generateScript(params: {
   topic: string;
@@ -8,6 +9,7 @@ export async function generateScript(params: {
   hook: string;
   visualAesthetic: string;
   pov: string;
+  nicheTheme?: string;
   targetDuration?: string;
   actOutline?: { actNumber: number; description: string };
 }) {
@@ -21,12 +23,29 @@ export async function generateScript(params: {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
     let lengthRule = "Exactly 12 to 15 lines (total 160-190 words).";
-    if (params.targetDuration && params.targetDuration.includes("Short")) {
-      lengthRule = "Exactly 6 to 8 lines (total 70-100 words).";
-    } else if (params.targetDuration && params.targetDuration.includes("Mid")) {
-      lengthRule = "Exactly 15 to 20 lines (total 200-250 words).";
+    if (params.targetDuration) {
+      const dur = params.targetDuration.toLowerCase();
+      if (dur.includes("30-60") || dur.includes("short")) {
+        lengthRule = "Exactly 6 to 10 lines (total 75-150 words). Focus on 1 Act structure: Hook -> Core Concept -> Climax/CTA.";
+      } else if (dur.includes("2-3") || dur.includes("mid-form short")) {
+        lengthRule = "Exactly 20 to 25 lines (total 300-450 words). Focus on 3 Act structure: Hook & Context -> Deep Dive -> Conclusion.";
+      } else if (dur.includes("3-5") || dur.includes("4-5") || dur.includes("mid-form long")) {
+        lengthRule = "Exactly 35 to 45 lines (total 600-750 words). Focus on 3 Act structure: Hook & Context -> Deep Dive -> Conclusion with extended tension.";
+      }
     } else if (params.actOutline) {
-      lengthRule = "Exactly 10 to 12 lines (total 130-160 words).";
+      lengthRule = "Exactly 15 to 25 lines (total 300-500 words) strictly for this specific Act.";
+    }
+
+    let toneMatrixRule = "Epic, dramatic, and direct.";
+    if (params.nicheTheme) {
+      const niche = params.nicheTheme.toLowerCase();
+      if (niche.includes("mythology") || niche.includes("ancient") || niche.includes("religion")) {
+        toneMatrixRule = "Epic, NLT Bible style, grandiose, and poetic scale.";
+      } else if (niche.includes("crime") || niche.includes("investigation")) {
+        toneMatrixRule = "Grounded, suspenseful, analytical, and gripping.";
+      } else if (niche.includes("psychology") || niche.includes("dark")) {
+        toneMatrixRule = "Intense, psychological, slow-burn, and thought-provoking.";
+      }
     }
 
     const systemInstruction = `
@@ -34,7 +53,7 @@ You are an expert Script Writer for a highly visual, cinematic video channel.
 Your task is to write a master Voiceover (VO) script based on the provided parameters.
 
 ### CRITICAL RULES:
-1. Tone: Plain English (NLT Bible style), 8th-grade reading level. Epic, dramatic, and direct.
+1. Tone: Plain English, 8th-grade reading level. ${toneMatrixRule}
 2. Structure: ${lengthRule}
 3. Camera-Ready Rule: EVERY SINGLE LINE MUST state WHO (physical subject), WHAT (physical action), and WHERE (visible location). Do not use abstract concepts or metaphors. Describe what is visibly happening on screen.
 4. Money Shot Rule: The final line must combine a visual summary and an explicit Call To Action (CTA).
@@ -60,21 +79,13 @@ Do NOT write the entire story. Only cover this specific act!
 
     prompt += `\nGenerate the script adhering strictly to the rules. Return a JSON array where each element is a line of the script.`;
 
-    const responseSchema: Schema = {
-      type: Type.ARRAY,
-      description: "Array of script lines, exactly 12-15 items.",
-      items: {
-        type: Type.STRING,
-      },
-    };
-
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,
         responseMimeType: "application/json",
-        responseSchema: responseSchema,
+        responseSchema: ScriptWriterSchema,
         temperature: 0.7,
       },
     });

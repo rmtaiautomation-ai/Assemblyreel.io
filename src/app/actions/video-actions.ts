@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
+import type { TrackStates, ProjectStatus } from "@/lib/timeline-types";
 
 export async function createAndGenerateVideo(
   workspaceId: string, 
@@ -18,7 +19,10 @@ export async function createAndGenerateVideo(
   
   if (!topic) return { success: false, error: "Topic is required" };
 
-  const supabaseAdmin = await createClient(); 
+  // Cookie-scoped anon client — RLS applies. Named plainly because calling it
+  // "supabaseAdmin" implied service-role privileges it has never had, which made
+  // silent RLS denials look impossible when reading this code.
+  const supabase = await createClient();
   const isLongForm = targetDuration.includes("Long");
 
   if (isLongForm) {
@@ -29,7 +33,7 @@ export async function createAndGenerateVideo(
     }
     
     // Save to Database initially with pending status and empty master script
-    const { data: project, error } = await supabaseAdmin.from('video_projects').insert([
+    const { data: project, error } = await supabase.from('video_projects').insert([
       {
         workspace_id: workspaceId,
         topic: topic,
@@ -73,8 +77,8 @@ export async function createAndGenerateVideo(
     }
 
     // Update Project with final master script
-    await supabaseAdmin.from('video_projects')
-      .update({ status: 'completed', master_script: combinedScript.trim() })
+    await supabase.from('video_projects')
+      .update({ status: 'drafting', master_script: combinedScript.trim() })
       .eq('id', project.id);
 
     return { success: true, projectId: project.id, masterScript: combinedScript.trim() };
@@ -94,9 +98,9 @@ export async function createAndGenerateVideo(
       ? aiResult.scriptLines.join("\n\n") 
       : null;
 
-    const status = masterScript ? 'completed' : 'pending';
+    const status = masterScript ? 'drafting' : 'pending';
 
-    const { data: project, error } = await supabaseAdmin.from('video_projects').insert([
+    const { data: project, error } = await supabase.from('video_projects').insert([
       {
         workspace_id: workspaceId,
         topic: topic,
@@ -123,3 +127,34 @@ export async function createAndGenerateVideo(
     return { success: true, projectId: project.id, masterScript: masterScript };
   }
 }
+
+export async function updateProjectTrackStates(projectId: string, trackStates: TrackStates) {
+  // Cookie-scoped anon client — RLS applies, so an RLS denial surfaces here as an
+  // ordinary `error`. That is precisely why callers must check the returned
+  // `success` instead of fire-and-forgetting: a blocked write is indistinguishable
+  // from a successful one otherwise, which is how narration_url silently vanished.
+  const supabase = await createClient();
+  const { error } = await supabase.from('video_projects')
+    .update({ track_states: trackStates })
+    .eq('id', projectId);
+
+  if (error) {
+    console.error("Error updating track states:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+
+export async function updateProjectStatus(projectId: string, status: ProjectStatus) {
+  const supabase = await createClient();
+  const { error } = await supabase.from('video_projects')
+    .update({ status })
+    .eq('id', projectId);
+
+  if (error) {
+    console.error("Error updating project status:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+

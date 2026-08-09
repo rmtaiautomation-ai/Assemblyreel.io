@@ -41,3 +41,11 @@ yarn-error.log*
 next-env.d.ts
 
 /src/generated/prisma
+
+# generated media — now lives in Supabase Storage, not the repo.
+# These were previously committed, which is the only reason the deployed app
+# rendered anything: Vercel's filesystem is read-only, so nothing written at
+# runtime survives. Files already on disk are kept locally as a rollback until
+# a project is confirmed loading entirely from Storage URLs.
+/public/audio
+/public/media

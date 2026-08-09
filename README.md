@@ -4,10 +4,10 @@ An advanced, automated personal content engine that generates highly tailored vi
 
 ## Tech Stack
 
-- **Frontend & Routing:** Next.js (App Router), React 19
+- **Frontend & Routing:** Next.js (App Router), React 19 — runs via `npm run dev` on your own desktop/laptop; not deployed, single-machine tool.
 - **Styling:** Tailwind CSS
 - **Database & Auth:** Supabase (PostgreSQL)
-- **Video Rendering Engine:** Remotion (`@remotion/player`, `@remotion/renderer`) - Provides real-time interactive canvas previews and server-side kinetic typography composition. *(Note: We recently migrated from FFmpeg to Remotion for advanced programmatic control).*
+- **Video Rendering Engine:** Remotion (`@remotion/player`, `@remotion/renderer`) - Provides real-time interactive canvas previews and server-side kinetic typography composition, run inline in a Next.js API route on the same machine. *(Note: We recently migrated from FFmpeg to Remotion for advanced programmatic control).*
 - **AI Core (External Services):** Google Gemini 2.5 API (Scripting), Fal.ai (Visual Generation), Cartesia / ElevenLabs / Local Voice Studio (TTS).
 
 ## Features

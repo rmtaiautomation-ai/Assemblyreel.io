@@ -5,7 +5,7 @@
 ## Overview
 To handle complex, highly-tailored video generation, we use a decoupled **7-Agent AI Engine**. This ensures the LLM's attention is focused on one specific task at a time, resulting in much higher quality outputs than a single prompt.
 
-All agents run via Next.js Server Actions using the Google Gemini 2.5 API with strictly typed JSON Structured Outputs.
+All agents run via Next.js Server Actions using the Google Gemini 2.5 API with strictly typed JSON Structured Outputs. Long-form content repeats the whole loop per act — 5 to 11 acts, each running Agents 1-7 — as a direct, synchronous sequential loop; there's no deployment timeout to work around on a local machine, so no special chunking infrastructure is needed.
 
 ## The 7 Agents
 

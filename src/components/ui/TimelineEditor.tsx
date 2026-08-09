@@ -1,14 +1,17 @@
 "use client";
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info } from "lucide-react";
+import Link from "next/link";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
+import { updateProjectTrackStates, updateProjectStatus } from "@/app/actions/video-actions";
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
-import type { VideoCompositionProps, CompositionScene, OverlayPreset, SceneOverlay } from '@/remotion/types';
+import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay } from '@/remotion/types';
+import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
 
 type TabState = 'media' | 'scene' | 'export';
 type AspectRatio = '16:9' | '9:16' | '1:1';
@@ -78,11 +81,13 @@ function timelineItemToClip(item: any, mediaById: Map<string, any>): TimelineCli
 }
 
 export default function TimelineEditor({
+  workspaceId,
   initialProject,
   initialScenes,
   initialMedia = [],
   initialTimelineItems = [],
 }: {
+  workspaceId: string,
   initialProject: any,
   initialScenes: any[],
   initialMedia?: any[],
@@ -132,6 +137,14 @@ export default function TimelineEditor({
   const [activeTab, setActiveTab] = useState<TabState>('scene');
   const [isRendering, setIsRendering] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
+  // 0-1 fraction from Remotion's real onProgress, via polling GET /api/render-remotion.
+  const [renderProgress, setRenderProgress] = useState(0);
+  // Mirrors video_projects.status locally so the header chip reflects the render as
+  // it happens. Reading initialProject.status directly would freeze it at whatever
+  // the server sent on page load.
+  const [projectStatus, setProjectStatus] = useState<ProjectStatus>(() =>
+    normalizeProjectStatus(initialProject.status)
+  );
   const [renderOutputPath, setRenderOutputPath] = useState<string | null>(null);
   const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana' | 'gemini-image'>('fal-luma');
   const [isGeneratingVisualId, setIsGeneratingVisualId] = useState<string | null>(null);
@@ -146,6 +159,9 @@ export default function TimelineEditor({
   const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
   const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
+
+  // Visual generation button mode
+  const [generateMode, setGenerateMode] = useState<'individual' | 'all'>('individual');
 
   // The Media panel is the user's imported-asset library, so it shows only files
   // they actually uploaded. Generated visuals (Fal/Gemini/stock) also get media
@@ -162,20 +178,64 @@ export default function TimelineEditor({
   const [v1DragInsertIndex, setV1DragInsertIndex] = useState<number | null>(null);
   const [a1DragInsertIndex, setA1DragInsertIndex] = useState<number | null>(null);
 
-  const [trackStates, setTrackStates] = useState({
-    V1: { locked: false, muted: false, volume: 1.0 },
-    A1: { locked: false, muted: false, volume: 1.0 },
-    A2: { locked: false, muted: false, volume: 1.0 }
-  });
-  const [activeVolumePopup, setActiveVolumePopup] = useState<'V1' | 'A1' | 'A2' | null>(null);
+  // Explicitly typed: inferring from `initialProject.track_states` (which is `any`)
+  // widened the whole state to `any` and left every `prev` below implicitly typed.
+  const [trackStates, setTrackStates] = useState<TrackStates>(() =>
+    parseTrackStates(initialProject.track_states)
+  );
+  const [activeVolumePopup, setActiveVolumePopup] = useState<TrackId | null>(null);
 
-  const toggleTrackState = (trackId: 'V1' | 'A1' | 'A2', key: 'locked' | 'muted') => {
+  // Non-blocking banner for background persistence failures. Deliberately not an
+  // alert(): this save is debounced and retries on every change, so a modal would
+  // fire repeatedly. One replaceable banner says the same thing without trapping
+  // the user — but it still says it, rather than failing silently the way the
+  // narration_url column did.
+  const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
+
+  const saveTrackStatesTimerRef = useRef<NodeJS.Timeout | null>(null);
+  // The effect below runs on mount too, which would write identical state back to
+  // the DB on every page load — pure noise, and a guaranteed error every load if
+  // the column is missing. Only persist once the user has actually changed something.
+  const trackStatesDirtyRef = useRef(false);
+
+  useEffect(() => {
+    if (!trackStatesDirtyRef.current) return;
+
+    if (saveTrackStatesTimerRef.current) clearTimeout(saveTrackStatesTimerRef.current);
+    saveTrackStatesTimerRef.current = setTimeout(async () => {
+      const res = await updateProjectTrackStates(initialProject.id, trackStates);
+      if (!res.success) {
+        setPersistenceWarning(
+          `Track volume/mute settings aren't being saved: ${res.error}. ` +
+          `If this persists, run add-track-states-column.sql in the Supabase SQL editor.`
+        );
+      } else {
+        setPersistenceWarning(null);
+      }
+    }, 1000);
+    return () => {
+      if (saveTrackStatesTimerRef.current) clearTimeout(saveTrackStatesTimerRef.current);
+    };
+  }, [trackStates, initialProject.id]);
+
+  const toggleTrackState = (trackId: TrackId, key: 'locked' | 'muted') => {
+    trackStatesDirtyRef.current = true;
     setTrackStates(prev => ({
       ...prev,
       [trackId]: {
         ...prev[trackId],
         [key]: !prev[trackId][key]
       }
+    }));
+  };
+
+  // Mirrors toggleTrackState so the three volume sliders share one dirty-flagged
+  // path; dragging to 0 also flips `muted` so the header icon matches the level.
+  const setTrackVolume = (trackId: TrackId, volume: number) => {
+    trackStatesDirtyRef.current = true;
+    setTrackStates(prev => ({
+      ...prev,
+      [trackId]: { ...prev[trackId], volume, muted: volume === 0 }
     }));
   };
   
@@ -1043,9 +1103,54 @@ export default function TimelineEditor({
     setRenderStatusMessage("Submitting render job to Remotion engine...");
     setRenderOutputPath(null);
 
+    // Every exit path below must land the project on a terminal status. Leaving it
+    // on 'rendering' after a failure was unrecoverable from the UI: the workspace
+    // hub would show a spinner forever with no way to clear it.
+    const markStatus = async (status: ProjectStatus) => {
+      setProjectStatus(status);
+      const res = await updateProjectStatus(initialProject.id, status);
+      if (!res.success) {
+        setPersistenceWarning(`Could not update project status to "${status}": ${res.error}`);
+      }
+      return res.success;
+    };
+
+    // Warn BEFORE rendering, not after: a clip whose asset never finished uploading
+    // has no server-fetchable URL, so it cannot appear in the .mp4. Saying so up
+    // front is the whole point — silently omitting this audio is the bug being fixed.
+    if (unexportableClipNames.length > 0) {
+      const names = unexportableClipNames.join(', ');
+      const proceed = window.confirm(
+        `${unexportableClipNames.length} audio clip(s) still uploading and will be MISSING from the export:\n\n${names}\n\n` +
+        `Wait for the upload to finish for these to be included.\n\nRender anyway?`
+      );
+      if (!proceed) {
+        setIsRendering(false);
+        setRenderStatusMessage(null);
+        return;
+      }
+    }
+
+    // Polls the render route's progress endpoint while the POST below is still
+    // in flight — same shape as pollMediaStatus, just on an interval instead of
+    // a fixed attempt count, since a render's length isn't known up front.
+    const progressPoll = window.setInterval(async () => {
+      try {
+        const res = await fetch(`/api/render-remotion?projectId=${initialProject.id}`);
+        const data = await res.json();
+        if (data.success) setRenderProgress(data.progress);
+      } catch {
+        // Transient poll failure — the next tick tries again; not worth surfacing.
+      }
+    }, 500);
+
     try {
+      // Inside the try: a throw here (offline, action error) previously escaped the
+      // handler entirely, so `finally` never ran and the button stayed spinning.
+      await markStatus('rendering');
+
       const payload = {
-        projectId: "demo-project-" + Math.random().toString(36).substring(7),
+        projectId: initialProject.id,
         ...remotionInputProps,
       };
 
@@ -1055,8 +1160,17 @@ export default function TimelineEditor({
         body: JSON.stringify(payload),
       });
 
-      const data = await res.json();
+      // A 500 from the route returns JSON, but a proxy/timeout may return HTML —
+      // res.json() would throw and mask the real cause, so read defensively.
+      let data: any;
+      try {
+        data = await res.json();
+      } catch {
+        data = { success: false, error: `Render service returned ${res.status} ${res.statusText}` };
+      }
+
       if (data.success) {
+        await markStatus('exported');
         if (data.mode === "local-remotion") {
           setRenderStatusMessage("Render completed! File saved locally at: " + data.outputPath);
           setRenderOutputPath(data.outputPath);
@@ -1064,9 +1178,11 @@ export default function TimelineEditor({
           setRenderStatusMessage(`Render Job Queued! (ID: ${data.jobId}) Ready for serverless cloud execution.`);
         }
       } else {
+        await markStatus('failed');
         setRenderStatusMessage("Render Error: " + (data.error || "Unknown error"));
       }
     } catch (err: any) {
+      await markStatus('failed');
       setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
     } finally {
       setIsRendering(false);
@@ -1308,34 +1424,145 @@ export default function TimelineEditor({
     [scenes]
   );
 
+  // A1/A2 audio clips for the *render*. Two rules matter here:
+  //
+  //  1. `asset.persistedUrl`, never `asset.url`. A freshly-uploaded asset keeps its
+  //     `blob:` URL for the whole session, and a blob: URL is meaningless to the
+  //     headless renderer — it would fail to fetch, or silently produce silence.
+  //  2. A muted track exports silent, matching every NLE (CapCut/Premiere): track
+  //     mute is an editorial decision, not just a monitoring one.
+  const { remotionAudioClips, unexportableClipNames } = useMemo(() => {
+    const clips: CompositionAudioClip[] = [];
+    const unexportable: string[] = [];
+
+    timelineClips
+      .filter(c => c.asset.type === 'audio')
+      .forEach(clip => {
+        const track = trackStates[clip.trackId as TrackId];
+        if (track?.muted || track?.volume === 0) return;
+
+        const src = clip.asset.persistedUrl;
+        if (!src) {
+          // Deliberately collected rather than dropped in silence — vanishing audio
+          // with no explanation is the exact failure this whole change removes.
+          unexportable.push(clip.asset.name);
+          return;
+        }
+
+        clips.push({
+          id: clip.id,
+          src,
+          startInSeconds: clip.startTime,
+          durationInSeconds: clip.duration,
+          trimStartInSeconds: clip.trimStart || 0,
+          volume: track?.volume ?? 1,
+        });
+      });
+
+    return { remotionAudioClips: clips, unexportableClipNames: unexportable };
+  }, [timelineClips, trackStates]);
+
   const remotionTotalDurationInFrames = useMemo(() => {
     const v1Duration = remotionScenes.reduce((acc, s) => acc + s.durationInSeconds, 0);
-    const maxDuration = Math.max(v1Duration, masterAudioDuration || 0);
+    // Clips can extend past the last scene; without them in this max the composition
+    // would be cut short and the tail of a music bed would be truncated.
+    const clipsEnd = remotionAudioClips.reduce(
+      (acc, c) => Math.max(acc, c.startInSeconds + c.durationInSeconds),
+      0
+    );
+    const maxDuration = Math.max(v1Duration, masterAudioDuration || 0, clipsEnd);
     return Math.max(1, Math.round(maxDuration * remotionFps));
-  }, [remotionScenes, masterAudioDuration, remotionFps]);
+  }, [remotionScenes, masterAudioDuration, remotionFps, remotionAudioClips]);
 
   const remotionInputProps: VideoCompositionProps = useMemo(() => ({
     scenes: remotionScenes,
     audioUrl: masterAudioUrl || undefined,
+    audioClips: remotionAudioClips,
     fps: remotionFps,
     width: remotionDimensions.width,
     height: remotionDimensions.height,
     durationInFrames: remotionTotalDurationInFrames,
-  }), [remotionScenes, masterAudioUrl, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
+  }), [remotionScenes, masterAudioUrl, remotionAudioClips, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
 
-  // The preview Player deliberately gets NO narration track: the hidden <audio>
-  // element is the single source of narration while editing, and feeding the same
-  // file to both made it play twice, out of sync. Dropping only `audioUrl` lets the
-  // Player stay unmuted so V1 scene videos keep their own soundtracks — which is
-  // otherwise silenced entirely, since the per-scene <audio> fallback below only
-  // renders when there's no master narration. The render payload keeps audioUrl.
+  // The preview Player deliberately gets NO narration track and NO A1/A2 clips:
+  // hidden native <audio> elements are the single source of both while editing, and
+  // feeding the same files to the Player as well makes each play twice, out of sync.
+  // Dropping only the audio fields lets the Player stay unmuted so V1 scene videos
+  // keep their own soundtracks — which is otherwise silenced entirely, since the
+  // per-scene <audio> fallback below only renders when there's no master narration.
+  // The render payload keeps both; the editor is the only place they'd collide.
   const remotionPreviewProps: VideoCompositionProps = useMemo(
-    () => ({ ...remotionInputProps, audioUrl: undefined }),
+    () => ({ ...remotionInputProps, audioUrl: undefined, audioClips: undefined }),
     [remotionInputProps]
   );
 
+  const statusChip = {
+    exported: { label: 'Exported', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <CheckCircle2 size={11} /> },
+    rendering: { label: 'Rendering', cls: 'bg-blue-50 text-blue-700 border-blue-200', icon: <Loader2 size={11} className="animate-spin" /> },
+    failed: { label: 'Render failed', cls: 'bg-red-50 text-red-700 border-red-200', icon: <AlertTriangle size={11} /> },
+    pending: { label: 'Pending', cls: 'bg-gray-100 text-gray-600 border-gray-200', icon: <Clock size={11} /> },
+    drafting: { label: 'Draft', cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Film size={11} /> },
+  }[projectStatus];
+
   return (
     <div className="flex flex-col h-full bg-gray-50 text-gray-900">
+      {/* Editor header. Lives here rather than in the server page so its actions can
+          reach real editor state — that separation is why the old buttons were dead. */}
+      <header className="flex items-center justify-between px-3 h-12 flex-none bg-white border-b border-gray-200 shadow-sm z-30">
+        <div className="flex items-center gap-3 min-w-0">
+          <Link
+            href={`/workspaces/${workspaceId}`}
+            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors shrink-0"
+            title="Back to workspace"
+          >
+            <ArrowLeft size={16} />
+          </Link>
+          <div className="h-5 w-px bg-gray-200 shrink-0" />
+          <h1 className="text-[13px] font-bold text-gray-900 truncate" title={initialProject.topic || 'Untitled Video'}>
+            {initialProject.topic || 'Untitled Video'}
+          </h1>
+          <span className={`shrink-0 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${statusChip.cls}`}>
+            {statusChip.icon}
+            {statusChip.label}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mr-1">
+            <Clock size={12} />
+            {formatDuration(contentDuration)}
+          </span>
+          <button
+            onClick={handleRenderVideo}
+            disabled={isRendering || scenes.length === 0}
+            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+            title={scenes.length === 0 ? 'Add at least one scene to export' : 'Render this project to an .mp4'}
+          >
+            {isRendering ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {isRendering ? 'Rendering…' : 'Export'}
+          </button>
+        </div>
+      </header>
+
+      {/* Background-persistence failures. Floating rather than inline so it never
+          shifts the timeline layout, and dismissible so it can't trap the user. */}
+      {persistenceWarning && (
+        <div className="fixed bottom-4 right-4 z-[200] max-w-sm bg-amber-50 border border-amber-300 rounded-lg shadow-lg p-3 flex items-start gap-2.5">
+          <Info size={15} className="text-amber-600 shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-[11px] font-bold text-amber-900 mb-0.5">Changes may not be saved</p>
+            <p className="text-[10px] text-amber-800 leading-relaxed">{persistenceWarning}</p>
+          </div>
+          <button
+            onClick={() => setPersistenceWarning(null)}
+            className="text-amber-600 hover:text-amber-900 text-xs font-bold leading-none shrink-0"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
       {/* Hidden Media Elements for Audio Sync */}
       <div className="hidden">
          {/* Master narration audio (single file, audio-first) */}
@@ -1396,6 +1623,10 @@ export default function TimelineEditor({
               ref={el => { mediaRefs.current[`clip-${clip.id}`] = el; }}
               data-start={clip.startTime}
               data-duration={clip.duration}
+              // The playback sync effect reads data-trim-start; without it a trimmed
+              // clip previewed from its head while the export honoured the trim, so
+              // editor and .mp4 disagreed.
+              data-trim-start={clip.trimStart || 0}
               data-track={clip.trackId}
               muted={trackStates[clip.trackId as 'A1' | 'A2']?.muted || false}
             />
@@ -2003,42 +2234,49 @@ export default function TimelineEditor({
                              onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
                              placeholder="Describe the visual scene in detail..."
                            />
-                           <div className="flex justify-between items-center">
-                              <span className={`text-[10px] font-bold px-2 py-1 rounded-md border ${
-                                 selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                                 selectedScene.generation_status === 'Simulated' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                                 selectedScene.generation_status === 'Rendering' || isGeneratingVisualId === selectedScene.id ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
-                                 'bg-gray-100 text-gray-600 border-gray-200'
-                              }`}>
-                                {isGeneratingVisualId === selectedScene.id
-                                  ? "Rendering..."
-                                  : selectedScene.generation_status === 'Simulated'
-                                    ? "Simulated — not a real render"
-                                    : selectedScene.generation_status}
-                              </span>
-                              <div className="flex items-center gap-2">
+                           <div className="flex flex-col gap-3 mt-2">
+                              {/* Inline Toggle Switch */}
+                              <div className="flex items-center justify-between px-2 py-1.5 bg-gray-50 rounded-lg border border-gray-200/60">
+                                <span className="text-[11px] font-bold text-gray-600">Apply to all subsequent scenes</span>
+                                <button
+                                  onClick={() => setGenerateMode(generateMode === 'all' ? 'individual' : 'all')}
+                                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+                                    generateMode === 'all' ? 'bg-purple-600' : 'bg-gray-300'
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform ${
+                                      generateMode === 'all' ? 'translate-x-3.5' : 'translate-x-0.5'
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                              
+                              {/* Primary Action Button */}
+                              {generateMode === 'all' ? (
                                 <button
                                   onClick={handleGenerateAllVisuals}
                                   disabled={isGeneratingAllVisuals}
-                                  className="text-[10px] px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 disabled:opacity-50 text-purple-700 font-bold rounded-md border border-purple-200 shadow-sm transition-all flex items-center gap-1.5"
+                                  className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-all flex justify-center items-center gap-2"
                                   title="Automatically generate videos for Scene 1 to N"
                                 >
-                                  {isGeneratingAllVisuals ? <Loader2 size={12} className="animate-spin text-purple-600" /> : <Wand2 size={12} className="text-purple-600" />}
-                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All (1→N)"}
+                                  {isGeneratingAllVisuals ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All Scenes (1→N)"}
                                 </button>
+                              ) : (
                                 <button 
                                   onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
                                   disabled={isGeneratingVisualId === selectedScene.id}
-                                  className="text-[10px] px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-md shadow-sm transition-colors flex items-center gap-1.5"
+                                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-colors flex justify-center items-center gap-2"
                                 >
                                   {isGeneratingVisualId === selectedScene.id ? (
-                                    <Loader2 size={12} className="animate-spin text-white" />
+                                    <Loader2 size={14} className="animate-spin" />
                                   ) : (
-                                    <ImageIcon size={12} className="text-white" />
+                                    <ImageIcon size={14} />
                                   )}
-                                  {selectedScene.custom_media_url ? "Regenerate Visual" : "Render Visual"}
+                                  {selectedScene.custom_media_url ? "Regenerate Current Scene" : "Render Current Scene"}
                                 </button>
-                              </div>
+                              )}
                            </div>
                           </div>
                         )}
@@ -2352,10 +2590,12 @@ export default function TimelineEditor({
           <div className="flex items-center gap-4">
              <span className="text-[10px] font-bold text-gray-500 tracking-widest uppercase">Timeline Editor</span>
              <div className="h-4 w-px bg-gray-300"></div>
-             <button className="text-gray-500 hover:text-gray-800 transition-colors flex items-center gap-1 text-xs font-semibold" title="Undo">
-               <SkipBack size={14} /> Undo
-             </button>
-             <button 
+             {/* NOTE: an "Undo" button used to sit here with no onClick handler.
+                 Removed rather than faked — real undo needs an inverse-operation log
+                 (a delete must be re-inserted into Supabase, not just restored in
+                 React state), which is a feature in its own right, not a wiring fix.
+                 A button that looks live and does nothing is worse than no button. */}
+             <button
                 onClick={() => {
                   const allKeys: string[] = [
                     ...scenes.map(s => `${s.id}_V1`),
@@ -2369,14 +2609,17 @@ export default function TimelineEditor({
               >
                 <Layers size={13} /> Select All
               </button>
+             {/* Destructive actions deliberately do NOT live in the toolbar. A delete
+                 button that appears on selection is easy to hit by accident and is
+                 detached from the thing it deletes; deletion belongs on the item's own
+                 right-click menu (and the Delete key). What the toolbar shows instead
+                 is a passive selection count, which is information, not a hazard. */}
              {selectedSceneKeys.length > 0 && (
-               <button 
-                 onClick={handleDeleteSelectedScenes}
-                 className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 transition-colors flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-md shadow-sm animate-in fade-in duration-150"
-                 title="Delete all selected scene blocks (Backspace/Delete)"
-               >
-                 <Trash2 size={13} /> Delete Selected ({selectedSceneKeys.length})
-               </button>
+               <span className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2.5 py-1 rounded-md animate-in fade-in duration-150">
+                 <Layers size={12} />
+                 {selectedSceneKeys.length} selected
+                 <span className="text-purple-400 font-medium">— right-click to delete</span>
+               </span>
              )}
           </div>
 
@@ -2502,7 +2745,7 @@ export default function TimelineEditor({
 
               {/* Video Track (V1) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-[52]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
@@ -2537,7 +2780,7 @@ export default function TimelineEditor({
                                value={trackStates.V1.volume ?? 1} 
                                onChange={e => {
                                   const vol = parseFloat(e.target.value);
-                                  setTrackStates(prev => ({...prev, V1: {...prev.V1, volume: vol, muted: vol === 0}}));
+                                  setTrackVolume('V1', vol);
                                }} 
                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
                              />
@@ -2742,7 +2985,7 @@ export default function TimelineEditor({
 
               {/* Audio Track (A1) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-[51]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
@@ -2777,7 +3020,7 @@ export default function TimelineEditor({
                                value={trackStates.A1.volume ?? 1} 
                                onChange={e => {
                                   const vol = parseFloat(e.target.value);
-                                  setTrackStates(prev => ({...prev, A1: {...prev.A1, volume: vol, muted: vol === 0}}));
+                                  setTrackVolume('A1', vol);
                                }} 
                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
                              />
@@ -3043,7 +3286,7 @@ export default function TimelineEditor({
 
               {/* Music Track (A2) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-50'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-[50]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
                     <span 
                       className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
                       onClick={() => {
@@ -3075,7 +3318,7 @@ export default function TimelineEditor({
                                value={trackStates.A2.volume ?? 1} 
                                onChange={e => {
                                   const vol = parseFloat(e.target.value);
-                                  setTrackStates(prev => ({...prev, A2: {...prev.A2, volume: vol, muted: vol === 0}}));
+                                  setTrackVolume('A2', vol);
                                }} 
                                className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
                              />
@@ -3259,23 +3502,50 @@ export default function TimelineEditor({
         </div>
       </div>
       
-      {/* Context Menu */}
-      {contextMenu && (
-        <div 
-          className="fixed bg-white border border-gray-200 shadow-xl rounded-lg py-1 z-[9999] min-w-[140px] animate-in fade-in zoom-in-95 duration-100"
-          style={{ top: Math.min(contextMenu.y, window.innerHeight - 50), left: Math.min(contextMenu.x, window.innerWidth - 140) }}
-        >
-          <button 
-            className="w-full text-left px-4 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2 transition-colors"
-            onClick={(e) => {
-               e.stopPropagation();
-               handleDeleteItem();
-            }}
+      {/* Context Menu — the single home for destructive actions.
+          Selection-aware: right-clicking an item that's part of a multi-selection
+          acts on the whole selection, so removing the toolbar's "Delete Selected"
+          button costs no capability. */}
+      {contextMenu && (() => {
+        const contextKey = `${contextMenu.id}_${contextMenu.trackId ?? ''}`;
+        const isBulk = selectedSceneKeys.length > 1 && selectedSceneKeys.includes(contextKey);
+        // Deleting on A1 clears a scene's narration and leaves the visual in place —
+        // it does not delete the scene. The menu used to say "Delete Scene" here,
+        // which promised something far more destructive than what actually happens.
+        const isNarrationOnly = contextMenu.type === 'scene' && contextMenu.trackId === 'A1';
+
+        const label = isBulk
+          ? `Delete ${selectedSceneKeys.length} items`
+          : isNarrationOnly
+            ? 'Remove narration'
+            : contextMenu.type === 'scene'
+              ? 'Delete scene'
+              : 'Delete clip';
+
+        return (
+          <div
+            className="fixed bg-white border border-gray-200 shadow-xl rounded-lg py-1 z-[9999] min-w-[190px] animate-in fade-in zoom-in-95 duration-100"
+            style={{ top: Math.min(contextMenu.y, window.innerHeight - 60), left: Math.min(contextMenu.x, window.innerWidth - 200) }}
           >
-            <Trash2 size={16} /> Delete {contextMenu.type === 'scene' ? 'Scene' : 'Clip'}
-          </button>
-        </div>
-      )}
+            <button
+              className="w-full text-left px-3 py-2 text-[13px] font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2.5 transition-colors"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (isBulk) {
+                  handleDeleteSelectedScenes();
+                  setContextMenu(null);
+                } else {
+                  handleDeleteItem();
+                }
+              }}
+            >
+              <Trash2 size={15} />
+              <span className="flex-1">{label}</span>
+              <kbd className="text-[10px] font-sans font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">Del</kbd>
+            </button>
+          </div>
+        );
+      })()}
     </div>
   );
 }

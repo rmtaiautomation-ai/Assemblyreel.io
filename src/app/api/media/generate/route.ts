@@ -47,6 +47,9 @@ export async function POST(req: NextRequest) {
         status: "ready",
         url: result.url,
         duration_seconds: result.durationSeconds ?? duration,
+        // Only set when the provider wrote into our own Storage bucket; Fal and
+        // the stock fallback host their own files and leave this null.
+        ...(result.storagePath ? { storage_path: result.storagePath } : {}),
         ...(result.simulated ? { source: "stock-fallback" } : {}),
       });
       return NextResponse.json({

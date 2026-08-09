@@ -16,9 +16,65 @@
   --color-border-glow: rgba(29, 78, 216, 0.2);
   
   --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
-  
+
   --shadow-glass: 0 2px 10px rgba(0, 0, 0, 0.05);
   --shadow-neon: 0 4px 14px rgba(29, 78, 216, 0.15);
+
+  /* ═══════════════════════════════════════════════════════════════════
+     EDITOR DESIGN TOKENS  (prefix: ed-)
+     ───────────────────────────────────────────────────────────────────
+     The timeline editor is deliberately dark, like every professional NLE
+     (Premiere / Resolve / Final Cut / CapCut). This is not a style choice:
+     a bright UI wrapped around the video preview shifts perception of the
+     footage via simultaneous contrast, so clips read darker and less
+     saturated than they are. The preview must be the brightest thing on
+     screen. These tokens are namespaced `ed-` so they never collide with
+     the marketing site / dashboard, which stay light.
+     ═══════════════════════════════════════════════════════════════════ */
+
+  /* Surfaces — an elevation ladder. Higher = closer to the viewer. */
+  --color-ed-base:          #0E1013; /* app ground, viewer letterbox    */
+  --color-ed-surface:       #161920; /* primary panels                  */
+  --color-ed-raised:        #1E222B; /* toolbars, cards, track lanes    */
+  --color-ed-hover:         #272C37; /* hover / active fill             */
+  --color-ed-well:          #101216; /* recessed: inputs, ruler trough  */
+
+  /* Borders — hairlines carry structure on dark, so only two weights. */
+  --color-ed-border:        #272C36;
+  --color-ed-border-strong: #39404E;
+
+  /* Text — three steps is enough; more becomes mush at small sizes. */
+  --color-ed-text:          #E7EAF0;
+  --color-ed-text-dim:      #A2AAB9;
+  --color-ed-text-faint:    #6D7585;
+
+  /* Accent — the ONLY saturated colour in the chrome, so it always
+     means "interactive / selected" and never decoration. */
+  --color-ed-accent:        #8B5CF6;
+  --color-ed-accent-hover:  #7C3AED;
+  --color-ed-accent-text:   #C4B5FD;
+  --color-ed-accent-soft:   #241E3A;
+  --color-ed-accent-border: #4C3A85;
+
+  /* Track identity — V1 / A1 / A2 stay distinguishable at a glance. */
+  --color-ed-v1:            #A78BFA;
+  --color-ed-a1:            #38BDF8;
+  --color-ed-a2:            #FBBF24;
+
+  /* Status. Each has a saturated fill, a dark tint for backgrounds, and
+     a border, so chips read correctly without inventing values inline. */
+  --color-ed-ok:            #34D399;
+  --color-ed-ok-soft:       #10281F;
+  --color-ed-ok-border:     #1F4D3A;
+  --color-ed-warn:          #FBBF24;
+  --color-ed-warn-soft:     #2A2210;
+  --color-ed-warn-border:   #57431A;
+  --color-ed-danger:        #F87171;
+  --color-ed-danger-soft:   #2C1618;
+  --color-ed-danger-border: #5C2A2E;
+  --color-ed-info:          #60A5FA;
+  --color-ed-info-soft:     #12203A;
+  --color-ed-info-border:   #24406E;
 }
 
 @layer base {
