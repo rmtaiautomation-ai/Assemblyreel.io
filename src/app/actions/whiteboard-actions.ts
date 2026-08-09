@@ -5,6 +5,8 @@ import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
 import { enrichAndPersistScenes } from "@/app/actions/orchestrator-actions";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
+import { generateFullNarration } from "./audio-actions";
+import type { SlicedScene } from "./slicer-actions";
 
 /**
  * Per-act generation for the Whiteboard workflow
@@ -317,6 +319,22 @@ export async function finalizeProjectScript(params: {
     return { success: false, error: error.message };
   }
 
+  // --- NEW: Generate Narration Audio automatically upon approval ---
+  const { data: scenes } = await supabase
+    .from("scenes")
+    .select("id, voice_over_beat")
+    .eq("project_id", projectId)
+    .order("sequence_number", { ascending: true });
+
+  if (scenes && scenes.length > 0) {
+    // Generate narration and let Deepgram align the timestamps automatically!
+    const audioRes = await generateFullNarration(projectId, scenes);
+    if (!audioRes.success) {
+      console.warn("[Whiteboard] Narration generation failed during finalize:", audioRes.error);
+    }
+  }
+  // -----------------------------------------------------------------
+
   return { success: true };
 }
 
@@ -473,4 +491,116 @@ export async function updateSceneVoiceover(
     return { success: false, error: error.message };
   }
   return { success: true };
+}
+
+export interface RegenerateActVisualsResult {
+  success: boolean;
+  scenes?: GeneratedActScene[];
+  warnings: string[];
+  error?: string;
+}
+
+/**
+ * Regenerates ONE act's visuals — agents 3-7 only — without touching agent 1 (Script
+ * Writer) or agent 2 (Scene Slicer).
+ *
+ * This is deliberately not "regenerate the act" in the sense of running it through the
+ * full pipeline again: it reads each scene's CURRENT `voice_over_beat`, which is
+ * whatever is in the database right now — the AI's original text if untouched, or the
+ * user's hand edit from `updateSceneVoiceover` if they changed it. Re-running the
+ * Script Writer would silently discard that edit the moment "regenerate" was clicked,
+ * which is the opposite of what an edit-then-regenerate workflow is for.
+ *
+ * No new scene rows are created and none are deleted — every scene keeps its id,
+ * sequence_number and act_number, and only the enrichment-derived columns
+ * (final_video_prompt, scene_type, environment, lighting, camera_direction) are
+ * overwritten in place. That is also why this needs no `startingSequenceNumber`
+ * bookkeeping the way `generateAct` does.
+ */
+export async function regenerateActVisuals(params: {
+  projectId: string;
+  actNumber: number;
+  topic: string;
+  visualAesthetic: string;
+  nicheTheme?: string;
+}): Promise<RegenerateActVisualsResult> {
+  const { projectId, actNumber, topic, visualAesthetic, nicheTheme } = params;
+  const supabase = await createClient();
+
+  const { data: rows, error: fetchError } = await supabase
+    .from("scenes")
+    .select(
+      "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_type"
+    )
+    .eq("project_id", projectId)
+    .eq("act_number", actNumber)
+    .order("sequence_number");
+
+  if (fetchError) {
+    // act_number itself needs db/add-act-persistence.sql — without it there is no way
+    // to tell which scenes belong to this act, so this feature cannot degrade
+    // gracefully the way reads elsewhere do. Fail loudly instead of silently
+    // regenerating the wrong (or every) scene.
+    return {
+      success: false,
+      warnings: [],
+      error: `Could not read this act's scenes (${fetchError.message}). Run db/add-act-persistence.sql if you haven't yet.`,
+    };
+  }
+
+  if (!rows || rows.length === 0) {
+    return { success: false, warnings: [], error: "This act has no scenes to regenerate." };
+  }
+
+  const sceneIds = rows.map((r) => r.id as string);
+
+  // Reconstructed to match SlicedScene's shape so it can go straight into
+  // enrichAndPersistScenes, which was written to consume the Slicer's own output. The
+  // current final_video_prompt doubles as the fallback prompt: if enrichment fails
+  // this time too, the scene keeps what it already had instead of losing its prompt.
+  const slicedScenes: SlicedScene[] = rows.map((row, index) => ({
+    sceneNumber: index + 1,
+    voiceOverText: (row.voice_over_beat as string) ?? "",
+    visualPrompt: (row.final_video_prompt as string) ?? "",
+    estimatedDurationSeconds: Number(row.video_duration ?? 5),
+    sceneType: ((row.scene_type as string) || "ESTABLISH") as SlicedScene["sceneType"],
+    mediaType: ((row.custom_media_type as string) === "image" ? "image" : "video") as SlicedScene["mediaType"],
+  }));
+
+  const enrichment = await enrichAndPersistScenes({
+    projectId,
+    sceneIds,
+    slicedScenes,
+    topic,
+    visualAesthetic,
+    nicheTheme,
+  });
+
+  if (!enrichment.success) {
+    return {
+      success: false,
+      warnings: enrichment.warnings,
+      error: enrichment.error ?? "Visual regeneration failed.",
+    };
+  }
+
+  // Read back so the Whiteboard shows what is actually stored, matching the pattern
+  // generateAct already uses rather than trusting the in-memory enrichment result.
+  const { data: updatedRows } = await supabase
+    .from("scenes")
+    .select("id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt")
+    .in("id", sceneIds)
+    .order("sequence_number");
+
+  const scenes: GeneratedActScene[] = (updatedRows ?? []).map((row, index) => ({
+    id: row.id as string,
+    sequenceNumber: row.sequence_number as number,
+    voiceOverText: (row.voice_over_beat as string) ?? "",
+    sceneType: (row.scene_type as string) ?? "",
+    estimatedDurationSeconds: Number(row.video_duration ?? 0),
+    finalVideoPrompt: (row.final_video_prompt as string) ?? "",
+    usedFallback: (row.final_video_prompt as string) === slicedScenes[index]?.visualPrompt,
+  }));
+
+  return { success: true, scenes, warnings: enrichment.warnings };
 }

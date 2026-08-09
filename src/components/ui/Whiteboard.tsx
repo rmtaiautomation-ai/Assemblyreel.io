@@ -16,6 +16,7 @@ import {
 import {
   finalizeProjectScript,
   generateAct,
+  regenerateActVisuals,
   updateSceneVoiceover,
   type ActOutline,
   type GeneratedActScene,
@@ -205,6 +206,40 @@ export default function Whiteboard({
     setIsRunning(false);
   };
 
+  // Which completed act, if any, is currently having its visuals redone. Separate
+  // from `status` on purpose: `status` describes the FULL act (script + slice +
+  // visuals), and flipping a complete act back to "generating" would show the
+  // full-card "Running the 7-agent chain" spinner, implying the narration is being
+  // rewritten when it deliberately is not.
+  const [regeneratingVisualsIndex, setRegeneratingVisualsIndex] = useState<number | null>(null);
+
+  const handleRegenerateVisuals = async (index: number) => {
+    const card = cards[index];
+    if (!card || card.scenes.length === 0) return;
+
+    setRegeneratingVisualsIndex(index);
+
+    const result = await regenerateActVisuals({
+      projectId,
+      actNumber: card.outline.actNumber,
+      topic,
+      visualAesthetic,
+      nicheTheme: workspaceTheme,
+    });
+
+    setCards((prev) =>
+      prev.map((c, i) => {
+        if (i !== index) return c;
+        if (result.success && result.scenes) {
+          return { ...c, scenes: result.scenes, warnings: result.warnings };
+        }
+        return { ...c, warnings: [...c.warnings, result.error ?? "Visual regeneration failed."] };
+      })
+    );
+
+    setRegeneratingVisualsIndex(null);
+  };
+
   const handleApproveAll = async () => {
     const result = await finalizeProjectScript({
       projectId,
@@ -317,6 +352,38 @@ export default function Whiteboard({
                 {card.scenes.length > 0 && (
                   <span className="text-xs font-medium text-gray-500 whitespace-nowrap">
                     {card.scenes.length} scenes
+                  </span>
+                )}
+                {card.status === "complete" && (
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    title="Redo this act's visuals using its current scene text — narration edits are kept, only agents 3-7 (casting, camera, safety) re-run"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (regeneratingVisualsIndex === null && !isRunning) {
+                        void handleRegenerateVisuals(index);
+                      }
+                    }}
+                    onKeyDown={(e) => {
+                      if ((e.key === "Enter" || e.key === " ") && regeneratingVisualsIndex === null && !isRunning) {
+                        e.stopPropagation();
+                        void handleRegenerateVisuals(index);
+                      }
+                    }}
+                    aria-disabled={regeneratingVisualsIndex !== null || isRunning}
+                    className={`text-xs border px-3 py-1.5 rounded-lg font-bold flex items-center gap-1.5 ${
+                      regeneratingVisualsIndex !== null || isRunning
+                        ? "bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed"
+                        : "bg-purple-50 text-purple-700 hover:bg-purple-100 border-purple-200 cursor-pointer"
+                    }`}
+                  >
+                    {regeneratingVisualsIndex === index ? (
+                      <Loader2 size={12} className="animate-spin" />
+                    ) : (
+                      <RefreshCw size={12} />
+                    )}
+                    {regeneratingVisualsIndex === index ? "Regenerating…" : "Regenerate visuals"}
                   </span>
                 )}
                 {card.status === "failed" && (
