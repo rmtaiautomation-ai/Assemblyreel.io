@@ -167,6 +167,13 @@ export default function TimelineEditor({
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
   const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
 
+  // Lets the timeline's "Replace media" action scroll the Visual Generation
+  // accordion into view. The scroll is deferred through state + an effect rather
+  // than fired inline, because the node does not exist until React has committed
+  // the `activeTab`/`isVisualExpanded` change that reveals it.
+  const visualAccordionRef = useRef<HTMLDivElement>(null);
+  const [pendingVisualScroll, setPendingVisualScroll] = useState(false);
+
   // Visual generation button mode
   const [generateMode, setGenerateMode] = useState<'individual' | 'all'>('individual');
 
@@ -899,6 +906,41 @@ export default function TimelineEditor({
     setSelectedSceneTrack(track);
     setActiveTab('scene');
   };
+
+  /**
+   * Target of the timeline's right-click "Replace media" action.
+   *
+   * Applies the same selection side effects as clicking the block, then expands the
+   * Visual Generation accordion and queues a scroll to it. Deliberately reuses the
+   * existing panel instead of opening a modal: that panel already carries the model
+   * picker, duration, prompt and Generate button, so a modal would be a second UI
+   * for work this one already does.
+   */
+  const focusSceneVisualGeneration = (sceneId: string) => {
+    const index = scenes.findIndex(s => s.id === sceneId);
+    if (index === -1) return;
+
+    setSelectedAsset(null);
+    setSelectedTimelineClip(null);
+    setSelectedSceneKeys([`${sceneId}_V1`]);
+    setSelectedScene(scenes[index]);
+    setSelectedSceneTrack('V1');
+    setActiveTab('scene');
+    setIsVisualExpanded(true);
+
+    // Park the playhead on the scene being replaced, matching a normal block click,
+    // so the preview shows the visual the user is about to swap out.
+    setIsPlaying(false);
+    setCursorPosition(getUnshiftedLeftPosition('V1', index));
+
+    setPendingVisualScroll(true);
+  };
+
+  useEffect(() => {
+    if (!pendingVisualScroll) return;
+    visualAccordionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    setPendingVisualScroll(false);
+  }, [pendingVisualScroll]);
 
   // Removing a scene both deletes its row and renumbers the survivors — persisting
   // only one of those leaves the timeline inconsistent after a reload.
@@ -2207,7 +2249,7 @@ export default function TimelineEditor({
                      </div>
 
                       {/* ── Visual Generation Accordion ── */}
-                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+                     <div ref={visualAccordionRef} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
                         <button
                           onClick={() => setIsVisualExpanded(prev => !prev)}
                           className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
@@ -2261,6 +2303,37 @@ export default function TimelineEditor({
                                    <option value={8}>8 seconds</option>
                                    <option value={10}>10 seconds</option>
                                  </select>
+                              </div>
+                           </div>
+
+                           {/* Media type. Generation still overwrites this from the
+                               provider's kind — newly generated media genuinely is
+                               whatever the model produced. This is here to correct an
+                               asset that was mislabeled on the way in (an upload whose
+                               type was misdetected), which previously left the scene
+                               stuck rendering an <img> for a video or vice versa with
+                               no way to fix it. */}
+                           <div>
+                              <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
+                              <div className="grid grid-cols-2 gap-1 bg-gray-100 p-1 rounded-lg">
+                                {(['video', 'image'] as const).map((mediaType) => {
+                                  const isActive = (selectedScene.custom_media_type || 'video') === mediaType;
+                                  return (
+                                    <button
+                                      key={mediaType}
+                                      type="button"
+                                      onClick={() => updateSceneDetails(selectedScene.id, 'custom_media_type', mediaType)}
+                                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
+                                        isActive
+                                          ? 'bg-white text-gray-900 shadow-sm'
+                                          : 'text-gray-500 hover:text-gray-800'
+                                      }`}
+                                    >
+                                      {mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
+                                      {mediaType === 'video' ? 'Video' : 'Image'}
+                                    </button>
+                                  );
+                                })}
                               </div>
                            </div>
 
@@ -3559,11 +3632,48 @@ export default function TimelineEditor({
               ? 'Delete scene'
               : 'Delete clip';
 
+        // "Replace media" only makes sense for a single scene's visual: A1 is the
+        // same scene row viewed as narration, and clips carry a library asset rather
+        // than a generated visual.
+        const canReplaceMedia =
+          contextMenu.type === 'scene' && contextMenu.trackId === 'V1' && !isBulk;
+
+        // The clamp used to hardcode 60px, which was exactly one item — a taller menu
+        // ran off the bottom of the viewport with no way to reach the lower entries.
+        const MENU_ITEM_HEIGHT = 37;
+        const MENU_SEPARATOR_HEIGHT = 9;
+        const MENU_VERTICAL_PADDING = 8;
+        const estimatedMenuHeight =
+          MENU_VERTICAL_PADDING +
+          MENU_ITEM_HEIGHT +
+          (canReplaceMedia ? MENU_ITEM_HEIGHT + MENU_SEPARATOR_HEIGHT : 0);
+
         return (
           <div
             className="fixed bg-white border border-gray-200 shadow-xl rounded-lg py-1 z-[9999] min-w-[190px] animate-in fade-in zoom-in-95 duration-100"
-            style={{ top: Math.min(contextMenu.y, window.innerHeight - 60), left: Math.min(contextMenu.x, window.innerWidth - 200) }}
+            style={{
+              top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - estimatedMenuHeight - 8)),
+              left: Math.min(contextMenu.x, window.innerWidth - 200),
+            }}
           >
+            {canReplaceMedia && (
+              <>
+                <button
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  onClick={(e) => {
+                    // A global window click listener closes this menu, so every item
+                    // has to stop propagation or it unmounts before its own handler runs.
+                    e.stopPropagation();
+                    focusSceneVisualGeneration(contextMenu.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <ImageIcon size={15} className="text-blue-500" />
+                  <span className="flex-1">Replace media</span>
+                </button>
+                <div className="h-px bg-gray-100 mx-1 my-1" />
+              </>
+            )}
             <button
               className="w-full text-left px-3 py-2 text-[13px] font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2.5 transition-colors"
               onClick={(e) => {
