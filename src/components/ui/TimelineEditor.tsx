@@ -107,10 +107,17 @@ export default function TimelineEditor({
   const [selectedAsset, setSelectedAsset] = useState<MediaAsset | null>(null);
   
   const [cursorPosition, setCursorPosition] = useState<number>(0);
+  // Authoritative position for the playback RAF loop. Reading `cursorPosition` from a
+  // `setCursorPosition(prev => ...)` updater worked for computing the next value, but
+  // hid the "have we reached the end" decision inside that updater where it couldn't
+  // reliably control whether the next frame gets scheduled — `requestAnimationFrame`
+  // was being called unconditionally, once even in the same tick the end was reached.
+  // This ref lets `animate` decide synchronously, in its own scope, before scheduling.
+  const cursorPositionRef = useRef(cursorPosition);
   const [timelineHeight, setTimelineHeight] = useState(320);
   const [isPlaying, setIsPlaying] = useState(false);
   const lastTimeRef = useRef<number>(0);
-  const animationRef = useRef<number>(0);
+  const animationRef = useRef<number | null>(null);
   // Trimming a clip edge and dragging the timeline panel's height are separate
   // gestures — sharing one flag let a clip trim also resize the panel.
   const [isResizing, setIsResizing] = useState(false);
@@ -1261,28 +1268,48 @@ export default function TimelineEditor({
   // The visual width of the timeline ruler (includes 15s buffer padding)
   const timelineDuration = Math.max(60, contentDuration + 15, clipsMaxTime + 15);
 
+  // Keeps the ref current for every OTHER way cursorPosition changes (click-to-seek,
+  // drag, reset-on-drag-start) so the playback loop below always resumes from the
+  // real position instead of a stale one captured when it last ran.
   useEffect(() => {
-    if (isPlaying) {
-      lastTimeRef.current = performance.now();
-      const animate = (time: number) => {
-        const delta = (time - lastTimeRef.current) / 1000;
-        lastTimeRef.current = time;
-        setCursorPosition(prev => {
-          const newPos = prev + (delta * scale);
-          if (newPos >= timelineDuration * scale) {
-            setIsPlaying(false);
-            return timelineDuration * scale; // Stop exactly at the end of the timeline width
-          }
-          return newPos;
-        });
-        animationRef.current = requestAnimationFrame(animate);
-      };
-      animationRef.current = requestAnimationFrame(animate);
-    } else {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+    cursorPositionRef.current = cursorPosition;
+  }, [cursorPosition]);
+
+  useEffect(() => {
+    if (!isPlaying) {
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
+      return;
     }
+
+    lastTimeRef.current = performance.now();
+    const maxPos = timelineDuration * scale;
+
+    const animate = (time: number) => {
+      const delta = (time - lastTimeRef.current) / 1000;
+      lastTimeRef.current = time;
+      const newPos = cursorPositionRef.current + delta * scale;
+
+      if (newPos >= maxPos) {
+        // Stop exactly at the end of the timeline width, and — critically — do not
+        // schedule another frame. The old version scheduled unconditionally here, so
+        // once `prev` was clamped to `maxPos`, every subsequent frame recomputed the
+        // same clamped value and rescheduled again, spinning until React's `isPlaying`
+        // update was processed and the effect below could finally cancel it.
+        cursorPositionRef.current = maxPos;
+        setCursorPosition(maxPos);
+        setIsPlaying(false);
+        return;
+      }
+
+      cursorPositionRef.current = newPos;
+      setCursorPosition(newPos);
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    animationRef.current = requestAnimationFrame(animate);
+
     return () => {
-      if (animationRef.current) cancelAnimationFrame(animationRef.current);
+      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
     };
   }, [isPlaying, scale, timelineDuration]);
 
