@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import Link from "next/link";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2 } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
@@ -161,6 +161,19 @@ export default function TimelineEditor({
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [showRatioMenu, setShowRatioMenu] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'scene' | 'clip', id: string, trackId?: string } | null>(null);
+
+  /**
+   * Isolated preview — renders a ONE-scene composition instead of the whole timeline
+   * so a single scene can be looped and inspected.
+   *
+   * Deliberately NOT built on the Player's `inFrame`/`outFrame`: the playback sync
+   * effect below seeks the absolute timeline frame on every cursor change, and would
+   * fight those bounds every frame. A one-scene `scenes` array starts that scene at
+   * frame 0 instead, which sidesteps offset translation entirely.
+   *
+   * Held as an id rather than the scene object so it can't go stale against `scenes`.
+   */
+  const [isolatedSceneId, setIsolatedSceneId] = useState<string | null>(null);
 
   // Accordion collapse states for Scene Info panel
   const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
@@ -1359,6 +1372,19 @@ export default function TimelineEditor({
   const currentTime = cursorPosition / scale;
 
   useEffect(() => {
+    // Isolated preview renders a one-scene composition that starts at frame 0, so
+    // every absolute-timeline seek below would be meaningless here — and, because
+    // this effect runs on each cursor change, would drag the looping scene back to
+    // the wrong frame continuously. The native elements carry narration for the whole
+    // timeline, which has no position inside a single looping scene either, so pause
+    // them rather than leaving them running untracked behind the isolated view.
+    if (isolatedSceneId) {
+      Object.values(mediaRefs.current).forEach(media => {
+        if (media && !media.paused) media.pause();
+      });
+      return;
+    }
+
     // 1. Sync the Remotion Player
     if (remotionPlayerRef.current) {
       // The Player carries V1 scene-video audio only (narration is stripped from
@@ -1448,7 +1474,7 @@ export default function TimelineEditor({
          }
       }
     });
-  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality]);
+  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality, isolatedSceneId]);
 
   const getSceneColor = (status: string) => {
     if (status === 'Completed') return 'border-gray-800 bg-emerald-50 text-emerald-700';
@@ -1553,6 +1579,18 @@ export default function TimelineEditor({
     durationInFrames: remotionTotalDurationInFrames,
   }), [remotionScenes, masterAudioUrl, remotionAudioClips, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
 
+  // Resolved from `scenes` rather than captured at toggle time, so edits to the
+  // isolated scene (a duration change, a regenerated visual) show up live.
+  const isolatedScene = useMemo(
+    () => (isolatedSceneId ? remotionScenes.find(s => s.id === isolatedSceneId) ?? null : null),
+    [isolatedSceneId, remotionScenes]
+  );
+
+  const isolatedDurationInFrames = useMemo(
+    () => (isolatedScene ? Math.max(1, Math.round(isolatedScene.durationInSeconds * remotionFps)) : 1),
+    [isolatedScene, remotionFps]
+  );
+
   // The preview Player deliberately gets NO narration track and NO A1/A2 clips:
   // hidden native <audio> elements are the single source of both while editing, and
   // feeding the same files to the Player as well makes each play twice, out of sync.
@@ -1560,10 +1598,40 @@ export default function TimelineEditor({
   // keep their own soundtracks — which is otherwise silenced entirely, since the
   // per-scene <audio> fallback below only renders when there's no master narration.
   // The render payload keeps both; the editor is the only place they'd collide.
-  const remotionPreviewProps: VideoCompositionProps = useMemo(
-    () => ({ ...remotionInputProps, audioUrl: undefined, audioClips: undefined }),
-    [remotionInputProps]
-  );
+  const remotionPreviewProps: VideoCompositionProps = useMemo(() => {
+    const base = { ...remotionInputProps, audioUrl: undefined, audioClips: undefined };
+    if (!isolatedScene) return base;
+
+    // A one-scene array puts that scene at frame 0, so the Player needs no knowledge
+    // of where the scene sits on the real timeline — and `trimStartInSeconds` still
+    // rides along on the scene itself, so the correct part of the source still plays.
+    return { ...base, scenes: [isolatedScene], durationInFrames: isolatedDurationInFrames };
+  }, [remotionInputProps, isolatedScene, isolatedDurationInFrames]);
+
+  // The sync effect bails out entirely in isolation mode, so nothing else would ever
+  // start or stop the Player — drive it directly on the mode change instead.
+  useEffect(() => {
+    const player = remotionPlayerRef.current;
+    if (!player) return;
+
+    if (isolatedSceneId) {
+      // Stop the timeline's own playhead loop; it has no meaning while a single
+      // scene loops on its own clock.
+      setIsPlaying(false);
+      player.seekTo(0);
+      player.play();
+    } else {
+      player.pause();
+    }
+  }, [isolatedSceneId]);
+
+  // Deleting the isolated scene would otherwise strand the editor showing an empty
+  // composition, with the only way out being a menu on a block that no longer exists.
+  useEffect(() => {
+    if (isolatedSceneId && !scenes.some(s => s.id === isolatedSceneId)) {
+      setIsolatedSceneId(null);
+    }
+  }, [isolatedSceneId, scenes]);
 
   const statusChip = {
     exported: { label: 'Exported', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <CheckCircle2 size={11} /> },
@@ -2518,18 +2586,37 @@ export default function TimelineEditor({
                ) : scenes.length > 0 ? (
                   /* Remotion Player — renders the full composition with all scenes and overlays */
                   <div className="absolute inset-0">
+                    {isolatedScene && (
+                      <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-3 bg-purple-600/95 backdrop-blur-sm text-white rounded-lg px-3 py-2 shadow-lg">
+                        <span className="text-[11px] font-bold flex items-center gap-2 min-w-0">
+                          <Repeat size={13} className="shrink-0" />
+                          <span className="truncate">
+                            Previewing scene {scenes.findIndex(s => s.id === isolatedSceneId) + 1} only — looping
+                          </span>
+                        </span>
+                        <button
+                          onClick={() => setIsolatedSceneId(null)}
+                          className="text-[11px] font-bold bg-white/20 hover:bg-white/30 px-2.5 py-1 rounded-md transition-colors shrink-0"
+                        >
+                          Exit
+                        </button>
+                      </div>
+                    )}
                     <Player
                       ref={remotionPlayerRef}
                       component={VideoComposition}
                       inputProps={remotionPreviewProps}
-                      durationInFrames={remotionTotalDurationInFrames}
+                      durationInFrames={isolatedScene ? isolatedDurationInFrames : remotionTotalDurationInFrames}
                       compositionWidth={remotionDimensions.width}
                       compositionHeight={remotionDimensions.height}
                       fps={remotionFps}
                       style={{ width: '100%', height: '100%' }}
                       controls={false}
                       autoPlay={false}
-                      loop={false}
+                      // Looping is what makes isolation useful for inspecting a single
+                      // scene; the full timeline must not loop or it would fight the
+                      // playhead's own end-of-timeline stop.
+                      loop={Boolean(isolatedScene)}
                       // Remotion's Player has no `muted` prop — only `initiallyMuted`,
                       // plus imperative mute()/unmute() applied in the sync effect.
                       // The Player supplies V1 scene-video audio only (narration is
@@ -3632,11 +3719,12 @@ export default function TimelineEditor({
               ? 'Delete scene'
               : 'Delete clip';
 
-        // "Replace media" only makes sense for a single scene's visual: A1 is the
-        // same scene row viewed as narration, and clips carry a library asset rather
-        // than a generated visual.
-        const canReplaceMedia =
+        // The scene-scoped actions only make sense for a single scene's visual: A1 is
+        // the same scene row viewed as narration, and clips carry a library asset
+        // rather than a generated visual.
+        const isSingleV1Scene =
           contextMenu.type === 'scene' && contextMenu.trackId === 'V1' && !isBulk;
+        const isCurrentlyIsolated = isolatedSceneId === contextMenu.id;
 
         // The clamp used to hardcode 60px, which was exactly one item — a taller menu
         // ran off the bottom of the viewport with no way to reach the lower entries.
@@ -3646,7 +3734,7 @@ export default function TimelineEditor({
         const estimatedMenuHeight =
           MENU_VERTICAL_PADDING +
           MENU_ITEM_HEIGHT +
-          (canReplaceMedia ? MENU_ITEM_HEIGHT + MENU_SEPARATOR_HEIGHT : 0);
+          (isSingleV1Scene ? MENU_ITEM_HEIGHT * 2 + MENU_SEPARATOR_HEIGHT : 0);
 
         return (
           <div
@@ -3656,7 +3744,7 @@ export default function TimelineEditor({
               left: Math.min(contextMenu.x, window.innerWidth - 200),
             }}
           >
-            {canReplaceMedia && (
+            {isSingleV1Scene && (
               <>
                 <button
                   className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
@@ -3670,6 +3758,19 @@ export default function TimelineEditor({
                 >
                   <ImageIcon size={15} className="text-blue-500" />
                   <span className="flex-1">Replace media</span>
+                </button>
+                <button
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsolatedSceneId(isCurrentlyIsolated ? null : contextMenu.id);
+                    setContextMenu(null);
+                  }}
+                >
+                  <Repeat size={15} className="text-purple-500" />
+                  <span className="flex-1">
+                    {isCurrentlyIsolated ? 'Exit scene preview' : 'Preview this scene only'}
+                  </span>
                 </button>
                 <div className="h-px bg-gray-100 mx-1 my-1" />
               </>
