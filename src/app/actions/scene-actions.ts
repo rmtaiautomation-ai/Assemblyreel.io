@@ -15,6 +15,12 @@ const UPDATABLE_FIELDS = [
   "trim_start",
   "media_id",
   "audio_url",
+  // Require db/add-scene-transitions.sql. Listed here only after that migration runs:
+  // updateScene sends one merged payload per scene, and PostgREST rejects a request
+  // naming a missing column whole, so an unmigrated database would fail the entire
+  // write rather than just this field.
+  "transition_type",
+  "transition_duration",
 ] as const;
 
 // Fields accepted when inserting a brand-new scene created by dropping local

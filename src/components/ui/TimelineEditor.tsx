@@ -10,7 +10,8 @@ import { updateProjectTrackStates, updateProjectStatus } from "@/app/actions/vid
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
-import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay } from '@/remotion/types';
+import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay, TransitionType } from '@/remotion/types';
+import { layoutScenes, maxTransitionSeconds } from '@/remotion/timeline';
 import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
 
 type TabState = 'media' | 'scene' | 'export';
@@ -179,6 +180,7 @@ export default function TimelineEditor({
   const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
   const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
+  const [isTransitionExpanded, setIsTransitionExpanded] = useState(true);
 
   // Lets the timeline's "Replace media" action scroll the Visual Generation
   // accordion into view. The scroll is deferred through state + an effect rather
@@ -1515,6 +1517,14 @@ export default function TimelineEditor({
         preset: (s.overlay_preset || 'none') as OverlayPreset,
         color: s.overlay_color || '#FFFFFF',
       } : undefined,
+      // Passed through UNCLAMPED. `layoutScenes` clamps against neighbour durations
+      // at render time, because the legal maximum changes whenever an adjacent scene
+      // is resized — a value clamped here would silently go stale.
+      transition: s.transition_type && s.transition_type !== 'none' ? {
+        type: s.transition_type as TransitionType,
+        durationInSeconds:
+          typeof s.transition_duration === 'number' ? s.transition_duration : 0.5,
+      } : undefined,
     })),
     [scenes]
   );
@@ -1558,15 +1568,24 @@ export default function TimelineEditor({
   }, [timelineClips, trackStates]);
 
   const remotionTotalDurationInFrames = useMemo(() => {
-    const v1Duration = remotionScenes.reduce((acc, s) => acc + s.durationInSeconds, 0);
+    // Shares `layoutScenes` with the composition rather than summing seconds here.
+    // The old local sum rounded once at the end while the composition rounds each
+    // scene, so the two could disagree by up to N/2 frames across N scenes — the
+    // Player's reported length never quite matched the composition's real last frame.
+    // Transitions do not affect this total by design.
+    const { totalDurationInFrames: scenesFrames } = layoutScenes(remotionScenes, remotionFps);
+
     // Clips can extend past the last scene; without them in this max the composition
     // would be cut short and the tail of a music bed would be truncated.
     const clipsEnd = remotionAudioClips.reduce(
       (acc, c) => Math.max(acc, c.startInSeconds + c.durationInSeconds),
       0
     );
-    const maxDuration = Math.max(v1Duration, masterAudioDuration || 0, clipsEnd);
-    return Math.max(1, Math.round(maxDuration * remotionFps));
+    const trailingAudioFrames = Math.round(
+      Math.max(masterAudioDuration || 0, clipsEnd) * remotionFps
+    );
+
+    return Math.max(1, scenesFrames, trailingAudioFrames);
   }, [remotionScenes, masterAudioDuration, remotionFps, remotionAudioClips]);
 
   const remotionInputProps: VideoCompositionProps = useMemo(() => ({
@@ -2315,6 +2334,88 @@ export default function TimelineEditor({
                           </div>
                         )}
                      </div>
+
+                      {/* ── Transition Accordion ──
+                          The transition belongs to the scene it plays INTO, so the
+                          first scene has nothing to configure. */}
+                     {(() => {
+                       const sceneIndex = scenes.findIndex(s => s.id === selectedScene.id);
+                       const isFirstScene = sceneIndex <= 0;
+                       const transitionType = (selectedScene.transition_type || 'none') as TransitionType;
+                       const maxSeconds = maxTransitionSeconds(remotionScenes, sceneIndex, remotionFps);
+                       const currentSeconds =
+                         typeof selectedScene.transition_duration === 'number'
+                           ? selectedScene.transition_duration
+                           : 0.5;
+
+                       return (
+                         <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
+                           <button
+                             onClick={() => setIsTransitionExpanded(prev => !prev)}
+                             className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                           >
+                             <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                               <Layers size={14} className="text-purple-500" /> Transition In
+                             </span>
+                             {isTransitionExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                           </button>
+                           {isTransitionExpanded && (
+                             <div className="p-3 bg-white border-t border-gray-100 space-y-2.5">
+                               {isFirstScene ? (
+                                 <p className="text-[11px] text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 leading-relaxed">
+                                   The first scene has no preceding scene to transition from.
+                                 </p>
+                               ) : (
+                                 <>
+                                   <div>
+                                     <label className="block text-[10px] font-bold text-gray-500 mb-1">Style</label>
+                                     <select
+                                       value={transitionType}
+                                       onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_type', e.target.value)}
+                                       className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                     >
+                                       <option value="none">Cut (no transition)</option>
+                                       <option value="crossfade">Crossfade / Dissolve</option>
+                                       <option value="slide">Slide / Push</option>
+                                       <option value="zoom">Smooth Zoom</option>
+                                       <option value="glitch">Glitch</option>
+                                       <option value="light-leak">Wipe / Light Leak</option>
+                                     </select>
+                                   </div>
+
+                                   {transitionType !== 'none' && (
+                                     <div>
+                                       <div className="flex items-center justify-between mb-1">
+                                         <label className="text-[10px] font-bold text-gray-500">Duration</label>
+                                         <span className="text-[10px] font-bold text-purple-600">
+                                           {Math.min(currentSeconds, maxSeconds).toFixed(2)}s
+                                         </span>
+                                       </div>
+                                       {/* Max comes from the same clamp the renderer applies, so the
+                                           slider can never offer a value that would be silently
+                                           reduced at render time. */}
+                                       <input
+                                         type="range"
+                                         min={0.1}
+                                         max={Math.max(0.1, maxSeconds)}
+                                         step={0.05}
+                                         value={Math.min(currentSeconds, Math.max(0.1, maxSeconds))}
+                                         onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_duration', Number(e.target.value))}
+                                         className="w-full accent-purple-600"
+                                       />
+                                       <p className="text-[10px] text-gray-400 mt-1 leading-relaxed">
+                                         Capped at half the shorter neighbouring scene ({maxSeconds.toFixed(2)}s here).
+                                         Transitions never change total video length.
+                                       </p>
+                                     </div>
+                                   )}
+                                 </>
+                               )}
+                             </div>
+                           )}
+                         </div>
+                       );
+                     })()}
 
                       {/* ── Visual Generation Accordion ── */}
                      <div ref={visualAccordionRef} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">

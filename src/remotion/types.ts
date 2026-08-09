@@ -13,6 +13,25 @@ export interface SceneOverlay {
   position?: 'center' | 'bottom' | 'top';
 }
 
+export type TransitionType =
+  | 'none'
+  | 'crossfade'
+  | 'slide'
+  | 'zoom'
+  | 'glitch'
+  | 'light-leak';
+
+export interface SceneTransitionConfig {
+  type: TransitionType;
+  /**
+   * The user's REQUESTED length. Clamped against neighbour scene durations by
+   * `layoutScenes` at render time, never on write — the legal maximum changes every
+   * time an adjacent scene is resized, so a value clamped on write goes stale with
+   * no event that would recompute it.
+   */
+  durationInSeconds: number;
+}
+
 export interface CompositionScene {
   id: string;
   mediaUrl: string;
@@ -20,6 +39,11 @@ export interface CompositionScene {
   durationInSeconds: number;
   trimStartInSeconds: number;
   overlay?: SceneOverlay;
+  /**
+   * The transition INTO this scene (between the previous scene and this one).
+   * Ignored for the first scene, which has nothing to transition from.
+   */
+  transition?: SceneTransitionConfig;
 }
 
 /**

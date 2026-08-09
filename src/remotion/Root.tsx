@@ -2,6 +2,7 @@ import React from 'react';
 import { Composition } from 'remotion';
 import { VideoComposition } from './compositions/VideoComposition';
 import type { VideoCompositionProps, CompositionScene } from './types';
+import { layoutScenes } from './timeline';
 
 /**
  * Remotion Root — registers all compositions.
@@ -36,18 +37,19 @@ export const RemotionRoot: React.FC = () => {
           const width = props.width || 1080;
           const height = props.height || 1920;
 
+          // The editor always sends durationInFrames, so this short-circuit is the
+          // live path and the branch below only runs in Remotion Studio.
           if (props.durationInFrames) {
             return { durationInFrames: props.durationInFrames, fps, width, height };
           }
 
-          let totalFrames = 0;
-          if (props.scenes) {
-            props.scenes.forEach(scene => {
-              totalFrames += Math.round((scene.durationInSeconds || 0) * fps);
-            });
-          }
+          // Shares `layoutScenes` with the composition and the editor rather than
+          // re-deriving the sum here, so all three agree on rounding. Transitions do
+          // not change this total — a scene that starts early is lengthened to match.
+          const { totalDurationInFrames } = layoutScenes(props.scenes ?? [], fps);
+
           return {
-            durationInFrames: Math.max(1, totalFrames),
+            durationInFrames: totalDurationInFrames,
             fps,
             width,
             height,
