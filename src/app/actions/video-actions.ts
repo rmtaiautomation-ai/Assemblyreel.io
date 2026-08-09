@@ -219,3 +219,23 @@ export async function updateProjectStatus(projectId: string, status: ProjectStat
   return { success: true };
 }
 
+/**
+ * Persists the global auto-captions toggle.
+ *
+ * Requires db/add-caption-columns.sql. Callers must check `success`: this setting
+ * changes what the exported video looks like, so a silently-dropped write would let
+ * the editor show captions on while the next render produced a video without them.
+ */
+export async function updateProjectCaptionsEnabled(projectId: string, enabled: boolean) {
+  const supabase = await createClient();
+  const { error } = await supabase.from('video_projects')
+    .update({ captions_enabled: enabled })
+    .eq('id', projectId);
+
+  if (error) {
+    console.error("Error updating captions_enabled:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+

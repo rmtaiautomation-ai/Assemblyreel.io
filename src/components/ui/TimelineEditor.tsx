@@ -6,11 +6,11 @@ import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, Skip
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
-import { updateProjectTrackStates, updateProjectStatus } from "@/app/actions/video-actions";
+import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
-import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay, TransitionType } from '@/remotion/types';
+import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay, TransitionType, CaptionWord } from '@/remotion/types';
 import { layoutScenes, maxTransitionSeconds } from '@/remotion/timeline';
 import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
 
@@ -144,6 +144,7 @@ export default function TimelineEditor({
 
   const [activeTab, setActiveTab] = useState<TabState>('scene');
   const [isRendering, setIsRendering] = useState(false);
+  const [isUploadingToYouTube, setIsUploadingToYouTube] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   // 0-1 fraction from Remotion's real onProgress, via polling GET /api/render-remotion.
   const [renderProgress, setRenderProgress] = useState(0);
@@ -181,6 +182,17 @@ export default function TimelineEditor({
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
   const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
   const [isTransitionExpanded, setIsTransitionExpanded] = useState(true);
+
+  // Auto-captions. `narration_words` is written by the Deepgram pass inside
+  // generateFullNarration, so it only exists once narration has been generated —
+  // the toggle stays disabled until then rather than silently doing nothing.
+  const [captionsEnabled, setCaptionsEnabled] = useState<boolean>(
+    Boolean(initialProject.captions_enabled)
+  );
+  const captionWords: CaptionWord[] = useMemo(
+    () => (Array.isArray(initialProject.narration_words) ? initialProject.narration_words : []),
+    [initialProject.narration_words]
+  );
 
   // Lets the timeline's "Replace media" action scroll the Visual Generation
   // accordion into view. The scroll is deferred through state + an effect rather
@@ -1253,6 +1265,40 @@ export default function TimelineEditor({
     }
   };
 
+  const handleUploadToYouTube = async () => {
+    setIsUploadingToYouTube(true);
+    setRenderStatusMessage("Uploading to YouTube...");
+    
+    try {
+      const res = await fetch("/api/upload/youtube", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          projectId: initialProject.id,
+          title: initialProject.topic || "AI Video",
+          privacyStatus: "private" // default private to be safe
+        }),
+      });
+      
+      const data = await res.json();
+      if (data.success) {
+        setRenderStatusMessage(`Successfully uploaded to YouTube! URL: ${data.url}`);
+      } else {
+        // If there's an auth error, we might need to redirect to the auth flow
+        if (data.error && data.error.includes("auth")) {
+          setRenderStatusMessage("YouTube Authentication required. Redirecting...");
+          window.location.href = `/api/auth/youtube?projectId=${initialProject.id}`;
+        } else {
+          setRenderStatusMessage("YouTube Upload Error: " + (data.error || "Unknown error"));
+        }
+      }
+    } catch (err: any) {
+      setRenderStatusMessage("YouTube Upload Error: " + (err.message || "Failed to submit request"));
+    } finally {
+      setIsUploadingToYouTube(false);
+    }
+  };
+
   // Panel height only — scene/clip trimming is handled by the pointer effect above.
   useEffect(() => {
     if (!isResizingPanel) return;
@@ -1592,11 +1638,13 @@ export default function TimelineEditor({
     scenes: remotionScenes,
     audioUrl: masterAudioUrl || undefined,
     audioClips: remotionAudioClips,
+    captionWords,
+    showCaptions: captionsEnabled,
     fps: remotionFps,
     width: remotionDimensions.width,
     height: remotionDimensions.height,
     durationInFrames: remotionTotalDurationInFrames,
-  }), [remotionScenes, masterAudioUrl, remotionAudioClips, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
+  }), [remotionScenes, masterAudioUrl, remotionAudioClips, captionWords, captionsEnabled, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
 
   // Resolved from `scenes` rather than captured at toggle time, so edits to the
   // isolated scene (a duration change, a regenerated visual) show up live.
@@ -1825,6 +1873,58 @@ export default function TimelineEditor({
             >
               <Wand2 size={14} /> Export
             </button>
+          </div>
+
+          {/* Auto-Captions — a whole-video setting, so it sits outside the tabs rather
+              than inside Scene Info, which only renders when a scene is selected.
+              Disabled until narration exists: the word timings come from the Deepgram
+              pass inside generateFullNarration, and a toggle that flips but changes
+              nothing would be worse than one that explains itself. */}
+          <div className="px-3 py-2.5 border-b border-gray-200 bg-white">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`p-1.5 rounded-md shrink-0 ${captionWords.length > 0 ? 'bg-purple-50' : 'bg-gray-100'}`}>
+                  <Type size={14} className={captionWords.length > 0 ? 'text-purple-600' : 'text-gray-400'} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-gray-800 leading-tight">Auto-Captions</p>
+                  <p className="text-[10px] text-gray-500 leading-tight truncate">
+                    {captionWords.length > 0
+                      ? `${captionWords.length} words timed to narration`
+                      : 'Generate narration to enable'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={captionsEnabled}
+                disabled={captionWords.length === 0}
+                onClick={async () => {
+                  const next = !captionsEnabled;
+                  setCaptionsEnabled(next);
+                  const res = await updateProjectCaptionsEnabled(initialProject.id, next);
+                  if (!res.success) {
+                    // Revert rather than leave the editor showing captions that the
+                    // next render would not include.
+                    setCaptionsEnabled(!next);
+                    setPersistenceWarning(
+                      `Couldn't save the captions setting (${res.error}). Run db/add-caption-columns.sql if you haven't yet.`
+                    );
+                  }
+                }}
+                className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  captionsEnabled ? 'bg-purple-600' : 'bg-gray-300'
+                }`}
+              >
+                <span
+                  className={`absolute top-[3px] w-4 h-4 bg-white rounded-full shadow transition-transform ${
+                    captionsEnabled ? 'translate-x-[21px]' : 'translate-x-[3px]'
+                  }`}
+                />
+              </button>
+            </div>
           </div>
 
           {/* Tab Content Area */}
@@ -2616,13 +2716,27 @@ export default function TimelineEditor({
                    
                    <div className="pt-6 mt-4 border-t border-gray-100">
                      {renderOutputPath ? (
-                        <a
-                          href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
-                          download
-                          className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                        >
-                          <Download size={18} /> Download Video
-                        </a>
+                        <div className="flex flex-col gap-3">
+                          <a
+                            href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
+                            download
+                            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                          >
+                            <Download size={18} /> Download Video
+                          </a>
+                          
+                          <button
+                            onClick={handleUploadToYouTube}
+                            disabled={isUploadingToYouTube}
+                            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                          >
+                            {isUploadingToYouTube ? (
+                              <><Loader2 size={18} className="animate-spin" /> Uploading...</>
+                            ) : (
+                              <><Upload size={18} /> Upload to YouTube</>
+                            )}
+                          </button>
+                        </div>
                      ) : (
                        <button 
                          onClick={handleRenderVideo}

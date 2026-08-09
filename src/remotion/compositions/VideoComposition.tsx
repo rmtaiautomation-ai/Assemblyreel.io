@@ -11,6 +11,7 @@ import {
 import type { SceneOverlay, VideoCompositionProps } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
+import { CaptionTrack } from '../captions/CaptionTrack';
 import { SlideIn } from '../overlays/SlideIn';
 import { PopIn } from '../overlays/PopIn';
 import { Typewriter } from '../overlays/Typewriter';
@@ -28,6 +29,8 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   scenes,
   audioUrl,
   audioClips,
+  captionWords,
+  showCaptions,
 }) => {
   const { fps } = useVideoConfig();
 
@@ -142,6 +145,15 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           </Sequence>
         );
       })}
+
+      {/* Auto-captions. Rendered AFTER the scene sequences so they paint above every
+          scene and above scene overlays — a caption hidden behind a transition or a
+          lower-third would be worse than no caption at all. Timed to the narration's
+          own absolute timeline, so transitions (which never move nominal scene
+          boundaries) cannot desync them. */}
+      {showCaptions && captionWords && captionWords.length > 0 && (
+        <CaptionTrack words={captionWords} />
+      )}
 
       {/* Global audio track (voiceover / narration) — always starts at frame 0 */}
       {audioUrl && (

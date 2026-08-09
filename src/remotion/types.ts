@@ -73,6 +73,20 @@ export interface CompositionAudioClip {
 }
 
 /**
+ * One spoken word with its timing, from the Deepgram pass that already runs during
+ * narration generation.
+ *
+ * Deliberately minimal and provider-neutral — `@remotion/captions` wants a richer
+ * `Caption` shape (with confidence and a midpoint timestamp), but those fields are
+ * reconstructible, so storing them would just be denormalised weight in the database.
+ */
+export interface CaptionWord {
+  text: string;
+  startMs: number;
+  endMs: number;
+}
+
+/**
  * Declared as a `type` alias, not an `interface`, on purpose.
  *
  * Remotion's `<Composition>` and `<Player>` constrain their component's props to
@@ -91,6 +105,14 @@ export type VideoCompositionProps = {
    * as well makes every clip play twice, slightly out of sync. Render payload only.
    */
   audioClips?: CompositionAudioClip[];
+  /**
+   * Word-level narration timings driving auto-captions. Unlike `audioClips`, these
+   * ARE included in the live preview — captions are picture, not sound, so showing
+   * them in the Player cannot double up with the editor's native <audio> elements.
+   */
+  captionWords?: CaptionWord[];
+  /** Global on/off. Captions render only when this is true AND words are present. */
+  showCaptions?: boolean;
   fps: number;
   width: number;
   height: number;

@@ -106,7 +106,40 @@ export async function generateFullNarration(
     if (dgError) throw dgError;
 
     const words = dgResult.results.channels[0].alternatives[0].words;
-    
+
+    // Persist the word timings for auto-captions before doing anything else with them.
+    // This list was previously used only to find scene boundaries and then discarded,
+    // which meant CapCut-style word-by-word captions would have needed a second
+    // transcription pass over audio we had already paid to transcribe.
+    //
+    // Normalised to a provider-neutral {text, startMs, endMs} shape so swapping
+    // transcription providers later only touches this mapping. `punctuated_word` is
+    // preferred because captions should read as written language, not as raw tokens.
+    const captionWords = (words as Array<{
+      word: string;
+      punctuated_word?: string;
+      start: number;
+      end: number;
+    }>).map((w) => ({
+      text: w.punctuated_word ?? w.word,
+      startMs: Math.round(w.start * 1000),
+      endMs: Math.round(w.end * 1000),
+    }));
+
+    // Best-effort: needs db/add-caption-columns.sql. A failure here must not lose the
+    // scene alignment below, which is the more important half of this function.
+    const { error: wordsSaveError } = await supabase
+      .from("video_projects")
+      .update({ narration_words: captionWords })
+      .eq("id", projectId);
+
+    if (wordsSaveError) {
+      console.warn(
+        "[Narration] Caption word timings not saved — run db/add-caption-columns.sql:",
+        wordsSaveError.message
+      );
+    }
+
     // Smart Mapping Algorithm
     let currentWordIndex = 0;
     const cleanWord = (w: string) => w.toLowerCase().replace(/[^a-z0-9]/g, '');
