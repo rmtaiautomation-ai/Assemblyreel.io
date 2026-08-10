@@ -144,7 +144,6 @@ export default function TimelineEditor({
 
   const [activeTab, setActiveTab] = useState<TabState>('scene');
   const [isRendering, setIsRendering] = useState(false);
-  const [isUploadingToYouTube, setIsUploadingToYouTube] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   // 0-1 fraction from Remotion's real onProgress, via polling GET /api/render-remotion.
   const [renderProgress, setRenderProgress] = useState(0);
@@ -158,6 +157,38 @@ export default function TimelineEditor({
   const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana' | 'gemini-image'>('fal-luma');
   const [isGeneratingVisualId, setIsGeneratingVisualId] = useState<string | null>(null);
   const [isGeneratingAllVisuals, setIsGeneratingAllVisuals] = useState(false);
+
+  /**
+   * How scenes source their visuals. A scene's own `generation_mode` wins; this is the
+   * project-wide fallback for scenes that haven't set one.
+   *
+   * Seeded from the project row so the choice survives a reload — it was previously
+   * React-only state, which meant bulk generation refused to run until the mode was
+   * re-picked after every refresh.
+   */
+  const [globalGenerationMode, setGlobalGenerationMode] = useState<string>(
+    initialProject.default_generation_mode || ''
+  );
+
+  // Stock-media search settings. Global rather than per-scene: they describe where to
+  // search, not what the scene is, and carrying them across scenes is what makes
+  // searching several scenes in a row bearable.
+  const [globalStockProvider, setGlobalStockProvider] = useState<'pexels' | 'pixabay'>('pexels');
+  const [globalStockType, setGlobalStockType] = useState<'video' | 'image'>('video');
+
+  interface StockResult {
+    id: string;
+    thumbnailUrl: string;
+    mediaUrl: string;
+    type: 'video' | 'image';
+  }
+  // Keyed by scene so switching scenes hides stale results without needing an effect
+  // to clear them.
+  const [stockSearchResults, setStockSearchResults] = useState<{
+    sceneId: string;
+    results: StockResult[];
+  } | null>(null);
+  const [isSearchingStock, setIsSearchingStock] = useState(false);
   const [exportResolution, setExportResolution] = useState<'1080x1920' | '1920x1080' | '1080x1080'>('1080x1920');
   const [exportQuality, setExportQuality] = useState<'High' | 'Standard' | 'Draft'>('High');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
@@ -178,10 +209,12 @@ export default function TimelineEditor({
   const [isolatedSceneId, setIsolatedSceneId] = useState<string | null>(null);
 
   // Accordion collapse states for Scene Info panel
-  const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(true);
+  // Visual Generation is the panel's primary tool, so it opens by default and the rest
+  // start collapsed — with all four open the visual controls sat below the fold.
+  const [isVoiceoverExpanded, setIsVoiceoverExpanded] = useState(false);
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
-  const [isOverlayExpanded, setIsOverlayExpanded] = useState(true);
-  const [isTransitionExpanded, setIsTransitionExpanded] = useState(true);
+  const [isOverlayExpanded, setIsOverlayExpanded] = useState(false);
+  const [isTransitionExpanded, setIsTransitionExpanded] = useState(false);
 
   // Auto-captions. `narration_words` is written by the Deepgram pass inside
   // generateFullNarration, so it only exists once narration has been generated —
@@ -1105,8 +1138,23 @@ export default function TimelineEditor({
     return { status: 'failed', error: 'Generation timed out' };
   };
 
-  const handleGenerateSceneVisual = async (sceneId: string, prompt: string, modelToUse = selectedAiModel, duration = 5) => {
+  const handleGenerateSceneVisual = async (sceneId: string, prompt: string, modelToUse = selectedAiModel, requestedDuration = 5) => {
     setIsGeneratingVisualId(sceneId);
+
+    const sceneToGen = scenes.find(s => s.id === sceneId);
+    const mode = sceneToGen?.generation_mode || globalGenerationMode || 'ai_video';
+
+    // Smart duration rounding: AI video models only emit fixed lengths, so round the
+    // scene's exact narration-aligned duration (e.g. 3.6s) UP to the next available
+    // increment. Rounding down would leave the tail of the voiceover with no picture.
+    // Images and lip-sync have no such constraint and use the exact duration.
+    let assetDuration = requestedDuration;
+    if (mode === 'ai_video') {
+      if (requestedDuration <= 5.0) assetDuration = 5;
+      else if (requestedDuration <= 8.0) assetDuration = 8;
+      else assetDuration = 10;
+    }
+
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Rendering' } : s));
     if (selectedScene?.id === sceneId) {
       setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Rendering' }));
@@ -1125,7 +1173,7 @@ export default function TimelineEditor({
       const res = await fetch("/api/media/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sceneId, projectId: initialProject.id, prompt, model: modelToUse, duration, aspectRatio }),
+        body: JSON.stringify({ sceneId, projectId: initialProject.id, prompt, model: modelToUse, duration: assetDuration, aspectRatio }),
       });
 
       let data = await res.json();
@@ -1150,7 +1198,12 @@ export default function TimelineEditor({
         custom_media_type: data.mediaType === 'image' ? 'image' : 'video',
         // Stock placeholders are labeled honestly — never shown as a real render.
         generation_status: data.simulated ? 'Simulated' : 'Completed',
-        video_duration: duration,
+        // INTENTIONAL: video_duration is NOT overwritten with the generated asset's
+        // length. The scene stays at its exact narration-aligned duration (e.g. 3.6s)
+        // while the underlying clip may be 5s — Remotion simply plays the first 3.6s,
+        // and the extra footage remains available as buffer if the scene is later
+        // stretched by hand. Writing the asset length back here would push every
+        // following scene out of sync with the voiceover.
       };
       setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, ...result } : s));
       if (selectedScene?.id === sceneId) {
@@ -1164,14 +1217,93 @@ export default function TimelineEditor({
     }
   };
 
+  /** Fetches stock results for one scene into the picker grid. */
+  const handleStockSearch = async (sceneId: string, query: string) => {
+    if (!query.trim()) return;
+    setIsSearchingStock(true);
+    try {
+      const res = await fetch(
+        `/api/stock-media?query=${encodeURIComponent(query)}&provider=${globalStockProvider}&type=${globalStockType}`
+      );
+      const data = await res.json();
+      setStockSearchResults({ sceneId, results: data.success ? data.results || [] : [] });
+    } catch (e) {
+      console.error('[Stock Search] failed:', e);
+      setStockSearchResults({ sceneId, results: [] });
+    } finally {
+      setIsSearchingStock(false);
+    }
+  };
+
+  const handleApplyStockResult = (sceneId: string, result: StockResult) => {
+    updateSceneDetails(sceneId, 'custom_media_url', result.mediaUrl);
+    updateSceneDetails(sceneId, 'custom_media_type', result.type);
+    updateSceneDetails(sceneId, 'generation_status', 'Completed');
+  };
+
   const handleGenerateAllVisuals = async () => {
     setIsGeneratingAllVisuals(true);
-    for (const scene of scenes) {
-      if (!scene.custom_media_url || scene.custom_media_url === "") {
-        await handleGenerateSceneVisual(scene.id, scene.final_video_prompt || "Cinematic video scene", selectedAiModel, scene.video_duration || 5);
+    try {
+      for (const scene of scenes) {
+        // Only fill empty scenes — this must stay safe to re-run after a partial pass
+        // without wiping visuals the user already picked or generated.
+        if (scene.custom_media_url) continue;
+
+        const mode = scene.generation_mode || globalGenerationMode;
+        if (!mode) {
+          alert("Pick a Default Media Mode first, or set one on each scene.");
+          return;
+        }
+
+        if (mode === 'stock_media') {
+          // Uses the user's chosen provider/type rather than a hardcoded Pexels video
+          // search. No picker here on purpose: there's nobody watching to choose a
+          // thumbnail across a hundred scenes, so the top result is applied directly.
+          const query =
+            scene.stock_search_query || scene.final_video_prompt || scene.voice_over_beat || 'cinematic';
+          try {
+            const res = await fetch(
+              `/api/stock-media?query=${encodeURIComponent(query.substring(0, 80))}` +
+              `&provider=${globalStockProvider}&type=${globalStockType}`
+            );
+            const data = await res.json();
+            const top = data.success ? data.results?.[0] : null;
+            if (top) {
+              const result = {
+                custom_media_url: top.mediaUrl,
+                custom_media_type: top.type,
+                generation_status: 'Completed',
+              };
+              setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, ...result } : s));
+              if (selectedScene?.id === scene.id) {
+                setSelectedScene((prev: any) => ({ ...prev, ...result }));
+              }
+              persistSceneFields(scene.id, result);
+            }
+          } catch (e) {
+            console.error('[Stock] bulk fetch failed for scene', scene.id, e);
+          }
+        } else if (mode === 'static_theme') {
+          // Renders as the composition's dark gradient fallback — no media to fetch,
+          // so this only needs to stop looking unfinished.
+          const result = { generation_status: 'Completed' };
+          setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, ...result } : s));
+          persistSceneFields(scene.id, result);
+        } else if (mode === 'lip_sync') {
+          // No provider wired up yet — skipped rather than silently marked complete.
+          console.warn('[Lip Sync] not implemented; skipping scene', scene.id);
+        } else {
+          await handleGenerateSceneVisual(
+            scene.id,
+            scene.final_video_prompt || "Cinematic video scene",
+            selectedAiModel,
+            scene.video_duration || 5
+          );
+        }
       }
+    } finally {
+      setIsGeneratingAllVisuals(false);
     }
-    setIsGeneratingAllVisuals(false);
   };
 
   const handleRenderVideo = async () => {
@@ -1248,8 +1380,13 @@ export default function TimelineEditor({
       if (data.success) {
         await markStatus('exported');
         if (data.mode === "local-remotion") {
-          setRenderStatusMessage("Render completed! File saved locally at: " + data.outputPath);
-          setRenderOutputPath(data.outputPath);
+          setRenderStatusMessage("Render completed!");
+          // `data.outputPath` is the SERVER's absolute filesystem path — meaningless
+          // to the browser, and rejected by /api/render/download, whose security check
+          // only allows files under the OS temp dir. The render route now writes into
+          // `public/media/final_exports/`, so `publicUrl` is already directly servable
+          // and needs no download proxy at all.
+          setRenderOutputPath(data.publicUrl);
         } else {
           setRenderStatusMessage(`Render Job Queued! (ID: ${data.jobId}) Ready for serverless cloud execution.`);
         }
@@ -1262,40 +1399,6 @@ export default function TimelineEditor({
       setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
     } finally {
       setIsRendering(false);
-    }
-  };
-
-  const handleUploadToYouTube = async () => {
-    setIsUploadingToYouTube(true);
-    setRenderStatusMessage("Uploading to YouTube...");
-    
-    try {
-      const res = await fetch("/api/upload/youtube", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          projectId: initialProject.id,
-          title: initialProject.topic || "AI Video",
-          privacyStatus: "private" // default private to be safe
-        }),
-      });
-      
-      const data = await res.json();
-      if (data.success) {
-        setRenderStatusMessage(`Successfully uploaded to YouTube! URL: ${data.url}`);
-      } else {
-        // If there's an auth error, we might need to redirect to the auth flow
-        if (data.error && data.error.includes("auth")) {
-          setRenderStatusMessage("YouTube Authentication required. Redirecting...");
-          window.location.href = `/api/auth/youtube?projectId=${initialProject.id}`;
-        } else {
-          setRenderStatusMessage("YouTube Upload Error: " + (data.error || "Unknown error"));
-        }
-      }
-    } catch (err: any) {
-      setRenderStatusMessage("YouTube Upload Error: " + (err.message || "Failed to submit request"));
-    } finally {
-      setIsUploadingToYouTube(false);
     }
   };
 
@@ -2718,24 +2821,12 @@ export default function TimelineEditor({
                      {renderOutputPath ? (
                         <div className="flex flex-col gap-3">
                           <a
-                            href={`/api/render/download?path=${encodeURIComponent(renderOutputPath)}`}
+                            href={renderOutputPath}
                             download
                             className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
                           >
                             <Download size={18} /> Download Video
                           </a>
-                          
-                          <button
-                            onClick={handleUploadToYouTube}
-                            disabled={isUploadingToYouTube}
-                            className="w-full py-3 bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                          >
-                            {isUploadingToYouTube ? (
-                              <><Loader2 size={18} className="animate-spin" /> Uploading...</>
-                            ) : (
-                              <><Upload size={18} /> Upload to YouTube</>
-                            )}
-                          </button>
                         </div>
                      ) : (
                        <button 

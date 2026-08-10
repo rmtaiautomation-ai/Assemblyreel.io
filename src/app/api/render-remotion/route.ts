@@ -106,7 +106,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 3. Define output location
-    const outputDir = path.join(os.tmpdir(), "remotion-renders");
+    const outputDir = path.join(process.cwd(), "public", "media", "final_exports");
     const fs = await import("fs/promises");
     await fs.mkdir(outputDir, { recursive: true });
     
@@ -132,6 +132,7 @@ export async function POST(req: NextRequest) {
       mode: "local-remotion",
       projectId: payload.projectId,
       outputPath: outputPath,
+      publicUrl: `/media/final_exports/${resolvedPayload.projectId}.mp4`,
       message: "Video rendered successfully with Remotion.",
     });
   } catch (error: any) {

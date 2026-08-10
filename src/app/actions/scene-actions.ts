@@ -21,6 +21,11 @@ const UPDATABLE_FIELDS = [
   // write rather than just this field.
   "transition_type",
   "transition_duration",
+  // Require db/add-generation-mode-columns.sql — same caveat as the transition fields
+  // above: without that migration these names make PostgREST reject the whole update.
+  "generation_mode",
+  "stock_search_query",
+  "lip_sync_character_url",
 ] as const;
 
 // Fields accepted when inserting a brand-new scene created by dropping local
