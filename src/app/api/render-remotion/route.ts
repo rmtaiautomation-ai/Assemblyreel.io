@@ -3,6 +3,61 @@ import { bundle } from "@remotion/bundler";
 import { getCompositions, renderMedia } from "@remotion/renderer";
 import path from "path";
 import os from "os";
+import fs from "fs/promises";
+import crypto from "crypto";
+
+const MEDIA_CACHE_DIR = path.join(process.cwd(), "public", "media", "cache");
+
+/**
+ * Pulls a remote asset onto local disk and returns a URL pointing at the local copy.
+ *
+ * Without this, a scene using a Pexels/Pixabay URL makes Remotion re-fetch that
+ * remote file to extract EVERY frame during encoding. Across a hundred scenes that
+ * is a sustained storm of range requests over the network, which is what pins the
+ * CPU and makes the whole machine crawl during export. Reading from a local file
+ * instead removes the bottleneck entirely.
+ *
+ * Cached by a hash of the URL, so re-rendering the same project — or several scenes
+ * that happen to use the same clip — downloads each asset at most once.
+ */
+async function cacheRemoteMedia(url: string | undefined, origin: string): Promise<string | undefined> {
+  if (!url || !/^https?:\/\//i.test(url)) return url;
+  // Already served by us — it's on local disk behind `public/` already.
+  if (url.startsWith(origin)) return url;
+
+  const hash = crypto.createHash("sha1").update(url).digest("hex").slice(0, 16);
+  let ext = ".mp4";
+  try {
+    const urlExt = path.extname(new URL(url).pathname);
+    if (urlExt && urlExt.length <= 5) ext = urlExt;
+  } catch {
+    // Unparseable URL — keep the default extension rather than failing the render.
+  }
+
+  const fileName = `${hash}${ext}`;
+  const filePath = path.join(MEDIA_CACHE_DIR, fileName);
+  const localUrl = `${origin}/media/cache/${fileName}`;
+
+  try {
+    await fs.access(filePath);
+    return localUrl; // Cache hit from an earlier render.
+  } catch {
+    // Not cached yet — fall through and fetch it.
+  }
+
+  try {
+    await fs.mkdir(MEDIA_CACHE_DIR, { recursive: true });
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    await fs.writeFile(filePath, Buffer.from(await res.arrayBuffer()));
+    return localUrl;
+  } catch (err) {
+    // Fall back to the remote URL: the render will be slow, but a failed download
+    // shouldn't turn into a failed export.
+    console.warn(`[Render Cache] Could not cache ${url}:`, err);
+    return url;
+  }
+}
 
 /**
  * In-memory only — deliberately not a DB table or job queue. This is a
@@ -51,21 +106,27 @@ export async function POST(req: NextRequest) {
       if (url?.startsWith('blob:')) blobUrls.push(label);
     };
 
+    // Pre-download any remote scene media before encoding starts. Sequential on
+    // purpose: firing a hundred downloads at once would recreate the same network
+    // storm this step exists to prevent. Cache hits make repeat renders near-instant.
+    renderProgress.set(payload.projectId, { progress: 0, stage: "caching media" });
+
+    const cachedScenes: any[] = [];
+    for (const scene of payload.scenes) {
+      let finalMediaUrl = scene.mediaUrl;
+      checkForBlob(finalMediaUrl, `scene ${scene.id}`);
+      if (finalMediaUrl?.startsWith('/')) {
+        finalMediaUrl = `${origin}${scene.mediaUrl}`;
+      } else if (finalMediaUrl?.includes('commondatastorage.googleapis.com/gtv-videos-bucket')) {
+        finalMediaUrl = 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4';
+      }
+      finalMediaUrl = await cacheRemoteMedia(finalMediaUrl, origin);
+      cachedScenes.push({ ...scene, mediaUrl: finalMediaUrl });
+    }
+
     const resolvedPayload = {
       ...payload,
-      scenes: payload.scenes.map((scene: any) => {
-        let finalMediaUrl = scene.mediaUrl;
-        checkForBlob(finalMediaUrl, `scene ${scene.id}`);
-        if (finalMediaUrl?.startsWith('/')) {
-          finalMediaUrl = `${origin}${scene.mediaUrl}`;
-        } else if (finalMediaUrl?.includes('commondatastorage.googleapis.com/gtv-videos-bucket')) {
-          finalMediaUrl = 'https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4';
-        }
-        return {
-          ...scene,
-          mediaUrl: finalMediaUrl,
-        };
-      }),
+      scenes: cachedScenes,
       audioUrl: absolutize(payload.audioUrl),
       audioClips: (payload.audioClips ?? []).map((clip: any) => {
         checkForBlob(clip.src, `audio clip ${clip.id}`);

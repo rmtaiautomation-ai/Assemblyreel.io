@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import Link from "next/link";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat, Check } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
@@ -2418,6 +2418,305 @@ export default function TimelineEditor({
                         </div>
                      </div>
                      
+                      {/* ── Visual Generation Accordion ── */}
+                     <div ref={visualAccordionRef} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+                        <button
+                          onClick={() => setIsVisualExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
+                            <ImageIcon size={14} className="text-blue-500" /> Visual Generation
+                          </span>
+                          {isVisualExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
+                        </button>
+                        {isVisualExpanded && (() => {
+                          // A scene's own mode wins; otherwise it inherits the project
+                          // default. Same resolution order the generation handlers use,
+                          // so the panel can never show controls for a mode that a
+                          // click would not actually run.
+                          const sceneMode = selectedScene.generation_mode || globalGenerationMode || 'ai_video';
+                          const isAiMode = sceneMode === 'ai_video' || sceneMode === 'ai_image';
+
+                          return (
+                          <div className="p-3 bg-white border-t border-gray-100 space-y-3 flex-1 flex flex-col">
+
+                           <div>
+                              <label className="block text-[10px] font-bold text-gray-500 mb-1">How this scene is generated</label>
+                              <select
+                                value={sceneMode}
+                                onChange={(e: any) => updateSceneDetails(selectedScene.id, 'generation_mode', e.target.value)}
+                                className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                              >
+                                <option value="ai_video">AI Video (Prompt)</option>
+                                <option value="ai_image">AI Image (Prompt)</option>
+                                <option value="stock_media">Stock Media (Pexels / Pixabay)</option>
+                                <option value="static_theme">Static / Dark Theme</option>
+                                <option value="lip_sync">AI Lip Sync (Avatar)</option>
+                              </select>
+                           </div>
+
+                           {isAiMode && (
+                            <>
+                           {/* AI Model & Duration */}
+                           <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
+                                 <select
+                                   value={selectedScene.ai_model || selectedAiModel}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
+                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                 >
+                                   <optgroup label="Live — real render">
+                                     <option value="gemini-image">Google Gemini Pro Image</option>
+                                   </optgroup>
+                                   <optgroup label="Simulated — no API key configured">
+                                     <option value="fal-luma">Fal.ai Luma Dream</option>
+                                     <option value="fal-kling">Fal.ai Kling AI</option>
+                                     <option value="fal-minimax">Fal.ai Minimax</option>
+                                     <option value="gemini-veo">Google Gemini / Veo</option>
+                                     <option value="runway-gen3">Runway Gen-3</option>
+                                     <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                                   </optgroup>
+                                 </select>
+                              </div>
+                              <div>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Clip Duration</label>
+                                 <select
+                                   value={selectedScene.video_duration || 5}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'video_duration', Number(e.target.value))}
+                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                 >
+                                   {/* Deepgram writes exact narration-aligned durations (e.g. 4.7s).
+                                       Surface that value so the select isn't blank and picking it back
+                                       doesn't silently snap the scene off the voiceover. */}
+                                   {selectedScene.video_duration != null && ![5, 8, 10].includes(Number(selectedScene.video_duration)) && (
+                                     <option value={selectedScene.video_duration}>
+                                       {Number(selectedScene.video_duration).toFixed(1)}s (narration-aligned)
+                                     </option>
+                                   )}
+                                   <option value={5}>5 seconds</option>
+                                   <option value={8}>8 seconds</option>
+                                   <option value={10}>10 seconds</option>
+                                 </select>
+                              </div>
+                           </div>
+
+                           {/* Media type. Generation still overwrites this from the
+                               provider's kind — newly generated media genuinely is
+                               whatever the model produced. This is here to correct an
+                               asset that was mislabeled on the way in (an upload whose
+                               type was misdetected), which previously left the scene
+                               stuck rendering an <img> for a video or vice versa with
+                               no way to fix it. */}
+                           <div>
+                              <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
+                              <div className="grid grid-cols-2 gap-1 bg-gray-100 p-1 rounded-lg">
+                                {(['video', 'image'] as const).map((mediaType) => {
+                                  const isActive = (selectedScene.custom_media_type || 'video') === mediaType;
+                                  return (
+                                    <button
+                                      key={mediaType}
+                                      type="button"
+                                      onClick={() => updateSceneDetails(selectedScene.id, 'custom_media_type', mediaType)}
+                                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
+                                        isActive
+                                          ? 'bg-white text-gray-900 shadow-sm'
+                                          : 'text-gray-500 hover:text-gray-800'
+                                      }`}
+                                    >
+                                      {mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
+                                      {mediaType === 'video' ? 'Video' : 'Image'}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                           </div>
+
+                           <textarea
+                             className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[200px] flex-1 shadow-sm"
+                             value={selectedScene.final_video_prompt}
+                             onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
+                             onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
+                             placeholder="Describe the visual scene in detail..."
+                           />
+                            </>
+                           )}
+
+                           {sceneMode === 'stock_media' && (
+                             <div className="space-y-3">
+                               <div className="grid grid-cols-2 gap-2">
+                                 <div>
+                                   <label className="block text-[10px] font-bold text-gray-500 mb-1">Platform</label>
+                                   <select
+                                     value={globalStockProvider}
+                                     onChange={(e: any) => { setGlobalStockProvider(e.target.value); setStockSearchResults(null); }}
+                                     className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                   >
+                                     <option value="pexels">Pexels</option>
+                                     <option value="pixabay">Pixabay</option>
+                                   </select>
+                                 </div>
+                                 <div>
+                                   <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
+                                   <select
+                                     value={globalStockType}
+                                     onChange={(e: any) => { setGlobalStockType(e.target.value); setStockSearchResults(null); }}
+                                     className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                                   >
+                                     <option value="video">Video</option>
+                                     <option value="image">Image</option>
+                                   </select>
+                                 </div>
+                               </div>
+
+                               <div>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Search</label>
+                                 <div className="flex gap-2">
+                                   <input
+                                     type="text"
+                                     placeholder="Falls back to this scene's AI prompt…"
+                                     value={selectedScene.stock_search_query || ''}
+                                     onChange={(e: any) => updateSceneDetails(selectedScene.id, 'stock_search_query', e.target.value)}
+                                     onKeyDown={(e) => {
+                                       if (e.key === 'Enter') {
+                                         handleStockSearch(
+                                           selectedScene.id,
+                                           selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
+                                         );
+                                       }
+                                     }}
+                                     className="w-full bg-white border border-gray-200 focus:border-blue-400 rounded-md p-2 text-xs text-gray-800 outline-none shadow-sm"
+                                   />
+                                   <button
+                                     onClick={() => handleStockSearch(
+                                       selectedScene.id,
+                                       selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
+                                     )}
+                                     disabled={isSearchingStock}
+                                     className="px-3 bg-gray-100 border border-gray-200 rounded-md text-xs font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                                   >
+                                     {isSearchingStock ? <Loader2 size={12} className="animate-spin" /> : null}
+                                     Search
+                                   </button>
+                                 </div>
+                               </div>
+
+                               {stockSearchResults && stockSearchResults.sceneId === selectedScene.id && (
+                                 stockSearchResults.results.length > 0 ? (
+                                   <div className="grid grid-cols-3 gap-2">
+                                     {stockSearchResults.results.map((r) => {
+                                       const isApplied = selectedScene.custom_media_url === r.mediaUrl;
+                                       return (
+                                         <button
+                                           key={r.id}
+                                           type="button"
+                                           onClick={() => handleApplyStockResult(selectedScene.id, r)}
+                                           title="Use this for the scene"
+                                           className={`relative aspect-video rounded-md overflow-hidden border-2 transition-all group ${
+                                             isApplied ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200 hover:border-blue-300'
+                                           }`}
+                                         >
+                                           {r.thumbnailUrl ? (
+                                             <img src={r.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                                           ) : (
+                                             <div className="w-full h-full bg-gray-100 flex items-center justify-center">
+                                               <Film size={14} className="text-gray-400" />
+                                             </div>
+                                           )}
+                                           {isApplied && (
+                                             <span className="absolute top-1 right-1 bg-blue-500 text-white rounded-full p-0.5">
+                                               <Check size={10} />
+                                             </span>
+                                           )}
+                                           <span className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
+                                         </button>
+                                       );
+                                     })}
+                                   </div>
+                                 ) : (
+                                   <p className="text-[10px] text-gray-500 italic">No results — try a different search term.</p>
+                                 )
+                               )}
+
+                               <p className="text-[10px] text-gray-500 italic leading-relaxed">
+                                 Free stock media. Click a result to apply it to this scene.
+                               </p>
+                             </div>
+                           )}
+
+                           {sceneMode === 'static_theme' && (
+                             <p className="text-[10px] text-gray-500 italic leading-relaxed bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2">
+                               This scene renders as a solid dark theme — useful for text-only slides. Costs nothing to generate.
+                             </p>
+                           )}
+
+                           {sceneMode === 'lip_sync' && (
+                             <div className="space-y-2">
+                               <div>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Character Image URL</label>
+                                 <input
+                                   type="text"
+                                   placeholder="https://… portrait image or video"
+                                   value={selectedScene.lip_sync_character_url || ''}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'lip_sync_character_url', e.target.value)}
+                                   className="w-full bg-white border border-gray-200 rounded-md p-2 text-xs text-gray-800 outline-none shadow-sm"
+                                 />
+                               </div>
+                               <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2 leading-relaxed">
+                                 No lip-sync provider is wired up yet, so this scene will be skipped by bulk generation.
+                                 The plan is bytedance/latentsync via Replicate, driven by this scene&rsquo;s voiceover.
+                               </p>
+                             </div>
+                           )}
+
+                           <div className="flex flex-col gap-3 mt-2">
+                              {/* Inline Toggle Switch */}
+                              <div className="flex items-center justify-between px-2 py-1.5 bg-gray-50 rounded-lg border border-gray-200/60">
+                                <span className="text-[11px] font-bold text-gray-600">Apply to all subsequent scenes</span>
+                                <button
+                                  onClick={() => setGenerateMode(generateMode === 'all' ? 'individual' : 'all')}
+                                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+                                    generateMode === 'all' ? 'bg-purple-600' : 'bg-gray-300'
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform ${
+                                      generateMode === 'all' ? 'translate-x-3.5' : 'translate-x-0.5'
+                                    }`}
+                                  />
+                                </button>
+                              </div>
+                              
+                              {/* Primary Action Button */}
+                              {generateMode === 'all' ? (
+                                <button
+                                  onClick={handleGenerateAllVisuals}
+                                  disabled={isGeneratingAllVisuals}
+                                  className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-all flex justify-center items-center gap-2"
+                                  title="Automatically generate videos for Scene 1 to N"
+                                >
+                                  {isGeneratingAllVisuals ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All Scenes (1→N)"}
+                                </button>
+                              ) : isAiMode ? (
+                                <button
+                                  onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
+                                  disabled={isGeneratingVisualId === selectedScene.id}
+                                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-colors flex justify-center items-center gap-2"
+                                >
+                                  {isGeneratingVisualId === selectedScene.id ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <ImageIcon size={14} />
+                                  )}
+                                  {selectedScene.custom_media_url ? "Regenerate Current Scene" : "Render Current Scene"}
+                                </button>
+                              ) : null}
+                           </div>
+                          </div>
+                          );
+                        })()}
+                     </div>
                      {/* ── Voiceover Accordion ── */}
                      <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
                         <button
@@ -2620,149 +2919,6 @@ export default function TimelineEditor({
                        );
                      })()}
 
-                      {/* ── Visual Generation Accordion ── */}
-                     <div ref={visualAccordionRef} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
-                        <button
-                          onClick={() => setIsVisualExpanded(prev => !prev)}
-                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                        >
-                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                            <ImageIcon size={14} className="text-blue-500" /> Visual Generation
-                          </span>
-                          {isVisualExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                        </button>
-                        {isVisualExpanded && (
-                          <div className="p-3 bg-white border-t border-gray-100 space-y-3 flex-1 flex flex-col">
-
-                           {/* AI Model & Duration */}
-                           <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
-                                 <select
-                                   value={selectedScene.ai_model || selectedAiModel}
-                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
-                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                 >
-                                   <optgroup label="Live — real render">
-                                     <option value="gemini-image">Google Gemini Pro Image</option>
-                                   </optgroup>
-                                   <optgroup label="Simulated — no API key configured">
-                                     <option value="fal-luma">Fal.ai Luma Dream</option>
-                                     <option value="fal-kling">Fal.ai Kling AI</option>
-                                     <option value="fal-minimax">Fal.ai Minimax</option>
-                                     <option value="gemini-veo">Google Gemini / Veo</option>
-                                     <option value="runway-gen3">Runway Gen-3</option>
-                                     <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
-                                   </optgroup>
-                                 </select>
-                              </div>
-                              <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Clip Duration</label>
-                                 <select
-                                   value={selectedScene.video_duration || 5}
-                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'video_duration', Number(e.target.value))}
-                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                 >
-                                   {/* Deepgram writes exact narration-aligned durations (e.g. 4.7s).
-                                       Surface that value so the select isn't blank and picking it back
-                                       doesn't silently snap the scene off the voiceover. */}
-                                   {selectedScene.video_duration != null && ![5, 8, 10].includes(Number(selectedScene.video_duration)) && (
-                                     <option value={selectedScene.video_duration}>
-                                       {Number(selectedScene.video_duration).toFixed(1)}s (narration-aligned)
-                                     </option>
-                                   )}
-                                   <option value={5}>5 seconds</option>
-                                   <option value={8}>8 seconds</option>
-                                   <option value={10}>10 seconds</option>
-                                 </select>
-                              </div>
-                           </div>
-
-                           {/* Media type. Generation still overwrites this from the
-                               provider's kind — newly generated media genuinely is
-                               whatever the model produced. This is here to correct an
-                               asset that was mislabeled on the way in (an upload whose
-                               type was misdetected), which previously left the scene
-                               stuck rendering an <img> for a video or vice versa with
-                               no way to fix it. */}
-                           <div>
-                              <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
-                              <div className="grid grid-cols-2 gap-1 bg-gray-100 p-1 rounded-lg">
-                                {(['video', 'image'] as const).map((mediaType) => {
-                                  const isActive = (selectedScene.custom_media_type || 'video') === mediaType;
-                                  return (
-                                    <button
-                                      key={mediaType}
-                                      type="button"
-                                      onClick={() => updateSceneDetails(selectedScene.id, 'custom_media_type', mediaType)}
-                                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
-                                        isActive
-                                          ? 'bg-white text-gray-900 shadow-sm'
-                                          : 'text-gray-500 hover:text-gray-800'
-                                      }`}
-                                    >
-                                      {mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
-                                      {mediaType === 'video' ? 'Video' : 'Image'}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                           </div>
-
-                           <textarea 
-                             className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[200px] flex-1 shadow-sm"
-                             value={selectedScene.final_video_prompt}
-                             onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
-                             onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
-                             placeholder="Describe the visual scene in detail..."
-                           />
-                           <div className="flex flex-col gap-3 mt-2">
-                              {/* Inline Toggle Switch */}
-                              <div className="flex items-center justify-between px-2 py-1.5 bg-gray-50 rounded-lg border border-gray-200/60">
-                                <span className="text-[11px] font-bold text-gray-600">Apply to all subsequent scenes</span>
-                                <button
-                                  onClick={() => setGenerateMode(generateMode === 'all' ? 'individual' : 'all')}
-                                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
-                                    generateMode === 'all' ? 'bg-purple-600' : 'bg-gray-300'
-                                  }`}
-                                >
-                                  <span
-                                    className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform ${
-                                      generateMode === 'all' ? 'translate-x-3.5' : 'translate-x-0.5'
-                                    }`}
-                                  />
-                                </button>
-                              </div>
-                              
-                              {/* Primary Action Button */}
-                              {generateMode === 'all' ? (
-                                <button
-                                  onClick={handleGenerateAllVisuals}
-                                  disabled={isGeneratingAllVisuals}
-                                  className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-all flex justify-center items-center gap-2"
-                                  title="Automatically generate videos for Scene 1 to N"
-                                >
-                                  {isGeneratingAllVisuals ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All Scenes (1→N)"}
-                                </button>
-                              ) : (
-                                <button 
-                                  onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
-                                  disabled={isGeneratingVisualId === selectedScene.id}
-                                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-colors flex justify-center items-center gap-2"
-                                >
-                                  {isGeneratingVisualId === selectedScene.id ? (
-                                    <Loader2 size={14} className="animate-spin" />
-                                  ) : (
-                                    <ImageIcon size={14} />
-                                  )}
-                                  {selectedScene.custom_media_url ? "Regenerate Current Scene" : "Render Current Scene"}
-                                </button>
-                              )}
-                           </div>
-                          </div>
-                        )}
-                     </div>
                    </div>
                 )}
               </div>
