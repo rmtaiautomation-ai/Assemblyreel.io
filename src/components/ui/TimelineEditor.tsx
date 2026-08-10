@@ -54,6 +54,27 @@ interface TimelineClip {
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isPersistedScene = (sceneId: string) => UUID_PATTERN.test(sceneId);
 
+/**
+ * Turns the render route's raw stage string into something worth showing a user.
+ *
+ * Two sources feed this: stages this app sets itself ("caching media", "encoding",
+ * "done") and Remotion's own `stitchStage` from onProgress, which is "rendering"
+ * while extracting frames and "muxing" while assembling the final file. Anything
+ * unrecognised falls back to a generic label rather than leaking an internal token
+ * into the UI.
+ */
+const humanizeRenderStage = (stage: string | null): string => {
+  switch (stage) {
+    case 'starting': return 'Starting export…';
+    case 'caching media': return 'Downloading media…';
+    case 'encoding': return 'Preparing composition…';
+    case 'rendering': return 'Rendering frames…';
+    case 'muxing': return 'Assembling video…';
+    case 'done': return 'Finishing up…';
+    default: return 'Starting export…';
+  }
+};
+
 function mediaRowToAsset(row: any): MediaAsset {
   return {
     id: row.id,
@@ -147,6 +168,17 @@ export default function TimelineEditor({
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   // 0-1 fraction from Remotion's real onProgress, via polling GET /api/render-remotion.
   const [renderProgress, setRenderProgress] = useState(0);
+  // Raw stage string from the same poll (e.g. "encoding") — humanized at render time.
+  const [renderStage, setRenderStage] = useState<string | null>(null);
+  // Holds the interval id outside React state so it can be cleared from any exit path
+  // (success, failure, or the resume-on-reload flow below) without stale closures.
+  // The previous version created this as a local `const` inside handleRenderVideo and
+  // never cleared it anywhere — it ran forever after the render finished and doubled
+  // up if the user rendered a second time.
+  // Typed `number` rather than ReturnType<typeof setInterval>: @types/node is in
+  // scope here and would resolve that to Node's Timeout, which never matches what
+  // window.setInterval actually returns in the browser.
+  const renderPollRef = useRef<number | null>(null);
   // Mirrors video_projects.status locally so the header chip reflects the render as
   // it happens. Reading initialProject.status directly would freeze it at whatever
   // the server sent on page load.
@@ -1306,22 +1338,81 @@ export default function TimelineEditor({
     }
   };
 
+  // Every exit path that touches render state must land the project on a terminal
+  // status. Leaving it on 'rendering' after a failure was unrecoverable from the UI:
+  // the workspace hub would show a spinner forever with no way to clear it. Lifted to
+  // component level (was local to handleRenderVideo) so the resume-on-reload flow
+  // below can reach the same terminal-status logic.
+  const markStatus = async (status: ProjectStatus) => {
+    setProjectStatus(status);
+    const res = await updateProjectStatus(initialProject.id, status);
+    if (!res.success) {
+      setPersistenceWarning(`Could not update project status to "${status}": ${res.error}`);
+    }
+    return res.success;
+  };
+
+  const stopRenderProgressPolling = () => {
+    if (renderPollRef.current !== null) {
+      window.clearInterval(renderPollRef.current);
+      renderPollRef.current = null;
+    }
+  };
+
+  // Polls the render route's progress endpoint on an interval, since a render's
+  // length isn't known up front (same shape as pollMediaStatus, which uses a fixed
+  // attempt count instead because media generation has a rough expected duration).
+  //
+  // Shared by handleRenderVideo AND the resume-on-reload effect below — the only way
+  // a reloaded page can find out about a render already in flight is by polling this
+  // same endpoint, so the two flows share one implementation rather than two interval
+  // lifecycles that could drift out of sync.
+  //
+  // `completeOnDone` exists because the server's progress map is never cleaned up
+  // after a render finishes — it keeps {progress: 1, stage: 'done'} for that project
+  // indefinitely. So a stale 'done' is a real possibility on the FIRST poll tick.
+  //
+  //   - handleRenderVideo passes false: its POST response is the authoritative
+  //     completion signal, and trusting a 'done' reading here would let a leftover
+  //     entry from a PREVIOUS render close the modal moments after a new one started.
+  //   - The resume-on-reload effect passes true: it has no POST response to wait on,
+  //     so a 'done' reading is the only way it can ever learn the render finished —
+  //     and there, 'done' genuinely means this render, since the page only resumes
+  //     when the project row already says 'rendering'.
+  //
+  // The output path is reconstructed from projectId rather than read from a response,
+  // since the render route always writes to public/media/final_exports/{id}.mp4 — the
+  // resume flow has no response to read it from.
+  const startRenderProgressPolling = (projectId: string, completeOnDone: boolean) => {
+    stopRenderProgressPolling();
+    renderPollRef.current = window.setInterval(async () => {
+      try {
+        const res = await fetch(`/api/render-remotion?projectId=${projectId}`);
+        const data = await res.json();
+        if (!data.success) return;
+
+        setRenderProgress(data.progress);
+        setRenderStage(data.stage ?? null);
+
+        if (completeOnDone && data.stage === 'done') {
+          stopRenderProgressPolling();
+          setIsRendering(false);
+          setRenderStatusMessage("Render completed!");
+          setRenderOutputPath(`/media/final_exports/${projectId}.mp4`);
+          await markStatus('exported');
+        }
+      } catch {
+        // Transient poll failure — the next tick tries again; not worth surfacing.
+      }
+    }, 500);
+  };
+
   const handleRenderVideo = async () => {
     setIsRendering(true);
     setRenderStatusMessage("Submitting render job to Remotion engine...");
     setRenderOutputPath(null);
-
-    // Every exit path below must land the project on a terminal status. Leaving it
-    // on 'rendering' after a failure was unrecoverable from the UI: the workspace
-    // hub would show a spinner forever with no way to clear it.
-    const markStatus = async (status: ProjectStatus) => {
-      setProjectStatus(status);
-      const res = await updateProjectStatus(initialProject.id, status);
-      if (!res.success) {
-        setPersistenceWarning(`Could not update project status to "${status}": ${res.error}`);
-      }
-      return res.success;
-    };
+    setRenderProgress(0);
+    setRenderStage(null);
 
     // Warn BEFORE rendering, not after: a clip whose asset never finished uploading
     // has no server-fetchable URL, so it cannot appear in the .mp4. Saying so up
@@ -1339,18 +1430,7 @@ export default function TimelineEditor({
       }
     }
 
-    // Polls the render route's progress endpoint while the POST below is still
-    // in flight — same shape as pollMediaStatus, just on an interval instead of
-    // a fixed attempt count, since a render's length isn't known up front.
-    const progressPoll = window.setInterval(async () => {
-      try {
-        const res = await fetch(`/api/render-remotion?projectId=${initialProject.id}`);
-        const data = await res.json();
-        if (data.success) setRenderProgress(data.progress);
-      } catch {
-        // Transient poll failure — the next tick tries again; not worth surfacing.
-      }
-    }, 500);
+    startRenderProgressPolling(initialProject.id, false);
 
     try {
       // Inside the try: a throw here (offline, action error) previously escaped the
@@ -1398,9 +1478,44 @@ export default function TimelineEditor({
       await markStatus('failed');
       setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
     } finally {
+      stopRenderProgressPolling();
       setIsRendering(false);
     }
   };
+
+  // Resumes progress if this project was already mid-render when the page loaded —
+  // e.g. the user reloaded, or (before this feature existed) navigated away and back.
+  // The render itself is not tied to the original request's connection and keeps
+  // running server-side regardless, so without this the editor would silently show
+  // no feedback at all for a render that is genuinely still in progress.
+  //
+  // Known limitation, accepted rather than solved here: `renderProgress` on the
+  // server is an in-memory-only map. If the dev server restarted mid-render, there is
+  // no entry to find, and this will show 0% indefinitely rather than resolving.
+  useEffect(() => {
+    if (normalizeProjectStatus(initialProject.status) !== 'rendering') return;
+    setIsRendering(true);
+    setRenderStatusMessage("Resuming render progress…");
+    startRenderProgressPolling(initialProject.id, true);
+    // Intentionally no cleanup-driven stopRenderProgressPolling here: unmounting this
+    // effect (e.g. React re-rendering the tree) should not silently drop progress
+    // visibility for a render that is still genuinely running.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Warns on tab close/refresh/typing a new URL while a render is in flight. This is
+  // a real web-platform ceiling, not a gap in this implementation: browsers show their
+  // own generic prompt regardless of any custom text set here, and there is no way to
+  // block browser back/forward navigation the way the in-app Links below are blocked.
+  useEffect(() => {
+    if (!isRendering) return;
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isRendering]);
 
   // Panel height only — scene/clip trimming is handled by the pointer effect above.
   useEffect(() => {
@@ -1817,13 +1932,25 @@ export default function TimelineEditor({
           reach real editor state — that separation is why the old buttons were dead. */}
       <header className="flex items-center justify-between px-3 h-12 flex-none bg-white border-b border-gray-200 shadow-sm z-30">
         <div className="flex items-center gap-3 min-w-0">
-          <Link
-            href={`/workspaces/${workspaceId}`}
-            className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors shrink-0"
-            title="Back to workspace"
-          >
-            <ArrowLeft size={16} />
-          </Link>
+          {/* Rendered as a non-interactive span mid-render rather than relying on the
+              modal's coverage alone — defense in depth, so the header stays honest
+              even if the overlay's stacking were ever imperfect. */}
+          {isRendering ? (
+            <span
+              className="p-1.5 rounded-md text-gray-300 cursor-not-allowed shrink-0"
+              title="Can't leave while exporting"
+            >
+              <ArrowLeft size={16} />
+            </span>
+          ) : (
+            <Link
+              href={`/workspaces/${workspaceId}`}
+              className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors shrink-0"
+              title="Back to workspace"
+            >
+              <ArrowLeft size={16} />
+            </Link>
+          )}
           <div className="h-5 w-px bg-gray-200 shrink-0" />
           <h1 className="text-[13px] font-bold text-gray-900 truncate" title={initialProject.topic || 'Untitled Video'}>
             {initialProject.topic || 'Untitled Video'}
@@ -1837,14 +1964,24 @@ export default function TimelineEditor({
         <div className="flex items-center gap-2 shrink-0">
           {/* Additive nav only — no state or effects touched, so it can't reintroduce
               the sync/seek-storm class of bug this component has already been through. */}
-          <Link
-            href={`/workspaces/${workspaceId}/videos/${initialProject.id}/whiteboard`}
-            className="hidden sm:flex items-center gap-1.5 text-[11px] font-bold text-gray-500 hover:text-purple-700 hover:bg-purple-50 px-2.5 py-1.5 rounded-md transition-colors mr-1"
-            title="Back to the Story Whiteboard"
-          >
-            <Layers size={13} />
-            Whiteboard
-          </Link>
+          {isRendering ? (
+            <span
+              className="hidden sm:flex items-center gap-1.5 text-[11px] font-bold text-gray-300 cursor-not-allowed px-2.5 py-1.5 rounded-md mr-1"
+              title="Can't leave while exporting"
+            >
+              <Layers size={13} />
+              Whiteboard
+            </span>
+          ) : (
+            <Link
+              href={`/workspaces/${workspaceId}/videos/${initialProject.id}/whiteboard`}
+              className="hidden sm:flex items-center gap-1.5 text-[11px] font-bold text-gray-500 hover:text-purple-700 hover:bg-purple-50 px-2.5 py-1.5 rounded-md transition-colors mr-1"
+              title="Back to the Story Whiteboard"
+            >
+              <Layers size={13} />
+              Whiteboard
+            </Link>
+          )}
           <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mr-1">
             <Clock size={12} />
             {formatDuration(contentDuration)}
@@ -4256,6 +4393,45 @@ export default function TimelineEditor({
           </div>
         );
       })()}
+
+      {/* Blocking export overlay.
+          Rendered last and at z-[10000] so it sits above every other layer in this
+          component — including the editor page's own `fixed inset-0 z-50` shell, the
+          persistence toast at z-[200], and the context menu at z-[9999]. Follows the
+          app's existing modal convention (VoiceCloningModal: fixed inset-0, dimmed
+          backdrop, backdrop-blur, centered card).
+
+          Deliberately has no close button and no backdrop-click handler: the render
+          cannot be cancelled server-side, so offering a dismiss would only hide
+          progress for work that is still running. */}
+      {isRendering && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-sm">
+          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center">
+            <div className="flex items-center justify-center gap-2.5 mb-5">
+              <Loader2 size={18} className="animate-spin text-purple-600" />
+              <h2 className="text-sm font-bold text-gray-900">Exporting video</h2>
+            </div>
+
+            <div className="text-5xl font-extrabold text-gray-900 tabular-nums mb-1">
+              {Math.round(renderProgress * 100)}%
+            </div>
+            <p className="text-xs font-medium text-gray-500 mb-5">
+              {humanizeRenderStage(renderStage)}
+            </p>
+
+            <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden mb-5">
+              <div
+                className="h-full bg-gradient-to-r from-purple-500 to-indigo-600 transition-all duration-300"
+                style={{ width: `${Math.max(2, Math.round(renderProgress * 100))}%` }}
+              />
+            </div>
+
+            <p className="text-[11px] text-gray-400 leading-relaxed">
+              Please keep this window open until the export finishes.
+            </p>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

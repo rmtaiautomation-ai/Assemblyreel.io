@@ -92,6 +92,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Reset progress immediately, before any of the slower setup below. This map is
+    // never cleaned up after a render completes, so re-rendering the same project
+    // leaves a stale { progress: 1, stage: "done" } sitting here — a client that
+    // starts polling the instant it fires the POST would otherwise read that leftover
+    // value and briefly display the previous render as already finished.
+    renderProgress.set(payload.projectId, { progress: 0, stage: "starting" });
+
     const origin = req.nextUrl.origin;
 
     // The headless renderer runs outside the browser, so root-relative URLs
