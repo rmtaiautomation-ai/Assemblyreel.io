@@ -101,10 +101,10 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
                     volume={
                       transitionInFrames > 0
                         ? (f: number) =>
-                            interpolate(f, [0, transitionInFrames], [0, 1], {
-                              extrapolateLeft: 'clamp',
-                              extrapolateRight: 'clamp',
-                            })
+                          interpolate(f, [0, transitionInFrames], [0, 1], {
+                            extrapolateLeft: 'clamp',
+                            extrapolateRight: 'clamp',
+                          })
                         : 1
                     }
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
