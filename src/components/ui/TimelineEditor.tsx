@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import Link from "next/link";
 import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat, Check } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
@@ -100,6 +100,100 @@ function timelineItemToClip(item: any, mediaById: Map<string, any>): TimelineCli
     duration: item.duration,
     trimStart: item.trim_start || 0,
   };
+}
+
+/** Shortest a block may be trimmed to, in seconds. */
+const MIN_BLOCK_DURATION = 0.5;
+
+/** Approximate width of one filmstrip thumbnail inside a scene block, in pixels. */
+const FILMSTRIP_THUMB_WIDTH = 80;
+
+// This component is a client component but Next still renders it on the server,
+// where useLayoutEffect logs a warning. Effects never run there anyway.
+const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
+
+/** Selected blocks are drawn slightly proud of the track. Applied through the same
+ *  inline `transform` that positions them, because an inline transform overrides
+ *  Tailwind's `scale-*` class entirely — the two cannot coexist on one element. */
+const SELECTED_BLOCK_SCALE = 1.02;
+
+function blockTransform(leftPx: number, scaled: boolean) {
+  return `translate3d(${leftPx}px, 0, 0)${scaled ? ` scale(${SELECTED_BLOCK_SCALE})` : ''}`;
+}
+
+/**
+ * How blocks slide aside to open a gap while a scene is dragged over them.
+ *
+ * Applied ONLY during a reorder drag. It must never be live during a trim: the
+ * gesture writes a new transform every frame, and a transition would make the block
+ * chase the cursor instead of tracking it — the exact lag the direct-DOM gesture
+ * path exists to remove. Because position is a transform, this animates on the
+ * compositor and costs nothing per frame.
+ *
+ * Decelerating curve (fast start, soft landing), which is what makes the movement
+ * read as physical rather than mechanical.
+ */
+const REORDER_SLIDE = 'transform 180ms cubic-bezier(0.2, 0, 0, 1)';
+
+/**
+ * Clamping rules for trimming a scene, kept as a pure function so the pointermove
+ * DOM path and the commit-on-release path cannot drift apart. If those two ever
+ * computed different values the block would visibly jump the instant the mouse
+ * came up, which is exactly the class of bug this refactor exists to avoid.
+ */
+function computeSceneResize(args: {
+  initialDuration: number;
+  initialTrimStart: number;
+  deltaDuration: number;
+  edge: 'left' | 'right';
+  maxDuration: number;
+  currentTrimStart: number;
+}): { duration: number; trimStart: number } {
+  const { initialDuration, initialTrimStart, deltaDuration, edge, maxDuration, currentTrimStart } = args;
+
+  const rawDuration = edge === 'right'
+    ? initialDuration + deltaDuration
+    // Scenes are sequential, so dragging the left edge trims the duration rather
+    // than moving the block.
+    : initialDuration - deltaDuration;
+  const duration = Math.min(maxDuration, Math.max(MIN_BLOCK_DURATION, rawDuration));
+
+  let trimStart = currentTrimStart;
+  if (edge === 'left') {
+    trimStart = initialTrimStart + (initialDuration - duration);
+    trimStart = Math.min(maxDuration - duration, Math.max(0, trimStart));
+  }
+
+  return { duration, trimStart };
+}
+
+/**
+ * Clip counterpart of `computeSceneResize`. Clips also carry a start time, since
+ * they float on the track rather than being packed end to end.
+ *
+ * Note `startTime` is derived from `initialStartTime` — the value captured on
+ * pointerdown — not from the clip's current state. The previous implementation read
+ * the live value inside a `setTimelineClips` updater and added the same offset again
+ * on every pointermove, so a left-edge trim drifted further right the more frames it
+ * took to complete the gesture.
+ */
+function computeClipResize(args: {
+  initialDuration: number;
+  initialTrimStart: number;
+  initialStartTime: number;
+  deltaDuration: number;
+  edge: 'left' | 'right';
+  maxDuration: number;
+  currentTrimStart: number;
+}): { duration: number; trimStart: number; startTime: number } {
+  const { initialStartTime, initialDuration, edge } = args;
+  const { duration, trimStart } = computeSceneResize(args);
+
+  const startTime = edge === 'left'
+    ? Math.max(0, initialStartTime + (initialDuration - duration))
+    : initialStartTime;
+
+  return { duration, trimStart, startTime };
 }
 
 export default function TimelineEditor({
@@ -358,45 +452,71 @@ export default function TimelineEditor({
     return 5;
   };
 
+  /**
+   * Per-scene duration, and the cumulative start offset of every scene, in seconds.
+   *
+   * `getSceneLeftPosition` used to sum every preceding scene's duration on each call,
+   * and it is called once per scene per track — O(n²) duration lookups per render,
+   * each one potentially scanning `mediaAssets`. Prefix sums make that O(n), which
+   * matters twice over: these helpers also run inside the drop-target hit test on
+   * every single `dragover` event.
+   */
+  const sceneDurations = useMemo(
+    () => scenes.map(getSceneDuration),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getSceneDuration is
+    // a render-scoped closure over exactly these two values.
+    [scenes, mediaAssets]
+  );
+  const sceneOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let elapsed = 0;
+    for (const duration of sceneDurations) {
+      offsets.push(elapsed);
+      elapsed += duration;
+    }
+    return offsets;
+  }, [sceneDurations]);
+
+  // Hoisted out of the position helpers below: they are called once per scene, and a
+  // findIndex inside them would put the O(n²) back that the prefix sums just removed.
+  const draggingSceneIndex = useMemo(
+    () => (draggingScene ? scenes.findIndex(s => s.id === draggingScene.id) : -1),
+    [draggingScene, scenes]
+  );
+
+  // Gates the slide animation on the blocks. A trim is explicitly excluded: those are
+  // driven by per-frame DOM writes that must land instantly.
+  const isReordering = Boolean(draggingScene || draggingAsset) && !isResizing;
+
   // V1 and A1 are two views of the same scene rows — A1 renders each scene's
   // narration, V1 its visual — so both read from the single `scenes` array.
   const getUnshiftedLeftPosition = (track: 'V1' | 'A1', index: number) => {
-    const trackScenes = scenes;
-    let time = 0;
-    for (let i = 0; i < index; i++) {
-       if (draggingScene && draggingScene.track === track && trackScenes[i].id === draggingScene.id) {
-          continue;
-       }
-       time += getSceneDuration(trackScenes[i]);
+    let time = sceneOffsets[index] ?? 0;
+    // The dragged scene is lifted out of the row while its placeholder shows the
+    // drop slot, so everything after it closes up by that scene's duration.
+    if (draggingScene && draggingScene.track === track && draggingSceneIndex !== -1 && draggingSceneIndex < index) {
+      time -= sceneDurations[draggingSceneIndex];
     }
     return time * scale;
   };
 
   const getSceneLeftPosition = (track: 'V1' | 'A1', sceneIndex: number) => {
     let time = getUnshiftedLeftPosition(track, sceneIndex) / scale;
-    const trackScenes = scenes;
     const insertIdx = track === 'V1' ? v1DragInsertIndex : a1DragInsertIndex;
-    
+
     if (insertIdx !== null && sceneIndex >= insertIdx) {
       if (draggingAsset) {
         time += (draggingAsset.duration || 5);
-      } else if (draggingScene && draggingScene.track === track && trackScenes[sceneIndex].id !== draggingScene.id) {
+      } else if (draggingScene && draggingScene.track === track && scenes[sceneIndex].id !== draggingScene.id) {
         time += (draggingScene.duration || 5);
       }
     }
-    let position = time * scale;
 
-    // Shift position rightward during a left-edge drag to keep the right edge anchored
-    if (isResizing && resizingEdge === 'left' && resizingTrack === track) {
-       const resizeIndex = trackScenes.findIndex(s => s.id === resizingSceneId);
-       if (resizeIndex !== -1 && sceneIndex >= resizeIndex) {
-          const currentDuration = getSceneDuration(trackScenes[resizeIndex]);
-          const durationDiff = initialDuration - currentDuration;
-          position += durationDiff * scale;
-       }
-    }
-
-    return position;
+    // No resize adjustment here any more. A trim in progress never touches `scenes`
+    // state (see the gesture handling below) — the affected blocks are moved by
+    // writing `transform`/`width` straight to their DOM nodes, and this function
+    // supplies the committed geometry React restores once the gesture ends.
+    return time * scale;
   };
 
   const getVisualSequenceNumber = (track: 'V1' | 'A1', originalIndex: number) => {
@@ -407,7 +527,7 @@ export default function TimelineEditor({
       return trackScenes[originalIndex].sequence_number;
     }
 
-    const dragIndex = trackScenes.findIndex(s => s.id === draggingScene.id);
+    const dragIndex = draggingSceneIndex;
     if (dragIndex === -1) return trackScenes[originalIndex].sequence_number;
 
     if (originalIndex === dragIndex) {
@@ -431,120 +551,304 @@ export default function TimelineEditor({
 
   // Timeline scaling and zooming
   const [scale, setScale] = useState(30); // 1 Second = 30px width
-  
-  // Resizing State for scenes
-  const [resizingSceneId, setResizingSceneId] = useState<string | null>(null);
-  const [resizeStartX, setResizeStartX] = useState<number>(0);
-  const [initialDuration, setInitialDuration] = useState<number>(0);
-  const [initialTrimStart, setInitialTrimStart] = useState<number>(0);
-  const [resizingEdge, setResizingEdge] = useState<'left' | 'right' | null>(null);
-  const [resizingTrack, setResizingTrack] = useState<string | null>(null);
+
+  /** How many filmstrip thumbnails fit across a block of the given duration. */
+  const filmstripCount = (durationSeconds: number) =>
+    Math.max(1, Math.ceil((durationSeconds * scale) / FILMSTRIP_THUMB_WIDTH));
+
+
+  /**
+   * Trim gestures are driven entirely through refs and direct DOM writes; the only
+   * React state involved is `isResizing`, which flips once at each end of the gesture.
+   *
+   * The version this replaces called `setScenes` on every `pointermove`. Pointer
+   * devices emit 500-1000 events/sec, and because this component holds the whole
+   * editor in one tree — with no memoised children — each of those re-rendered the
+   * panel, the ruler, all three tracks and every block. Worse, `remotionScenes` is
+   * keyed on `[scenes]`, so each frame also rebuilt the Remotion input props and
+   * re-rendered the <Player>. Writing `transform`/`width` straight to the handful of
+   * affected nodes instead keeps the gesture at a flat cost no matter how many
+   * scenes the project has.
+   */
+  type GestureTarget = { node: HTMLElement; baseLeftPx: number; scaled: boolean };
+  type GestureSnapshot = {
+    kind: 'scene' | 'clip';
+    id: string;
+    track: string;
+    edge: 'left' | 'right';
+    startClientX: number;
+    scale: number;
+    initialDuration: number;
+    initialTrimStart: number;
+    initialStartTime: number;
+    maxDuration: number;
+    /** The trimmed block itself — the same scene appears on both V1 and A1. */
+    resizeTargets: GestureTarget[];
+    /** Blocks after it, which slide as it grows or shrinks. */
+    shiftTargets: GestureTarget[];
+  };
+
+  const gestureRef = useRef<GestureSnapshot | null>(null);
+  const gestureFrameRef = useRef<number | null>(null);
+  const gesturePointerXRef = useRef(0);
+  // Distinguishes a real trim from a bare click on the handle, so the latter doesn't
+  // write an unchanged duration back to the database.
+  const gestureMovedRef = useRef(false);
+  // handlePointerMove records the values it lands on so handlePointerUp can persist
+  // them once, on release, without reading state from inside a setter.
+  const lastResizeValuesRef = useRef<Record<string, any> | null>(null);
+  // Scene block DOM nodes, keyed `${sceneId}_V1` / `${sceneId}_A1` to match the
+  // existing `selectedSceneKeys` convention.
+  const blockRefs = useRef<Record<string, HTMLElement | null>>({});
+  // Number of filmstrip thumbnails a block was showing when its gesture began. The
+  // count is normally derived from the block's pixel width, so resizing would mount
+  // and unmount real <video preload="metadata"> elements mid-drag, each firing a
+  // range request. Freezing it keeps the strip stable until the gesture commits.
+  const [frozenStrip, setFrozenStrip] = useState<{ sceneId: string; count: number } | null>(null);
+
+  const readTarget = (key: string): GestureTarget | null => {
+    const node = blockRefs.current[key];
+    if (!node) return null;
+    return {
+      node,
+      baseLeftPx: Number(node.dataset.baseLeft || 0),
+      scaled: node.dataset.scaled === '1',
+    };
+  };
 
   const handleResizeStart = (e: React.PointerEvent, sceneId: string, track: string, edge: 'left' | 'right', duration: number, trimStart: number = 0) => {
     e.stopPropagation();
     e.preventDefault();
-    setResizingSceneId(sceneId);
-    setResizingTrack(track);
-    setResizingEdge(edge);
-    setResizeStartX(e.clientX);
-    setInitialDuration(duration);
-    setInitialTrimStart(trimStart);
+
+    const isClip = track === 'A1_clip' || track === 'A2_clip';
+    const resizeTargets: GestureTarget[] = [];
+    const shiftTargets: GestureTarget[] = [];
+    let maxDuration = 8;
+    let initialStartTime = 0;
+
+    if (isClip) {
+      // Clips are positioned by react-rnd, which owns their node's transform, so they
+      // keep the state-driven path below (rAF-coalesced, but still re-rendering).
+      // There are only ever a handful of them, and reaching into Rnd's internals to
+      // move them by hand would be far more fragile than it is worth.
+      const clip = timelineClips.find(c => c.id === sceneId);
+      maxDuration = clip?.asset.duration || 15;
+      initialStartTime = clip?.startTime || 0;
+    } else {
+      const sceneIndex = scenes.findIndex(s => s.id === sceneId);
+      const scene = sceneIndex === -1 ? null : scenes[sceneIndex];
+      if (scene?.custom_media_url && scene.assetId) {
+        const asset = mediaAssets.find(a => a.id === scene.assetId);
+        if (asset && asset.duration) maxDuration = asset.duration;
+      }
+
+      // The trimmed scene renders on both V1 and A1; so does everything after it.
+      // Resolved once here so the move handler never touches React state or the DOM
+      // tree — it only writes to nodes it already holds.
+      for (const suffix of ['V1', 'A1'] as const) {
+        const own = readTarget(`${sceneId}_${suffix}`);
+        if (own) resizeTargets.push(own);
+        for (let i = sceneIndex + 1; i < scenes.length; i++) {
+          const following = readTarget(`${scenes[i].id}_${suffix}`);
+          if (following) shiftTargets.push(following);
+        }
+      }
+
+      if (scene?.custom_media_url) {
+        setFrozenStrip({ sceneId, count: filmstripCount(duration) });
+      }
+
+      // Hinted here rather than in the style prop so only the blocks that actually
+      // move get promoted. Setting it on every block for the duration of a gesture
+      // would hand the compositor 60+ layers to hold for a project of that size.
+      for (const t of [...resizeTargets, ...shiftTargets]) {
+        t.node.style.willChange = 'transform';
+      }
+    }
+
+    // Seeded to the press position so the first `applyGestureToDom` — which the layout
+    // effect fires on the render that `setIsResizing(true)` triggers, before any
+    // pointermove — computes a zero delta instead of reading a stale X and snapping
+    // the block to its minimum duration.
+    gesturePointerXRef.current = e.clientX;
+    gestureMovedRef.current = false;
+
+    gestureRef.current = {
+      kind: isClip ? 'clip' : 'scene',
+      id: sceneId,
+      track,
+      edge,
+      startClientX: e.clientX,
+      scale,
+      initialDuration: duration,
+      initialTrimStart: trimStart,
+      initialStartTime,
+      maxDuration,
+      resizeTargets,
+      shiftTargets,
+    };
+
+    // The only state the gesture touches. Everything else it needs — the edge, the
+    // scale, the affected nodes — lives in `gestureRef`, which costs no render.
     setIsResizing(true);
   };
 
-  // handlePointerMove records the values it lands on so handlePointerUp can persist
-  // them once, on release, without reading state from inside a setter.
-  const lastResizeValuesRef = useRef<Record<string, any> | null>(null);
+  /**
+   * Paints the in-progress gesture onto the DOM. Called from the rAF tick, and again
+   * from a layout effect after any render that happens mid-gesture — React would
+   * otherwise reset `transform`/`width` back to the committed geometry and the block
+   * would snap backwards for a frame.
+   */
+  const applyGestureToDom = () => {
+    const g = gestureRef.current;
+    if (!g || g.kind !== 'scene') return;
+
+    const deltaDuration = (gesturePointerXRef.current - g.startClientX) / g.scale;
+    const { duration, trimStart } = computeSceneResize({
+      initialDuration: g.initialDuration,
+      initialTrimStart: g.initialTrimStart,
+      deltaDuration,
+      edge: g.edge,
+      maxDuration: g.maxDuration,
+      currentTrimStart: g.initialTrimStart,
+    });
+    lastResizeValuesRef.current = { video_duration: duration, trim_start: trimStart };
+
+    const deltaPx = (duration - g.initialDuration) * g.scale;
+    const widthPx = duration * g.scale;
+
+    for (const t of g.resizeTargets) {
+      t.node.style.width = `${widthPx}px`;
+      // A left-edge trim keeps the right edge pinned, so the block's own left moves
+      // by the inverse of the size change. A right-edge trim leaves it where it is.
+      t.node.style.transform = blockTransform(g.edge === 'left' ? t.baseLeftPx - deltaPx : t.baseLeftPx, t.scaled);
+    }
+    // Left-edge trims pin the right edge, so nothing downstream moves.
+    if (g.edge === 'right') {
+      for (const t of g.shiftTargets) {
+        t.node.style.transform = blockTransform(t.baseLeftPx + deltaPx, t.scaled);
+      }
+    }
+  };
+
+  /** Drops every inline override so React's rendered geometry takes over again. */
+  const clearGestureDom = (g: GestureSnapshot) => {
+    for (const t of [...g.resizeTargets, ...g.shiftTargets]) {
+      t.node.style.removeProperty('width');
+      t.node.style.removeProperty('transform');
+      t.node.style.removeProperty('will-change');
+    }
+  };
 
   useEffect(() => {
-    if (!isResizing || !resizingSceneId || !resizingTrack || !resizingEdge) return;
+    if (!isResizing || !gestureRef.current) return;
 
-    const handlePointerMove = (e: PointerEvent) => {
-      e.preventDefault();
-      const deltaX = e.clientX - resizeStartX;
-      const deltaDuration = deltaX / scale;
+    const runFrame = () => {
+      gestureFrameRef.current = null;
+      const g = gestureRef.current;
+      if (!g) return;
 
-      if (resizingTrack === 'A1_clip' || resizingTrack === 'A2_clip') {
-        setTimelineClips(prev => prev.map(clip => {
-          if (clip.id === resizingSceneId) {
-            let newDuration = initialDuration;
-            if (resizingEdge === 'right') {
-              newDuration = initialDuration + deltaDuration;
-            } else if (resizingEdge === 'left') {
-              newDuration = initialDuration - deltaDuration;
-            }
-            const maxDuration = clip.asset.duration || 15;
-            const finalDuration = Math.min(maxDuration, Math.max(0.5, newDuration));
-            
-            let newTrimStart = clip.trimStart || 0;
-            let newStartTime = clip.startTime;
-            if (resizingEdge === 'left') {
-              newTrimStart = initialTrimStart + (initialDuration - finalDuration);
-              newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
-              newStartTime = Math.max(0, clip.startTime + (initialDuration - finalDuration));
-            }
-            lastResizeValuesRef.current = { duration: finalDuration, trim_start: newTrimStart, start_time: newStartTime };
-            return { ...clip, duration: finalDuration, trimStart: newTrimStart, startTime: newStartTime };
-          }
-          return clip;
-        }));
+      if (g.kind === 'scene') {
+        applyGestureToDom();
         return;
       }
 
-      // Resizing on either V1 or A1 trims the same underlying scene row.
-      setScenes(prev => prev.map(scene => {
-        if (scene.id === resizingSceneId) {
-          let newDuration = initialDuration;
-          if (resizingEdge === 'right') {
-            newDuration = initialDuration + deltaDuration;
-          } else if (resizingEdge === 'left') {
-            // Because scenes are sequential, dragging the left edge just trims the duration for now
-            newDuration = initialDuration - deltaDuration;
-          }
-          let maxDuration = 8;
-          if (scene.custom_media_url && scene.assetId) {
-            const asset = mediaAssets.find(a => a.id === scene.assetId);
-            if (asset && asset.duration) maxDuration = asset.duration;
-          }
-          const finalDuration = Math.min(maxDuration, Math.max(0.5, newDuration));
-          
-          let newTrimStart = scene.trim_start || 0;
-          if (resizingEdge === 'left') {
-            newTrimStart = initialTrimStart + (initialDuration - finalDuration);
-            newTrimStart = Math.min(maxDuration - finalDuration, Math.max(0, newTrimStart));
-          }
-          lastResizeValuesRef.current = { video_duration: finalDuration, trim_start: newTrimStart };
-          return { ...scene, video_duration: finalDuration, trim_start: newTrimStart };
-        }
-        return scene;
-      }));
+      // Clip path: still a state update, but now at most one per animation frame
+      // instead of one per pointer event.
+      const deltaDuration = (gesturePointerXRef.current - g.startClientX) / g.scale;
+      const next = computeClipResize({
+        initialDuration: g.initialDuration,
+        initialTrimStart: g.initialTrimStart,
+        initialStartTime: g.initialStartTime,
+        deltaDuration,
+        edge: g.edge,
+        maxDuration: g.maxDuration,
+        currentTrimStart: g.initialTrimStart,
+      });
+      lastResizeValuesRef.current = {
+        duration: next.duration,
+        trim_start: next.trimStart,
+        start_time: next.startTime,
+      };
+      setTimelineClips(prev => prev.map(clip => clip.id === g.id
+        ? { ...clip, duration: next.duration, trimStart: next.trimStart, startTime: next.startTime }
+        : clip));
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      e.preventDefault();
+      // Coalesce to one update per frame. Everything the work needs lives in refs,
+      // so the listener itself stays a couple of assignments.
+      gesturePointerXRef.current = e.clientX;
+      gestureMovedRef.current = true;
+      if (gestureFrameRef.current === null) {
+        gestureFrameRef.current = requestAnimationFrame(runFrame);
+      }
     };
 
     const handlePointerUp = () => {
-      // Persist once on release rather than on every pointermove frame.
-      const finalValues = lastResizeValuesRef.current;
-      if (finalValues && resizingSceneId) {
-        if (resizingTrack === 'A1_clip' || resizingTrack === 'A2_clip') {
-          persistTimelineItemFields(resizingSceneId, finalValues);
+      if (gestureFrameRef.current !== null) {
+        cancelAnimationFrame(gestureFrameRef.current);
+        gestureFrameRef.current = null;
+      }
+
+      const g = gestureRef.current;
+      const finalValues = gestureMovedRef.current ? lastResizeValuesRef.current : null;
+
+      if (g && !finalValues) clearGestureDom(g);
+
+      if (g && finalValues) {
+        if (g.kind === 'clip') {
+          persistTimelineItemFields(g.id, finalValues);
         } else {
-          persistSceneFields(resizingSceneId, finalValues);
+          // The one and only commit of the gesture. Clearing the inline overrides
+          // must happen after it is queued, never before — React batches this into
+          // the same tick, so removing the styles first would snap the block back to
+          // its old geometry for a frame.
+          setScenes(prev => prev.map(scene => scene.id === g.id
+            ? { ...scene, video_duration: finalValues.video_duration, trim_start: finalValues.trim_start }
+            : scene));
+          setSelectedScene((prev: any) => prev && prev.id === g.id
+            ? { ...prev, video_duration: finalValues.video_duration, trim_start: finalValues.trim_start }
+            : prev);
+          clearGestureDom(g);
+          persistSceneFields(g.id, finalValues);
         }
       }
-      lastResizeValuesRef.current = null;
 
+      lastResizeValuesRef.current = null;
+      gestureRef.current = null;
+
+      setFrozenStrip(null);
       setIsResizing(false);
-      setResizingSceneId(null);
-      setResizingTrack(null);
-      setResizingEdge(null);
     };
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
+    // Without this a gesture interrupted by the browser (dragged out of the window,
+    // a touch turned into a scroll) would leave the inline overrides painted on and
+    // the trim never committed.
+    window.addEventListener('pointercancel', handlePointerUp);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
+      if (gestureFrameRef.current !== null) {
+        cancelAnimationFrame(gestureFrameRef.current);
+        gestureFrameRef.current = null;
+      }
     };
-  }, [isResizing, resizingSceneId, resizingTrack, resizingEdge, resizeStartX, initialDuration, scale]);
+    // Everything the handlers read lives in refs, so this subscribes once per
+    // gesture rather than re-binding as values change mid-drag.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isResizing]);
+
+  // Re-assert the gesture's geometry after any render that lands mid-drag (a hover,
+  // a playback tick, a background save finishing). Without this React would repaint
+  // the blocks at their committed positions and the drag would visibly stutter.
+  useIsomorphicLayoutEffect(() => {
+    if (isResizing && gestureRef.current?.kind === 'scene') applyGestureToDom();
+  });
 
   const formatDuration = (d: number) => {
     const m = Math.floor(d / 60).toString().padStart(2, '0');
@@ -3586,7 +3890,7 @@ export default function TimelineEditor({
                     </div>
                  </div>
                  <div 
-                   className={`flex flex-1 relative h-16 rounded-r-md items-center border-y border-r shadow-sm transition-all ${trackStates.V1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
+                   className={`flex flex-1 relative h-16 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.V1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`}
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -3622,9 +3926,24 @@ export default function TimelineEditor({
                    }}
                  >
                     {/* Scene Blocks (AI Generated) */}
-                    {scenes.map((scene, idx) => (
-                       <div 
+                    {scenes.map((scene, idx) => {
+                      const leftPx = getSceneLeftPosition('V1', idx);
+                      const isSelected = selectedSceneKeys.includes(`${scene.id}_V1`)
+                        || (selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && selectedSceneKeys.length === 0);
+                      // Frozen mid-trim so resizing doesn't mount and unmount <video>
+                      // elements — each new one fires a range request for its poster frame.
+                      const stripCount = frozenStrip && frozenStrip.sceneId === scene.id
+                        ? frozenStrip.count
+                        : filmstripCount(getSceneDuration(scene));
+                      // The block being dragged is hidden and follows the cursor, so only
+                      // the ones making room for it animate.
+                      const slidesAside = isReordering && draggingScene?.id !== scene.id;
+                      return (
+                       <div
                          key={`video-${scene.id}`}
+                         ref={el => { blockRefs.current[`${scene.id}_V1`] = el; }}
+                         data-base-left={leftPx}
+                         data-scaled={isSelected ? '1' : '0'}
                          draggable={!trackStates.V1.locked}
                          onDragStart={(e) => {
                             if (trackStates.V1.locked) {
@@ -3649,15 +3968,20 @@ export default function TimelineEditor({
                            if (trackStates.V1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
                          }}
-                         className={`h-[80%] absolute top-[10%] rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-all overflow-hidden group/block shadow-sm ${
-                           selectedSceneKeys.includes(`${scene.id}_V1`) || (selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && selectedSceneKeys.length === 0)
-                             ? 'ring-2 ring-purple-500 ring-offset-1 z-20 scale-[1.02] bg-purple-500/20'
+                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors overflow-hidden group/block shadow-sm ${
+                           isSelected
+                             ? 'ring-2 ring-purple-500 ring-offset-1 z-20 bg-purple-500/20'
                              : 'hover:brightness-95 z-10'
                          }`}
-                         style={{ 
-                           left: `${getSceneLeftPosition('V1', idx)}px`,
+                         style={{
+                           // Positioned by transform rather than `left` so a move stays on
+                           // the compositor instead of forcing layout on the whole track.
+                           // The selection "pop" rides along in the same transform — an
+                           // inline one would override Tailwind's scale-* class outright.
+                           transform: blockTransform(leftPx, isSelected),
                            width: `${getSceneDuration(scene) * scale}px`,
-                           opacity: draggingScene?.id === scene.id ? 0.001 : 1
+                           opacity: draggingScene?.id === scene.id ? 0.001 : 1,
+                           transition: slidesAside ? REORDER_SLIDE : undefined
                          }}
                        >
                          <div className="w-full h-full p-1.5 flex flex-col relative">
@@ -3668,8 +3992,8 @@ export default function TimelineEditor({
                             {scene.custom_media_url && (
                                <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
                                   {scene.custom_media_type === 'video' ? (
-                                     Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
-                                        <video 
+                                     Array.from({ length: stripCount }).map((_, i, arr) => (
+                                        <video
                                           key={i}
                                           src={`${scene.custom_media_url}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
                                           className="h-full object-cover shrink-0 border-r border-black/20"
@@ -3679,11 +4003,11 @@ export default function TimelineEditor({
                                         />
                                      ))
                                   ) : (
-                                     Array.from({ length: Math.max(1, Math.ceil((getSceneDuration(scene) * scale) / 80)) }).map((_, i, arr) => (
-                                        <img 
+                                     Array.from({ length: stripCount }).map((_, i, arr) => (
+                                        <img
                                           key={i}
-                                          src={scene.custom_media_url} 
-                                          className="h-full object-cover shrink-0 border-r border-black/20" 
+                                          src={scene.custom_media_url}
+                                          className="h-full object-cover shrink-0 border-r border-black/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                         />
                                      ))
@@ -3694,25 +4018,30 @@ export default function TimelineEditor({
                          {/* Resize Handles */}
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
                             <>
-                              <div 
+                              <div
                                 className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md transition-colors"
-                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'left', getSceneDuration(scene))}
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'left', getSceneDuration(scene), scene.trim_start || 0)}
                               />
-                              <div 
+                              <div
                                 className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md transition-colors"
-                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'right', getSceneDuration(scene))}
+                                onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'right', getSceneDuration(scene), scene.trim_start || 0)}
                               />
                             </>
                          )}
                        </div>
-                    ))}
+                      );
+                    })}
 
                     {v1DragInsertIndex !== null && (draggingAsset || (draggingScene && draggingScene.track === 'V1')) && (
                         <div 
-                           className="h-[80%] absolute top-[10%] rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none transition-all flex items-center justify-center overflow-hidden"
+                           className="h-[80%] absolute top-[10%] left-0 rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
                            style={{
-                              left: `${getUnshiftedLeftPosition('V1', v1DragInsertIndex)}px`,
-                              width: `${(draggingAsset?.duration || draggingScene?.duration || 5) * scale}px`
+                              // Slides between slots on the same curve as the blocks it
+                              // sits among — a teleporting ghost among sliding blocks
+                              // reads as a rendering bug.
+                              transform: blockTransform(getUnshiftedLeftPosition('V1', v1DragInsertIndex), false),
+                              width: `${(draggingAsset?.duration || draggingScene?.duration || 5) * scale}px`,
+                              transition: REORDER_SLIDE
                            }}
                         >
                            <div className="flex items-center text-purple-400 opacity-50 gap-2">
@@ -3755,7 +4084,7 @@ export default function TimelineEditor({
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : c));
                         }}
                         style={{ top: '10%' }}
-                        className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-all"
+                        className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-[filter,background-color,border-color]"
                         onClick={(e: any) => {
                           if (trackStates.V1.locked) return;
                           setSelectedAsset(null);
@@ -3826,7 +4155,7 @@ export default function TimelineEditor({
                     </div>
                  </div>
                  <div 
-                   className={`flex flex-1 relative h-14 rounded-r-md items-center border-y border-r shadow-sm transition-all ${trackStates.A1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`} 
+                   className={`flex flex-1 relative h-14 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.A1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`}
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -3893,9 +4222,16 @@ export default function TimelineEditor({
                    ) : (
                      /* ─ PER-SCENE clips (shown only when no master narration) ─ */
                      <>
-                     {scenes.map((scene, idx) => (
-                        <div 
+                     {scenes.map((scene, idx) => {
+                        const leftPx = getSceneLeftPosition('A1', idx);
+                        const isSelected = selectedSceneKeys.includes(`${scene.id}_A1`)
+                          || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0);
+                        return (
+                        <div
                           key={`audio-${scene.id}`}
+                          ref={el => { blockRefs.current[`${scene.id}_A1`] = el; }}
+                          data-base-left={leftPx}
+                          data-scaled={isSelected ? '1' : '0'}
                           draggable={!trackStates.A1.locked}
                           onDragStart={(e) => {
                              if (trackStates.A1.locked) { e.preventDefault(); return; }
@@ -3909,12 +4245,17 @@ export default function TimelineEditor({
                             e.preventDefault();
                             if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
                           }}
-                          className={`h-[70%] absolute top-[15%] rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-all overflow-hidden p-1 shadow-sm ${
-                            selectedSceneKeys.includes(`${scene.id}_A1`) || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0)
-                              ? 'ring-2 ring-gray-900 ring-offset-1 z-20 scale-[1.02] bg-purple-200'
+                          className={`h-[70%] absolute top-[15%] left-0 rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-colors overflow-hidden p-1 shadow-sm ${
+                            isSelected
+                              ? 'ring-2 ring-gray-900 ring-offset-1 z-20 bg-purple-200'
                               : 'hover:bg-purple-100 z-10'
                           }`}
-                          style={{ left: `${getSceneLeftPosition('A1', idx)}px`, width: `${(scene.video_duration || 5) * scale}px`, opacity: draggingScene?.id === scene.id ? 0.001 : 1 }}
+                          style={{
+                            transform: blockTransform(leftPx, isSelected),
+                            width: `${(scene.video_duration || 5) * scale}px`,
+                            opacity: draggingScene?.id === scene.id ? 0.001 : 1,
+                            transition: isReordering && draggingScene?.id !== scene.id ? REORDER_SLIDE : undefined
+                          }}
                         >
                           <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
                              <Volume2 size={9} />
@@ -3930,19 +4271,21 @@ export default function TimelineEditor({
                           </div>
                           {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
                             <>
-                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5)} />
-                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5)} />
+                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5, scene.trim_start || 0)} />
+                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5, scene.trim_start || 0)} />
                             </>
                           )}
                         </div>
-                     ))}
+                        );
+                     })}
 
                      {a1DragInsertIndex !== null && draggingScene?.track === 'A1' && (
                         <div 
-                           className="h-[70%] absolute top-[15%] rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none transition-all flex items-center justify-center overflow-hidden"
+                           className="h-[70%] absolute top-[15%] left-0 rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
                            style={{
-                              left: `${getUnshiftedLeftPosition('A1', a1DragInsertIndex)}px`,
-                              width: `${(draggingScene.duration || 5) * scale}px`
+                              transform: blockTransform(getUnshiftedLeftPosition('A1', a1DragInsertIndex), false),
+                              width: `${(draggingScene.duration || 5) * scale}px`,
+                              transition: REORDER_SLIDE
                            }}
                         >
                            <div className="flex items-center text-purple-400 opacity-50 gap-2">
@@ -3991,7 +4334,7 @@ export default function TimelineEditor({
                            persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
-                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-all p-1 ${
+                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A1') || selectedSceneKeys.includes(`${clip.id}_A1`)
                             ? 'ring-2 ring-blue-600 ring-offset-1 z-30 scale-[1.02] bg-blue-200'
                             : 'bg-blue-100/90 z-20'
@@ -4124,7 +4467,7 @@ export default function TimelineEditor({
                     </div>
                  </div>
                  <div 
-                   className={`flex flex-1 relative h-12 rounded-r-md items-center border transition-all ${trackStates.A2.locked ? 'bg-gray-100 border-gray-200 border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-gray-50 border-gray-200 border-dashed hover:bg-gray-100 cursor-pointer'}`} 
+                   className={`flex flex-1 relative h-12 rounded-r-md items-center border transition-colors ${trackStates.A2.locked ? 'bg-gray-100 border-gray-200 border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-gray-50 border-gray-200 border-dashed hover:bg-gray-100 cursor-pointer'}`}
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -4190,7 +4533,7 @@ export default function TimelineEditor({
                            persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
-                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-all p-1 ${
+                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A2') || selectedSceneKeys.includes(`${clip.id}_A2`)
                             ? 'ring-2 ring-blue-600 ring-offset-1 z-30 scale-[1.02] bg-blue-200'
                             : 'bg-blue-100/90 z-20'
