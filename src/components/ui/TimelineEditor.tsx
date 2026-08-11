@@ -2,11 +2,13 @@
 
 import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
 import Link from "next/link";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat, Check } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Repeat, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices } from "@/app/actions/audio-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
 import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
+import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
+import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
@@ -53,6 +55,36 @@ interface TimelineClip {
 // until reconciled with the real id the DB assigns.
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const isPersistedScene = (sceneId: string) => UUID_PATTERN.test(sceneId);
+
+/**
+ * Turns the project's title into a filename the browser's Save As dialog can offer
+ * for the exported .mp4. Client-side only — the file on disk stays keyed by
+ * projectId (renders overwrite in place), this just controls what name the download
+ * attribute suggests. Strips characters illegal on Windows/macOS filesystems and
+ * falls back to a generic name for an untitled project rather than downloading as "".
+ */
+const toExportFileName = (title: string | undefined | null) => {
+  const safe = (title || '').replace(/[\\/:*?"<>|]/g, '').trim().slice(0, 80);
+  return `${safe || 'video'}.mp4`;
+};
+
+/**
+ * The 6 transition cards in the Transition In accordion — same options the dropdown
+ * offers, as a drag source instead of a select list. Module-level and static: the
+ * type list is a code change (see add-scene-transitions.sql's comment on
+ * transition_type), not something that varies per scene.
+ */
+// `sampleAnimation` names a @keyframes rule in globals.css, applied via inline
+// `style` on the card's icon — a live loop of roughly what the transition does,
+// so you can tell them apart before dragging one anywhere.
+const TRANSITION_CARDS: { type: TransitionType; label: string; icon: typeof X; sampleAnimation: string }[] = [
+  { type: 'none', label: 'Cut', icon: X, sampleAnimation: 'tcard-cut 1.6s ease-in-out infinite' },
+  { type: 'crossfade', label: 'Crossfade', icon: Layers, sampleAnimation: 'tcard-crossfade 2.2s ease-in-out infinite' },
+  { type: 'slide', label: 'Slide', icon: ArrowRightLeft, sampleAnimation: 'tcard-slide 1.8s ease-in-out infinite' },
+  { type: 'zoom', label: 'Zoom', icon: ZoomIn, sampleAnimation: 'tcard-zoom 2s ease-in-out infinite' },
+  { type: 'glitch', label: 'Glitch', icon: Zap, sampleAnimation: 'tcard-glitch 1.4s steps(6, jump-end) infinite' },
+  { type: 'light-leak', label: 'Light Leak', icon: Sun, sampleAnimation: 'tcard-light-leak 2.4s ease-in-out infinite' },
+];
 
 /**
  * Turns the render route's raw stage string into something worth showing a user.
@@ -345,6 +377,28 @@ export default function TimelineEditor({
   const [isVisualExpanded, setIsVisualExpanded] = useState(true);
   const [isOverlayExpanded, setIsOverlayExpanded] = useState(false);
   const [isTransitionExpanded, setIsTransitionExpanded] = useState(false);
+  // Ken Burns has no accordion of its own (single checkbox, nothing to expand into),
+  // but its bulk-apply actions live behind this small menu instead of the row itself.
+  const [showKenBurnsMenu, setShowKenBurnsMenu] = useState(false);
+  // Which V1 scene a transition card is currently being dragged over — drives the
+  // amber "drop here" ring while the drag is in flight. Separate from `draggingScene`
+  // (that's for reordering scene blocks, a different drag entirely).
+  const [transitionDragOverSceneId, setTransitionDragOverSceneId] = useState<string | null>(null);
+  // Which scene just received a transition (via card click OR card drop) — drives a
+  // brief confirmation glow on its left-edge indicator, then clears itself.
+  const [transitionJustAppliedId, setTransitionJustAppliedId] = useState<string | null>(null);
+  // Transition-music (A2) drag state — a separate pair from the transition-card ones
+  // above: that drag targets a V1 scene block, this one targets the A2 lane itself
+  // and snaps to whichever scene boundary is nearest the cursor, not a specific block.
+  // `null` boundary index with `isDraggingMusicPreset` true just means "no boundary is
+  // close enough yet to have been computed" (e.g. pointer hasn't moved over A2 yet).
+  const [isDraggingMusicPreset, setIsDraggingMusicPreset] = useState(false);
+  const [musicDragNearestBoundaryIdx, setMusicDragNearestBoundaryIdx] = useState<number | null>(null);
+  // Which A2 clip just landed via a preset drop — drives a brief confirmation pulse
+  // on that clip block, then clears itself. No persistent "there's music here"
+  // indicator is needed the way the V1 transition seam line is: the clip itself is
+  // already a visible block on A2 once created.
+  const [musicJustAppliedClipId, setMusicJustAppliedClipId] = useState<string | null>(null);
 
   // Auto-captions. `narration_words` is written by the Deepgram pass inside
   // generateFullNarration, so it only exists once narration has been generated —
@@ -480,6 +534,26 @@ export default function TimelineEditor({
     }
     return offsets;
   }, [sceneDurations]);
+
+  // The internal scene-to-scene cut points, as indices into `scenes`/`sceneOffsets`
+  // (boundary `i` sits between scene `i-1` and scene `i`, at time `sceneOffsets[i]`).
+  // Index 0 is the very start of the timeline, not a boundary BETWEEN two scenes, so
+  // it's excluded — matching the transition cards' own "first scene has nothing to
+  // transition from" rule. Used by the transition-music drag to find the nearest cut
+  // to snap a dropped clip's center onto.
+  const findNearestSceneBoundaryIdx = (timeSeconds: number): number | null => {
+    if (scenes.length < 2) return null;
+    let nearestIdx: number | null = null;
+    let nearestDistance = Infinity;
+    for (let i = 1; i < scenes.length; i++) {
+      const distance = Math.abs(sceneOffsets[i] - timeSeconds);
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        nearestIdx = i;
+      }
+    }
+    return nearestIdx;
+  };
 
   // Hoisted out of the position helpers below: they are called once per scene, and a
   // findIndex inside them would put the O(n²) back that the prefix sums just removed.
@@ -943,6 +1017,78 @@ export default function TimelineEditor({
     if (dataStr) {
       try {
         const data = JSON.parse(dataStr);
+        // A transition card dropped precisely on a scene block is handled by that
+        // block's own onDrop (which stops propagation before this ever runs). One
+        // that lands here instead was dropped on empty track space with no scene
+        // under the cursor — there is nothing to apply a transition TO, and letting
+        // it fall through to the asset-insert logic below would misread this payload
+        // as a media asset. No-op is correct, not a missing feature.
+        if (data.type === 'transition') {
+          return;
+        }
+        if (data.type === 'transition-music') {
+          // Guide lines + confirmation pulse are drag/drop-scoped UI state, not
+          // committed data — always clear them here regardless of how this
+          // branch exits, so a drop on a locked track or off A2 doesn't leave
+          // a stale glow behind (onDragEnd covers a cancelled drag, but not a
+          // drop that lands somewhere this branch rejects).
+          setIsDraggingMusicPreset(false);
+          setMusicDragNearestBoundaryIdx(null);
+
+          // A1 is reserved for the master narration; V1 doesn't take audio at
+          // all. Only A2 is ever a valid target, matching the guide lines,
+          // which only ever render there.
+          if (trackId !== 'A2') return;
+
+          const preset = getTransitionMusicPreset(data.presetKey);
+          if (!preset) return;
+
+          const rect = e.currentTarget.getBoundingClientRect();
+          const timeAtCursor = (e.clientX - rect.left) / scale;
+          const boundaryIdx = findNearestSceneBoundaryIdx(timeAtCursor);
+          // Nothing to center on — fewer than 2 scenes means no internal cuts exist.
+          if (boundaryIdx === null) return;
+
+          const boundaryTime = sceneOffsets[boundaryIdx];
+          const startTime = Math.max(0, boundaryTime - preset.durationSeconds / 2);
+
+          // Replace, don't stack: a second preset dropped near a boundary that
+          // already has one takes its place, the same single-value-per-cut rule
+          // the V1 transition cards follow.
+          const existingAtBoundary = timelineClips.find(c => {
+            if (c.trackId !== 'A2') return false;
+            const center = c.startTime + c.duration / 2;
+            return Math.abs(center - boundaryTime) < 1;
+          });
+          if (existingAtBoundary) {
+            setTimelineClips(prev => prev.filter(c => c.id !== existingAtBoundary.id));
+            if (isPersistedScene(existingAtBoundary.id)) {
+              deleteTimelineItem(existingAtBoundary.id);
+            }
+          }
+
+          const mediaRes = await getOrCreatePresetMedia(initialProject.id, preset.key);
+          if (!mediaRes.success || !mediaRes.mediaId) {
+            console.error('[handleDrop] Failed to resolve preset media:', mediaRes.error);
+            return;
+          }
+
+          const presetAsset: MediaAsset = {
+            id: `preset-${preset.key}`,
+            name: preset.label,
+            url: preset.url,
+            type: 'audio',
+            duration: preset.durationSeconds,
+            mediaId: mediaRes.mediaId,
+            persistedUrl: preset.url,
+          };
+          const newClipId = addTimelineClip(presetAsset, 'A2', startTime, preset.durationSeconds);
+          setMusicJustAppliedClipId(newClipId);
+          window.setTimeout(() => {
+            setMusicJustAppliedClipId(prev => (prev === newClipId ? null : prev));
+          }, 900);
+          return;
+        }
         if (data.type === 'reorder') {
            // Reordering from either lane moves the shared scene row, so the
            // visual and its narration always travel together.
@@ -1213,6 +1359,36 @@ export default function TimelineEditor({
     persistSceneFields(sceneId, { [field]: value }, isFreeText);
   };
 
+  /**
+   * Bulk sibling of the per-scene Ken Burns checkbox: sets `ken_burns_enabled` on
+   * every IMAGE scene in the project in one action, instead of clicking through them
+   * one by one. Video scenes are skipped — the checkbox is hidden for them for the
+   * same reason (they already have their own motion).
+   */
+  const applyKenBurnsToAllImageScenes = (enabled: boolean) => {
+    const targetIds = scenes.filter(s => s.custom_media_type !== 'video').map(s => s.id);
+    setScenes(prev => prev.map(s => targetIds.includes(s.id) ? { ...s, ken_burns_enabled: enabled } : s));
+    setSelectedScene((prev: any) =>
+      prev && targetIds.includes(prev.id) ? { ...prev, ken_burns_enabled: enabled } : prev
+    );
+    targetIds.forEach(id => persistSceneFields(id, { ken_burns_enabled: enabled }));
+    setShowKenBurnsMenu(false);
+  };
+
+  /**
+   * Shared by both ways of setting a scene's transition — clicking a card (targets
+   * the selected scene) and dragging a card onto a scene block (targets whichever
+   * block it lands on). Layered on `updateSceneDetails` purely to add the "just
+   * applied" flash so both paths give the same confirmation.
+   */
+  const applyTransitionToScene = (sceneId: string, type: TransitionType) => {
+    updateSceneDetails(sceneId, 'transition_type', type);
+    setTransitionJustAppliedId(sceneId);
+    window.setTimeout(() => {
+      setTransitionJustAppliedId(prev => (prev === sceneId ? null : prev));
+    }, 900);
+  };
+
   // Same merge-and-debounce shape as persistSceneFields, for timeline_items rows.
   const pendingTimelineSavesRef = useRef<{ [clipId: string]: Record<string, any> }>({});
   const timelineSaveTimersRef = useRef<{ [clipId: string]: ReturnType<typeof setTimeout> }>({});
@@ -1261,6 +1437,9 @@ export default function TimelineEditor({
   // Shared by handleDrop's A1/A2 branch and the Media panel's quick-add buttons:
   // optimistic add + fire-and-forget persistence, queued if the asset's upload
   // hasn't resolved to a real mediaId yet.
+  // Returns the new clip's (temporary, pre-persistence) id — existing callers that
+  // don't need it simply ignore the return value; the transition-music drop handler
+  // uses it to flag the freshly-created clip for a brief confirmation pulse.
   const addTimelineClip = (asset: MediaAsset, trackId: 'A1' | 'A2', startTime: number, duration: number) => {
     const tempClipId = Math.random().toString(36).substring(7);
     const newClip: TimelineClip = { id: tempClipId, assetId: asset.id, asset, trackId, startTime, duration };
@@ -1282,6 +1461,8 @@ export default function TimelineEditor({
     } else {
       queuePendingMediaCreation(asset.id, persist);
     }
+
+    return tempClipId;
   };
 
   const handleSelectSceneBlock = (e: React.MouseEvent, scene: any, track: 'V1' | 'A1', index: number) => {
@@ -1930,9 +2111,16 @@ export default function TimelineEditor({
 
   const contentDuration = scenes.reduce((acc, scene) => acc + getSceneDuration(scene), 0);
   const clipsMaxTime = timelineClips.length > 0 ? Math.max(...timelineClips.map(c => c.startTime + c.duration)) : 0;
-  
+
   // The visual width of the timeline ruler (includes 15s buffer padding)
   const timelineDuration = Math.max(60, contentDuration + 15, clipsMaxTime + 15);
+
+  // Where playback should actually stop — the true end of content (V1's scenes, A1's
+  // narration, or any dragged clip on either track, whichever runs longest), with NONE
+  // of the ruler's 15s browsing buffer or 60s floor. Without this, Play kept running
+  // the cursor to the end of that padded/floored width, well past a short video's real
+  // last frame.
+  const playbackEndDuration = Math.max(contentDuration, masterAudioDuration || 0, clipsMaxTime);
 
   // Keeps the ref current for every OTHER way cursorPosition changes (click-to-seek,
   // drag, reset-on-drag-start) so the playback loop below always resumes from the
@@ -1948,7 +2136,7 @@ export default function TimelineEditor({
     }
 
     lastTimeRef.current = performance.now();
-    const maxPos = timelineDuration * scale;
+    const maxPos = playbackEndDuration * scale;
 
     const animate = (time: number) => {
       const delta = (time - lastTimeRef.current) / 1000;
@@ -1977,7 +2165,7 @@ export default function TimelineEditor({
     return () => {
       if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
     };
-  }, [isPlaying, scale, timelineDuration]);
+  }, [isPlaying, scale, playbackEndDuration]);
 
   // Synchronized Playback Logic
   const currentTime = cursorPosition / scale;
@@ -2139,6 +2327,8 @@ export default function TimelineEditor({
         durationInSeconds:
           typeof s.transition_duration === 'number' ? s.transition_duration : 0.5,
       } : undefined,
+      // Passed through regardless of media type; the renderer ignores it for video.
+      kenBurnsEnabled: Boolean(s.ken_burns_enabled),
       };
     }),
     [scenes, pendingStockPick]
@@ -2906,8 +3096,12 @@ export default function TimelineEditor({
                         </div>
                      </div>
                      
-                      {/* ── Visual Generation Accordion ── */}
-                     <div ref={visualAccordionRef} className="border border-gray-200 rounded-lg overflow-hidden shadow-sm flex-1 flex flex-col">
+                      {/* ── Visual Generation Accordion ──
+                          flex-1 only while expanded: applied unconditionally, this
+                          div would keep claiming the panel's remaining flex space even
+                          collapsed to just its header button, leaving a tall blank box
+                          above Voiceover/Overlay/Ken Burns/Transition. */}
+                     <div ref={visualAccordionRef} className={`border border-gray-200 rounded-lg overflow-hidden shadow-sm flex flex-col ${isVisualExpanded ? 'flex-1' : ''}`}>
                         <button
                           onClick={() => setIsVisualExpanded(prev => !prev)}
                           className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
@@ -3336,6 +3530,58 @@ export default function TimelineEditor({
                         )}
                      </div>
 
+                      {/* ── Ken Burns ──
+                          A single checkbox rather than an accordion like Overlay and
+                          Transition: there is nothing to expand into, the effect has
+                          no sub-settings once it's on. Image-only — video scenes carry
+                          their own motion, and the renderer ignores the flag for them.
+                          Deliberately its own control and not a "Transition In" option:
+                          transition is movement BETWEEN scenes, this is movement WITHIN
+                          one, and a scene can have both at once. */}
+                     {selectedScene.custom_media_type !== 'video' && (
+                       <div className="relative">
+                         <div className="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-lg shadow-sm bg-gray-50 hover:bg-gray-100 transition-colors">
+                           <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                             <input
+                               type="checkbox"
+                               checked={Boolean(selectedScene.ken_burns_enabled)}
+                               onChange={(e) => updateSceneDetails(selectedScene.id, 'ken_burns_enabled', e.target.checked)}
+                               className="accent-purple-600"
+                             />
+                             <span className="text-xs font-bold text-gray-700">Ken Burns pan &amp; zoom</span>
+                           </label>
+                           {/* Bulk sibling of the checkbox above: that one edits THIS
+                               scene, this menu applies the setting to every image scene
+                               in the project in a single action. */}
+                           <button
+                             type="button"
+                             onClick={() => setShowKenBurnsMenu(prev => !prev)}
+                             className="flex items-center gap-0.5 text-[10px] font-bold text-gray-400 hover:text-purple-600 transition-colors shrink-0"
+                             title="Apply to all image scenes"
+                           >
+                             Bulk <ChevronDown size={12} />
+                           </button>
+                         </div>
+
+                         {showKenBurnsMenu && (
+                           <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50">
+                             <button
+                               onClick={() => applyKenBurnsToAllImageScenes(true)}
+                               className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                             >
+                               Enable for all image scenes
+                             </button>
+                             <button
+                               onClick={() => applyKenBurnsToAllImageScenes(false)}
+                               className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
+                             >
+                               Disable for all image scenes
+                             </button>
+                           </div>
+                         )}
+                       </div>
+                     )}
+
                       {/* ── Transition Accordion ──
                           The transition belongs to the scene it plays INTO, so the
                           first scene has nothing to configure. */}
@@ -3362,6 +3608,67 @@ export default function TimelineEditor({
                            </button>
                            {isTransitionExpanded && (
                              <div className="p-3 bg-white border-t border-gray-100 space-y-2.5">
+                               {/* Drag source, independent of `isFirstScene` below on
+                                   purpose: these cards target whichever scene block they
+                                   land on, not necessarily this selected one, so they
+                                   stay usable even while scene 1 (which can't itself take
+                                   a transition) is selected. A click still applies to
+                                   THIS scene as a one-step alternative to the dropdown —
+                                   same target and same first-scene rule as it has. */}
+                               <div>
+                                 <label className="block text-[10px] font-bold text-purple-600 uppercase tracking-wider mb-1.5">
+                                   Visual Transition
+                                 </label>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">
+                                   Drag onto any scene, or click to apply to this one
+                                 </label>
+                                 <div className="grid grid-cols-3 gap-1.5">
+                                   {TRANSITION_CARDS.map((card) => {
+                                     const isActive = !isFirstScene && transitionType === card.type;
+                                     return (
+                                       <button
+                                         key={card.type}
+                                         type="button"
+                                         draggable
+                                         onDragStart={(e) => {
+                                           e.dataTransfer.setData(
+                                             'text/plain',
+                                             JSON.stringify({ type: 'transition', transitionType: card.type })
+                                           );
+                                           // A second, dedicated MIME type purely as a marker: dataTransfer
+                                           // payloads set via 'text/plain' can't be READ during dragover
+                                           // (browsers only expose that during drop, for security), but
+                                           // `.types` — which type names are present — IS readable during
+                                           // dragover. The V1 scene blocks check for this type name to know
+                                           // "a transition card is over me" and light up their drop-target
+                                           // ring, without needing to decode the JSON early.
+                                           e.dataTransfer.setData('application/x-transition-card', card.type);
+                                           e.dataTransfer.effectAllowed = 'copy';
+                                         }}
+                                         onDragEnd={() => setTransitionDragOverSceneId(null)}
+                                         onClick={() => {
+                                           if (isFirstScene) return;
+                                           applyTransitionToScene(selectedScene.id, card.type);
+                                         }}
+                                         title={
+                                           isFirstScene
+                                             ? 'The first scene has no preceding scene to transition from — drag this onto a later scene instead'
+                                             : `Click to apply to Scene ${sceneIndex + 1}, or drag onto any scene on the timeline`
+                                         }
+                                         className={`flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border text-center cursor-grab active:cursor-grabbing transition-colors ${
+                                           isActive
+                                             ? 'border-purple-400 bg-purple-50 text-purple-700'
+                                             : 'border-gray-200 bg-white text-gray-600 hover:border-purple-200 hover:bg-purple-50/40'
+                                         }`}
+                                       >
+                                         <card.icon size={16} style={{ animation: card.sampleAnimation }} />
+                                         <span className="text-[9px] font-bold leading-tight">{card.label}</span>
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                               </div>
+
                                {isFirstScene ? (
                                  <p className="text-[11px] text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 leading-relaxed">
                                    The first scene has no preceding scene to transition from.
@@ -3412,6 +3719,63 @@ export default function TimelineEditor({
                                    )}
                                  </>
                                )}
+
+                               {/* ── Transition Sound ──
+                                   Deliberately separated from Visual Transition above by
+                                   its own heading and a divider, not folded into the same
+                                   grid — these are a different kind of thing (an audio
+                                   stinger on A2, not a per-scene field) with a different
+                                   drop target. Drag-only, same as the visual cards' drag
+                                   path: there's no "click to apply to this scene" here,
+                                   because a transition SOUND isn't scoped to a scene at
+                                   all — it belongs to whichever cut you drop it on, which
+                                   is why it stays draggable from this panel no matter
+                                   which scene (including the first) happens to be
+                                   selected. */}
+                               <div className="pt-2.5 border-t border-gray-100">
+                                 <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-1.5">
+                                   Transition Sound
+                                 </label>
+                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">
+                                   Drag onto A2, centered on a scene cut. Click to preview.
+                                 </label>
+                                 <div className="grid grid-cols-3 gap-1.5">
+                                   {TRANSITION_MUSIC_PRESETS.map((preset) => (
+                                     <button
+                                       key={preset.key}
+                                       type="button"
+                                       draggable
+                                       onDragStart={(e) => {
+                                         e.dataTransfer.setData(
+                                           'text/plain',
+                                           JSON.stringify({ type: 'transition-music', presetKey: preset.key })
+                                         );
+                                         // Marker MIME so A2's onDragOver can tell a music-preset
+                                         // drag is in flight without decoding JSON on every event —
+                                         // same reasoning as the visual cards' own marker type.
+                                         e.dataTransfer.setData('application/x-transition-music', preset.key);
+                                         e.dataTransfer.effectAllowed = 'copy';
+                                         setIsDraggingMusicPreset(true);
+                                       }}
+                                       onDragEnd={() => {
+                                         setIsDraggingMusicPreset(false);
+                                         setMusicDragNearestBoundaryIdx(null);
+                                       }}
+                                       onClick={() => {
+                                         // Preview only — applying happens via drag, since a
+                                         // transition sound has no "currently selected scene" to
+                                         // apply to on click the way a visual transition does.
+                                         new Audio(preset.url).play().catch(() => {});
+                                       }}
+                                       title={`Preview "${preset.label}", or drag onto A2 to apply it to a scene cut`}
+                                       className="flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border border-gray-200 bg-white text-gray-600 text-center cursor-grab active:cursor-grabbing hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
+                                     >
+                                       <Music size={16} />
+                                       <span className="text-[9px] font-bold leading-tight">{preset.label}</span>
+                                     </button>
+                                   ))}
+                                 </div>
+                               </div>
                              </div>
                            )}
                          </div>
@@ -3477,7 +3841,7 @@ export default function TimelineEditor({
                         <div className="flex flex-col gap-3">
                           <a
                             href={renderOutputPath}
-                            download
+                            download={toExportFileName(initialProject.topic)}
                             className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
                           >
                             <Download size={18} /> Download Video
@@ -4012,6 +4376,24 @@ export default function TimelineEditor({
                       const pendingHere = pendingStockPick && pendingStockPick.sceneId === scene.id ? pendingStockPick.result : null;
                       const previewMediaUrl = pendingHere ? pendingHere.mediaUrl : scene.custom_media_url;
                       const previewMediaType = pendingHere ? pendingHere.type : scene.custom_media_type;
+                      const ringClass = isSelected
+                        ? 'ring-2 ring-purple-500 ring-offset-1 z-20 bg-purple-500/20'
+                        : 'hover:brightness-95 z-10';
+                      const hasTransition = idx > 0 && Boolean(scene.transition_type) && scene.transition_type !== 'none';
+                      // The seam this scene's incoming transition lives at is its own
+                      // LEFT edge (it borders the previous scene, contiguous blocks having
+                      // no gap between them). One indicator, three states, boundary-only —
+                      // never the whole block: a static line once a transition exists, a
+                      // brighter "drop here" glow while a card is being dragged over this
+                      // exact seam, and a brief pulse right after either lands.
+                      const seamIndicator: 'drag-over' | 'just-applied' | 'set' | null =
+                        transitionDragOverSceneId === scene.id
+                          ? 'drag-over'
+                          : transitionJustAppliedId === scene.id
+                            ? 'just-applied'
+                            : hasTransition
+                              ? 'set'
+                              : null;
                       return (
                        <div
                          key={`video-${scene.id}`}
@@ -4033,6 +4415,49 @@ export default function TimelineEditor({
                             setDraggingScene(null);
                             setV1DragInsertIndex(null);
                          }}
+                         // Lights up the amber drop-target ring while a transition card is
+                         // over THIS block specifically. Only `.types` is readable during
+                         // dragover (see the card's onDragStart comment), so this checks
+                         // for the marker MIME type rather than decoding the JSON payload.
+                         onDragOver={(e) => {
+                           if (trackStates.V1.locked || idx === 0) return;
+                           if (e.dataTransfer.types.includes('application/x-transition-card')) {
+                             e.preventDefault();
+                             if (transitionDragOverSceneId !== scene.id) setTransitionDragOverSceneId(scene.id);
+                           }
+                         }}
+                         onDragLeave={(e) => {
+                           if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                             setTransitionDragOverSceneId(prev => (prev === scene.id ? null : prev));
+                           }
+                         }}
+                         // Precise transition-card targeting: dropping a card from the
+                         // Transition In accordion onto THIS scene sets its transition,
+                         // no matter which scene (if any) is currently selected. Stops
+                         // propagation so the track's own onDrop — which otherwise reads
+                         // every drop as "insert a new scene near this X position" —
+                         // never sees it. Any other payload (a Media panel asset, a
+                         // scene being reordered) is left alone to bubble up as before.
+                         onDrop={(e) => {
+                           if (trackStates.V1.locked) return;
+                           const dataStr = e.dataTransfer.getData('text/plain');
+                           if (!dataStr) return;
+                           let data: any;
+                           try {
+                             data = JSON.parse(dataStr);
+                           } catch {
+                             return;
+                           }
+                           if (data.type !== 'transition') return;
+                           e.preventDefault();
+                           e.stopPropagation();
+                           setTransitionDragOverSceneId(null);
+                           // Transition belongs to the incoming scene; the first scene
+                           // has no preceding scene to transition from, matching the
+                           // accordion's own rule for it.
+                           if (idx === 0) return;
+                           applyTransitionToScene(scene.id, data.transitionType);
+                         }}
                          onClick={(e) => {
                            if (trackStates.V1.locked) return;
                            handleSelectSceneBlock(e, scene, 'V1', idx);
@@ -4042,11 +4467,7 @@ export default function TimelineEditor({
                            if (trackStates.V1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
                          }}
-                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors overflow-hidden group/block shadow-sm ${
-                           isSelected
-                             ? 'ring-2 ring-purple-500 ring-offset-1 z-20 bg-purple-500/20'
-                             : 'hover:brightness-95 z-10'
-                         }`}
+                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors overflow-hidden group/block shadow-sm ${ringClass}`}
                          style={{
                            // Positioned by transform rather than `left` so a move stays on
                            // the compositor instead of forcing layout on the whole track.
@@ -4092,6 +4513,28 @@ export default function TimelineEditor({
                                </div>
                             )}
                          </div>
+                         {/* Transition seam indicator — lives ON THE BOUNDARY between this
+                             scene and the previous one, never a glow around the whole
+                             block (that read as "this scene is selected", which isn't
+                             what's being communicated). Extends slightly past the block's
+                             own top/bottom so it reads as a small opening right at the
+                             seam, exactly where you'd drag a card to. */}
+                         {seamIndicator && (
+                           <div
+                             className={`absolute -left-[3px] -top-1 -bottom-1 w-1.5 rounded-full z-40 pointer-events-none ${
+                               seamIndicator === 'drag-over'
+                                 ? 'bg-amber-400 shadow-[0_0_10px_3px_rgba(251,191,36,0.9)] animate-pulse'
+                                 : seamIndicator === 'just-applied'
+                                   // White with a dark outline ring, not just a glow — the
+                                   // glow alone washed out against the lighter scene-status
+                                   // backgrounds (amber-50/emerald-50 etc.), where a white
+                                   // line with no outline nearly disappears.
+                                   ? 'bg-white animate-pulse shadow-[0_0_0_1px_rgba(0,0,0,0.45),0_0_10px_3px_rgba(255,255,255,0.95)]'
+                                   : 'bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.45),0_0_4px_1px_rgba(255,255,255,0.8)]'
+                             }`}
+                             title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Drop a transition card here'}
+                           />
+                         )}
                          {/* Resize Handles */}
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
                             <>
@@ -4553,11 +4996,28 @@ export default function TimelineEditor({
                      setSelectedTimelineClip(null);
                      setSelectedSceneKeys([]);
                    }}
-                   onDragOver={(e) => { 
+                   onDragOver={(e) => {
                      if (trackStates.A2.locked) return;
-                     handleDragOver(e); 
-                     setV1DragInsertIndex(null); 
-                     setA1DragInsertIndex(null); 
+                     handleDragOver(e);
+                     setV1DragInsertIndex(null);
+                     setA1DragInsertIndex(null);
+                     // A transition-music card in flight: find the scene boundary
+                     // nearest the cursor so the guide lines below know which one to
+                     // light up. Checked via `.types` rather than decoding the JSON
+                     // payload — `getData` isn't readable during dragover.
+                     if (e.dataTransfer.types.includes('application/x-transition-music')) {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const timeAtCursor = (e.clientX - rect.left) / scale;
+                        const nearestIdx = findNearestSceneBoundaryIdx(timeAtCursor);
+                        if (nearestIdx !== musicDragNearestBoundaryIdx) {
+                           setMusicDragNearestBoundaryIdx(nearestIdx);
+                        }
+                     }
+                   }}
+                   onDragLeave={(e) => {
+                     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
+                        setMusicDragNearestBoundaryIdx(null);
+                     }
                    }}
                    onDrop={(e) => {
                       if (trackStates.A2.locked) return;
@@ -4568,6 +5028,24 @@ export default function TimelineEditor({
                        <Music size={12} className="mr-2 text-gray-500"/>
                        <span className="text-[10px] text-gray-500 font-bold italic">Drop audio here...</span>
                     </div>
+
+                    {/* Scene-boundary guide lines — only while a transition-music card
+                        is being dragged. One faint tick per internal scene cut; the
+                        nearest one to the cursor (tracked by the onDragOver above)
+                        brightens to show where a drop would land. */}
+                    {isDraggingMusicPreset && scenes.length >= 2 && (
+                       Array.from({ length: scenes.length - 1 }, (_, k) => k + 1).map((boundaryIdx) => (
+                          <div
+                             key={`music-guide-${boundaryIdx}`}
+                             className={`absolute top-0 bottom-0 w-0.5 pointer-events-none z-20 transition-colors ${
+                                musicDragNearestBoundaryIdx === boundaryIdx
+                                   ? 'bg-amber-400 shadow-[0_0_10px_3px_rgba(251,191,36,0.9)]'
+                                   : 'bg-purple-300/50'
+                             }`}
+                             style={{ left: `${sceneOffsets[boundaryIdx] * scale}px` }}
+                          />
+                       ))
+                    )}
 
                     {/* Dropped Custom Media Clips */}
                     {timelineClips.filter(c => c.trackId === 'A2').map(clip => (
@@ -4614,6 +5092,13 @@ export default function TimelineEditor({
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A2') || selectedSceneKeys.includes(`${clip.id}_A2`)
                             ? 'ring-2 ring-blue-600 ring-offset-1 z-30 scale-[1.02] bg-blue-200'
                             : 'bg-blue-100/90 z-20'
+                        } ${
+                          // Brief "yes, that landed" confirmation right after a
+                          // transition-music preset is dropped — same 900ms pulse
+                          // pattern as the V1 transition seam indicator.
+                          musicJustAppliedClipId === clip.id
+                            ? 'animate-pulse shadow-[0_0_10px_3px_rgba(96,165,250,0.85)]'
+                            : ''
                         }`}
                         onClick={(e: any) => {
                           e.stopPropagation();

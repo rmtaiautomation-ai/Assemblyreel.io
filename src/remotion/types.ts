@@ -44,6 +44,18 @@ export interface CompositionScene {
    * Ignored for the first scene, which has nothing to transition from.
    */
   transition?: SceneTransitionConfig;
+  /**
+   * Opt-in slow pan/zoom over a static image, so an image scene isn't a frozen frame
+   * for its whole on-screen life. Ignored when `mediaType !== 'image'` — video already
+   * carries its own motion.
+   *
+   * Independent of `transition`: that governs movement BETWEEN two scenes, this is
+   * movement WITHIN one. A scene can legitimately have both.
+   *
+   * Carries no direction/variant — `KenBurns` derives that from `id`, so the same
+   * scene animates identically on every preview and export.
+   */
+  kenBurnsEnabled?: boolean;
 }
 
 /**

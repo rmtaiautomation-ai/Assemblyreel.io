@@ -26,6 +26,8 @@ const UPDATABLE_FIELDS = [
   "generation_mode",
   "stock_search_query",
   "lip_sync_character_url",
+  // Requires db/add-scene-ken-burns.sql — same caveat as the transition fields above.
+  "ken_burns_enabled",
 ] as const;
 
 // Fields accepted when inserting a brand-new scene created by dropping local

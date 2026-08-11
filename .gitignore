@@ -47,5 +47,16 @@ next-env.d.ts
 # rendered anything: Vercel's filesystem is read-only, so nothing written at
 # runtime survives. Files already on disk are kept locally as a rollback until
 # a project is confirmed loading entirely from Storage URLs.
-/public/audio
+# Written as /public/audio/* (not /public/audio) specifically so the
+# transitions/ carve-out below can work — git cannot re-include a path whose
+# parent directory itself matched an exclude pattern, only an excluded child
+# entry, so the directory itself has to stay un-excluded here.
+/public/audio/*
 /public/media
+
+# ...except bundled, build-time static assets — not generated at runtime, so
+# the rollback reasoning above doesn't apply, and Vercel's read-only-filesystem
+# limitation is about writes happening AFTER deploy, not files already in the
+# repo at build time. Without this carve-out these ship on disk locally but
+# silently vanish for anyone who clones the repo fresh or deploys it.
+!/public/audio/transitions/

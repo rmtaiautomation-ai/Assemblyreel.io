@@ -12,6 +12,7 @@ import type { SceneOverlay, VideoCompositionProps } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
 import { CaptionTrack } from '../captions/CaptionTrack';
+import { KenBurns } from '../effects/KenBurns';
 import { SlideIn } from '../overlays/SlideIn';
 import { PopIn } from '../overlays/PopIn';
 import { Typewriter } from '../overlays/Typewriter';
@@ -108,6 +109,16 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
                         : 1
                     }
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                  />
+                ) : scene.mediaUrl && scene.kenBurnsEnabled ? (
+                  // Handed the RENDER duration, not the nominal one, so the pan is
+                  // already in motion at the moment a transition finishes revealing
+                  // the scene rather than starting from a standstill on the nominal
+                  // boundary — the same reasoning as OffthreadVideo's pre-roll above.
+                  <KenBurns
+                    src={scene.mediaUrl}
+                    sceneId={scene.id}
+                    durationInFrames={segment.renderDurationInFrames}
                   />
                 ) : scene.mediaUrl ? (
                   <Img

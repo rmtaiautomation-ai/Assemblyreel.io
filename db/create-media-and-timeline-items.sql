@@ -10,7 +10,7 @@ create table if not exists public.media (
   id uuid default uuid_generate_v4() primary key,
   project_id uuid references public.video_projects(id) on delete cascade not null,
   media_type text not null check (media_type in ('video', 'image', 'audio')),
-  source text not null check (source in ('upload', 'fal', 'gemini', 'stock-fallback', 'mock', 'legacy-unknown')),
+  source text not null check (source in ('upload', 'fal', 'gemini', 'stock', 'stock-fallback', 'mock', 'legacy-unknown')),
   status text not null default 'ready' check (status in ('uploading', 'generating', 'ready', 'failed')),
   storage_path text,   -- relative path under public/ (e.g. 'media/{projectId}/{mediaId}.mp4') for local files; null for externally-hosted media (Fal CDN, stock fallback)
   url text,            -- always the playable URL: '/media/...' for local files, or the provider's own URL when storage_path is null

@@ -108,3 +108,42 @@
     @apply border-accent-primary shadow-neon -translate-y-1;
   }
 }
+
+/* ═══════════════════════════════════════════════════════════════════
+   Transition-card motion samples (Timeline Editor, Scene Info → Transition In)
+   ───────────────────────────────────────────────────────────────────
+   One always-looping keyframe per transition type, applied to the card's own
+   icon via inline `animation` (not a Tailwind `animate-[...]` utility — these
+   are picked per-card from a data array, and Tailwind's static class scanner
+   can't see a class name built from a JS template string at runtime). Plain
+   top-level @keyframes so any component can reference them by name regardless
+   of where in the tree it renders.
+   ═══════════════════════════════════════════════════════════════════ */
+@keyframes tcard-cut {
+  0%, 45% { opacity: 1; }
+  50%, 95% { opacity: 0.15; }
+  100% { opacity: 1; }
+}
+@keyframes tcard-crossfade {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+@keyframes tcard-slide {
+  0%, 100% { transform: translateX(-3px); }
+  50% { transform: translateX(3px); }
+}
+@keyframes tcard-zoom {
+  0%, 100% { transform: scale(0.82); }
+  50% { transform: scale(1.15); }
+}
+@keyframes tcard-glitch {
+  0%, 100% { transform: translate(0, 0); opacity: 1; }
+  20% { transform: translate(-2px, 1px); opacity: 0.7; }
+  40% { transform: translate(2px, -1px); opacity: 1; }
+  60% { transform: translate(-1px, 0); opacity: 0.6; }
+  80% { transform: translate(1px, 1px); opacity: 1; }
+}
+@keyframes tcard-light-leak {
+  0%, 100% { filter: brightness(1) drop-shadow(0 0 0 rgba(251, 191, 36, 0)); }
+  50% { filter: brightness(1.7) drop-shadow(0 0 4px rgba(251, 191, 36, 0.9)); }
+}
