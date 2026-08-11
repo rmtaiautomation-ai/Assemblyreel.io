@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   // Bypass landing page and auth for development:
   // Redirect root "/" directly to "/workspaces"
   if (request.nextUrl.pathname === '/') {
