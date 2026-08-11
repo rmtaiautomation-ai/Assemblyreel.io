@@ -315,6 +315,10 @@ export default function TimelineEditor({
     results: StockResult[];
   } | null>(null);
   const [isSearchingStock, setIsSearchingStock] = useState(false);
+  // A thumbnail click only stages a pick for preview; nothing is downloaded or
+  // persisted until the user hits Apply, so browsing results doesn't burn storage.
+  const [pendingStockPick, setPendingStockPick] = useState<{ sceneId: string; result: StockResult } | null>(null);
+  const [isApplyingStock, setIsApplyingStock] = useState(false);
   const [exportResolution, setExportResolution] = useState<'1080x1920' | '1920x1080' | '1080x1080'>('1080x1920');
   const [exportQuality, setExportQuality] = useState<'High' | 'Standard' | 'Draft'>('High');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
@@ -1571,10 +1575,35 @@ export default function TimelineEditor({
     }
   };
 
-  const handleApplyStockResult = (sceneId: string, result: StockResult) => {
-    updateSceneDetails(sceneId, 'custom_media_url', result.mediaUrl);
-    updateSceneDetails(sceneId, 'custom_media_type', result.type);
-    updateSceneDetails(sceneId, 'generation_status', 'Completed');
+  /** Stages a thumbnail as the pending pick for preview — no download, no save yet. */
+  const handleSelectStockResult = (sceneId: string, result: StockResult) => {
+    setPendingStockPick({ sceneId, result });
+  };
+
+  /** Downloads the approved pick onto our own storage, then persists it to the scene. */
+  const handleApplyStockResult = async (sceneId: string, result: StockResult) => {
+    setIsApplyingStock(true);
+    try {
+      const res = await fetch('/api/media/from-url', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: result.mediaUrl, projectId: initialProject.id, mediaType: result.type }),
+      });
+      const data = await res.json();
+      if (!data.success) {
+        alert(`Failed to save this pick: ${data.error || 'unknown error'}`);
+        return;
+      }
+      updateSceneDetails(sceneId, 'custom_media_url', data.url);
+      updateSceneDetails(sceneId, 'custom_media_type', result.type);
+      updateSceneDetails(sceneId, 'generation_status', 'Completed');
+      setPendingStockPick(null);
+    } catch (e: any) {
+      console.error('[Stock Apply] failed:', e);
+      alert('Failed to save this pick — check your connection and try again.');
+    } finally {
+      setIsApplyingStock(false);
+    }
   };
 
   const handleGenerateAllVisuals = async () => {
@@ -1605,16 +1634,28 @@ export default function TimelineEditor({
             const data = await res.json();
             const top = data.success ? data.results?.[0] : null;
             if (top) {
-              const result = {
-                custom_media_url: top.mediaUrl,
-                custom_media_type: top.type,
-                generation_status: 'Completed',
-              };
-              setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, ...result } : s));
-              if (selectedScene?.id === scene.id) {
-                setSelectedScene((prev: any) => ({ ...prev, ...result }));
+              // Bulk-fill still downloads onto our own storage rather than hotlinking —
+              // there's just nobody reviewing the pick first, unlike the manual picker.
+              const dl = await fetch('/api/media/from-url', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ url: top.mediaUrl, projectId: initialProject.id, mediaType: top.type }),
+              });
+              const dlData = await dl.json();
+              if (dlData.success) {
+                const result = {
+                  custom_media_url: dlData.url,
+                  custom_media_type: top.type,
+                  generation_status: 'Completed',
+                };
+                setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, ...result } : s));
+                if (selectedScene?.id === scene.id) {
+                  setSelectedScene((prev: any) => ({ ...prev, ...result }));
+                }
+                persistSceneFields(scene.id, result);
+              } else {
+                console.error('[Generate All] Failed to save stock pick for scene', scene.id, dlData.error);
               }
-              persistSceneFields(scene.id, result);
             }
           } catch (e) {
             console.error('[Stock] bulk fetch failed for scene', scene.id, e);
@@ -2074,10 +2115,15 @@ export default function TimelineEditor({
   })();
 
   const remotionScenes: CompositionScene[] = useMemo(() =>
-    scenes.map(s => ({
+    scenes.map(s => {
+      // An unapplied stock pick stands in for this scene's media everywhere it's
+      // previewed — including the main player — but only until Apply/navigation
+      // resolves it; the underlying scene data is untouched until then.
+      const pendingHere = pendingStockPick && pendingStockPick.sceneId === s.id ? pendingStockPick.result : null;
+      return {
       id: s.id,
-      mediaUrl: s.custom_media_url || '',
-      mediaType: (s.custom_media_type || 'image') as 'video' | 'image',
+      mediaUrl: pendingHere ? pendingHere.mediaUrl : (s.custom_media_url || ''),
+      mediaType: (pendingHere ? pendingHere.type : (s.custom_media_type || 'image')) as 'video' | 'image',
       durationInSeconds: s.video_duration || 5,
       trimStartInSeconds: s.trim_start || 0,
       overlay: s.overlay_text && s.overlay_preset !== 'none' ? {
@@ -2093,8 +2139,9 @@ export default function TimelineEditor({
         durationInSeconds:
           typeof s.transition_duration === 'number' ? s.transition_duration : 0.5,
       } : undefined,
-    })),
-    [scenes]
+      };
+    }),
+    [scenes, pendingStockPick]
   );
 
   // A1/A2 audio clips for the *render*. Two rules matter here:
@@ -3046,15 +3093,15 @@ export default function TimelineEditor({
                                  stockSearchResults.results.length > 0 ? (
                                    <div className="grid grid-cols-3 gap-2">
                                      {stockSearchResults.results.map((r) => {
-                                       const isApplied = selectedScene.custom_media_url === r.mediaUrl;
+                                       const isPending = !!pendingStockPick && pendingStockPick.sceneId === selectedScene.id && pendingStockPick.result.id === r.id;
                                        return (
                                          <button
                                            key={r.id}
                                            type="button"
-                                           onClick={() => handleApplyStockResult(selectedScene.id, r)}
-                                           title="Use this for the scene"
+                                           onClick={() => handleSelectStockResult(selectedScene.id, r)}
+                                           title="Preview this for the scene"
                                            className={`relative aspect-video rounded-md overflow-hidden border-2 transition-all group ${
-                                             isApplied ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200 hover:border-blue-300'
+                                             isPending ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200 hover:border-blue-300'
                                            }`}
                                          >
                                            {r.thumbnailUrl ? (
@@ -3064,7 +3111,7 @@ export default function TimelineEditor({
                                                <Film size={14} className="text-gray-400" />
                                              </div>
                                            )}
-                                           {isApplied && (
+                                           {isPending && (
                                              <span className="absolute top-1 right-1 bg-blue-500 text-white rounded-full p-0.5">
                                                <Check size={10} />
                                              </span>
@@ -3079,8 +3126,19 @@ export default function TimelineEditor({
                                  )
                                )}
 
+                               {pendingStockPick && pendingStockPick.sceneId === selectedScene.id && (
+                                 <button
+                                   onClick={() => handleApplyStockResult(selectedScene.id, pendingStockPick.result)}
+                                   disabled={isApplyingStock}
+                                   className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-md flex items-center justify-center gap-1.5"
+                                 >
+                                   {isApplyingStock ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                                   {isApplyingStock ? 'Saving…' : 'Apply to Scene'}
+                                 </button>
+                               )}
+
                                <p className="text-[10px] text-gray-500 italic leading-relaxed">
-                                 Free stock media. Click a result to apply it to this scene.
+                                 Free stock media. Click a result to preview it, then Apply to save it to this scene.
                                </p>
                              </div>
                            )}
@@ -3553,7 +3611,13 @@ export default function TimelineEditor({
                  <div className="space-y-5">
                     {/* Thumbnail Preview */}
                     <div className="rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-black aspect-video relative">
-                       {selectedScene.custom_media_url ? (
+                       {pendingStockPick && pendingStockPick.sceneId === selectedScene.id ? (
+                         pendingStockPick.result.type === 'video' ? (
+                           <video src={pendingStockPick.result.mediaUrl} className="w-full h-full object-contain" muted preload="metadata" />
+                         ) : (
+                           <img src={pendingStockPick.result.mediaUrl} className="w-full h-full object-contain" alt="Pending scene pick" />
+                         )
+                       ) : selectedScene.custom_media_url ? (
                          selectedScene.custom_media_type === 'video' ? (
                            <video src={selectedScene.custom_media_url} className="w-full h-full object-contain" muted preload="metadata" />
                          ) : (
@@ -3568,6 +3632,11 @@ export default function TimelineEditor({
                        <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-sm rounded text-[9px] text-white font-mono font-bold">
                          Scene {selectedScene.sequence_number}
                        </div>
+                       {pendingStockPick && pendingStockPick.sceneId === selectedScene.id && (
+                         <div className="absolute bottom-2 left-2 px-2 py-0.5 bg-amber-500/90 backdrop-blur-sm rounded text-[9px] text-white font-bold">
+                           Preview — not saved yet
+                         </div>
+                       )}
                     </div>
 
                     {/* Properties Table */}
@@ -3938,6 +4007,11 @@ export default function TimelineEditor({
                       // The block being dragged is hidden and follows the cursor, so only
                       // the ones making room for it animate.
                       const slidesAside = isReordering && draggingScene?.id !== scene.id;
+                      // An unapplied stock pick previews here too, so the strip you're
+                      // scrubbing matches what Apply would actually save.
+                      const pendingHere = pendingStockPick && pendingStockPick.sceneId === scene.id ? pendingStockPick.result : null;
+                      const previewMediaUrl = pendingHere ? pendingHere.mediaUrl : scene.custom_media_url;
+                      const previewMediaType = pendingHere ? pendingHere.type : scene.custom_media_type;
                       return (
                        <div
                          key={`video-${scene.id}`}
@@ -3985,17 +4059,20 @@ export default function TimelineEditor({
                          }}
                        >
                          <div className="w-full h-full p-1.5 flex flex-col relative">
-                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${scene.custom_media_url ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-black/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
-                               {scene.custom_media_type === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
-                               <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {scene.custom_media_url ? `(${scene.voice_over_beat})` : ''}</span>
+                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-black/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
+                               {previewMediaType === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
+                               <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {previewMediaUrl ? `(${scene.voice_over_beat})` : ''}</span>
+                               {pendingHere && (
+                                 <span className="text-[8px] font-bold text-amber-300">•preview</span>
+                               )}
                             </div>
-                            {scene.custom_media_url && (
+                            {previewMediaUrl && (
                                <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
-                                  {scene.custom_media_type === 'video' ? (
+                                  {previewMediaType === 'video' ? (
                                      Array.from({ length: stripCount }).map((_, i, arr) => (
                                         <video
                                           key={i}
-                                          src={`${scene.custom_media_url}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
+                                          src={`${previewMediaUrl}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
                                           className="h-full object-cover shrink-0 border-r border-black/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                           preload="metadata"
@@ -4006,7 +4083,7 @@ export default function TimelineEditor({
                                      Array.from({ length: stripCount }).map((_, i, arr) => (
                                         <img
                                           key={i}
-                                          src={scene.custom_media_url}
+                                          src={previewMediaUrl}
                                           className="h-full object-cover shrink-0 border-r border-black/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                         />
