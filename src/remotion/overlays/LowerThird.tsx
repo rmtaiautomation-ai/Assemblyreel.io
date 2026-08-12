@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface LowerThirdProps {
   text: string;
@@ -48,54 +48,54 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
   const translateY = frame >= exitStart ? interpolate(exitProgress, [0, 1], [0, 40]) : 0;
   const globalOpacity = frame >= exitStart ? 1 - exitProgress : 1;
 
+  // Placement is OverlayFrame's job, not this component's — see
+  // overlays/OverlayFrame.tsx. The bottom-12%/left-6% geometry that used to
+  // live here now lives there as the 'bottom-left' default align, which is what
+  // the scene-scoped path still uses, so this preset lands exactly where it
+  // always did while ALSO being free-positionable as an overlay clip.
   return (
-    <AbsoluteFill>
+    <div
+      style={{
+        display: 'flex',
+        alignItems: 'stretch',
+        gap: 0,
+        transform: `translateY(${translateY}px)`,
+        opacity: globalOpacity,
+      }}
+    >
+      {/* Accent bar */}
       <div
         style={{
-          position: 'absolute',
-          bottom: '12%',
-          left: '6%',
+          width: 5,
+          borderRadius: 3,
+          background: 'linear-gradient(to bottom, #a855f7, #6366f1)',
+          transform: `scaleY(${barSpring})`,
+          transformOrigin: 'bottom',
+        }}
+      />
+      {/* Text container */}
+      <div
+        style={{
+          marginLeft: 14,
+          opacity: textOpacity,
           display: 'flex',
-          alignItems: 'stretch',
-          gap: 0,
-          transform: `translateY(${translateY}px)`,
-          opacity: globalOpacity,
+          flexDirection: 'column',
+          justifyContent: 'center',
         }}
       >
-        {/* Accent bar */}
         <div
           style={{
-            width: 5,
-            borderRadius: 3,
-            background: 'linear-gradient(to bottom, #a855f7, #6366f1)',
-            transform: `scaleY(${barSpring})`,
-            transformOrigin: 'bottom',
-          }}
-        />
-        {/* Text container */}
-        <div
-          style={{
-            marginLeft: 14,
-            opacity: textOpacity,
-            display: 'flex',
-            flexDirection: 'column',
-            justifyContent: 'center',
+            color,
+            fontSize,
+            fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+            fontWeight: 700,
+            textShadow: '0 2px 12px rgba(0,0,0,0.6)',
+            lineHeight: 1.2,
           }}
         >
-          <div
-            style={{
-              color,
-              fontSize,
-              fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
-              fontWeight: 700,
-              textShadow: '0 2px 12px rgba(0,0,0,0.6)',
-              lineHeight: 1.2,
-            }}
-          >
-            {text}
-          </div>
+          {text}
         </div>
       </div>
-    </AbsoluteFill>
+    </div>
   );
 };

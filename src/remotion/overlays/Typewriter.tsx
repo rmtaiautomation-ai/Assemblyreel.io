@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
+import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface TypewriterProps {
   text: string;
@@ -48,37 +48,33 @@ export const Typewriter: React.FC<TypewriterProps> = ({
   );
   const opacity = frame < exitStart ? 1 : exitOpacity;
 
+  // Placement is OverlayFrame's job, not this component's — see
+  // overlays/OverlayFrame.tsx. The exit fade moved onto this div along with it,
+  // since the AbsoluteFill that used to carry it is gone.
   return (
-    <AbsoluteFill
+    <div
       style={{
-        justifyContent: 'center',
-        alignItems: 'center',
         opacity,
+        color,
+        fontSize,
+        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        fontWeight: 600,
+        textAlign: 'center',
+        textShadow: '0 2px 16px rgba(0,0,0,0.5)',
+        maxWidth: '80%',
+        lineHeight: 1.4,
       }}
     >
-      <div
-        style={{
-          color,
-          fontSize,
-          fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
-          fontWeight: 600,
-          textAlign: 'center',
-          textShadow: '0 2px 16px rgba(0,0,0,0.5)',
-          maxWidth: '80%',
-          lineHeight: 1.4,
-        }}
-      >
-        {visibleText}
-        {showCursor && (
-          <span
-            style={{
-              borderRight: `3px solid ${color}`,
-              marginLeft: 2,
-              animation: 'none',
-            }}
-          />
-        )}
-      </div>
-    </AbsoluteFill>
+      {visibleText}
+      {showCursor && (
+        <span
+          style={{
+            borderRight: `3px solid ${color}`,
+            marginLeft: 2,
+            animation: 'none',
+          }}
+        />
+      )}
+    </div>
   );
 };

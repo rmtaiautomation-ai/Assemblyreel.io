@@ -30,6 +30,14 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
     .select('*')
     .eq('project_id', videoId);
 
+  // Independent text-overlay clips (the OV track). Like every other table here,
+  // this query returns null rather than throwing when the migration hasn't run
+  // yet, so the editor degrades to "no overlay clips" instead of failing to load.
+  const { data: overlayClips } = await supabase
+    .from('overlay_clips')
+    .select('*')
+    .eq('project_id', videoId);
+
   if (!project) {
     return (
       <div className="flex flex-col items-center justify-center h-[50vh]">
@@ -88,6 +96,7 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
            initialScenes={scenes}
            initialMedia={media || []}
            initialTimelineItems={timelineItems || []}
+           initialOverlayClips={overlayClips || []}
          />
       </div>
     </div>

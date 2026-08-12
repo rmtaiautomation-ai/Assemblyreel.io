@@ -8,11 +8,12 @@ import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
 import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
 import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
+import { createOverlayClip, updateOverlayClip, deleteOverlayClip } from "@/app/actions/overlay-clip-actions";
 import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
-import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayPreset, SceneOverlay, TransitionType, CaptionWord } from '@/remotion/types';
+import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayClipData, OverlayPreset, SceneOverlay, TransitionType, CaptionWord } from '@/remotion/types';
 import { layoutScenes, maxTransitionSeconds } from '@/remotion/timeline';
 import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
 
@@ -48,6 +49,104 @@ interface TimelineClip {
   duration: number;
   trimStart?: number;
 }
+
+/**
+ * A text overlay on the OV track. Deliberately NOT a `TimelineClip`: that type
+ * carries an `asset`/`assetId` because every A1/A2 clip is backed by a media
+ * file, and an overlay has no media behind it at all — it's pure config.
+ *
+ * Camel-cased mirror of a `overlay_clips` row (see db/create-overlay-clips.sql).
+ */
+interface OverlayClip {
+  id: string;
+  text: string;
+  kickerText?: string;
+  preset: OverlayPreset;
+  color: string;
+  fontSize?: number;
+  /** Centre of the overlay, as a percentage of frame width/height. */
+  xPercent: number;
+  yPercent: number;
+  dimBackground: boolean;
+  startTime: number;
+  duration: number;
+}
+
+const overlayRowToClip = (row: any): OverlayClip => ({
+  id: row.id,
+  text: row.text ?? '',
+  kickerText: row.kicker_text ?? undefined,
+  preset: (row.preset || 'cinematic-reveal') as OverlayPreset,
+  color: row.color || '#FFFFFF',
+  fontSize: row.font_size ?? undefined,
+  xPercent: typeof row.x_percent === 'number' ? row.x_percent : 50,
+  yPercent: typeof row.y_percent === 'number' ? row.y_percent : 50,
+  dimBackground: Boolean(row.dim_background),
+  startTime: typeof row.start_time === 'number' ? row.start_time : 0,
+  duration: typeof row.duration === 'number' ? row.duration : 3,
+});
+
+/**
+ * Quick placements, as percentages of the frame. 15/85 rather than 0/100 for the
+ * edges: the stored percentage is the overlay's CENTRE, so a true 0 or 100 would
+ * hang half the text off-screen. 15% keeps it inside the title-safe area that
+ * broadcast and social crops respect.
+ */
+const POSITION_PRESETS: { label: string; xPercent: number; yPercent: number }[] = [
+  { label: 'Top', xPercent: 50, yPercent: 15 },
+  { label: 'Center', xPercent: 50, yPercent: 50 },
+  { label: 'Bottom', xPercent: 50, yPercent: 85 },
+  { label: 'Left', xPercent: 25, yPercent: 50 },
+  { label: 'Right', xPercent: 75, yPercent: 50 },
+];
+
+/** Snap threshold, in percentage points, for the drag-to-position guides. */
+const POSITION_SNAP_TOLERANCE = 3;
+/** The lines an overlay snaps to while being dragged: centre lines and safe margins. */
+const SNAP_TARGETS = [15, 50, 85];
+
+/** The eight animation presets an overlay clip can use, for the picker UI. */
+const OVERLAY_PRESET_OPTIONS: { value: OverlayPreset; label: string }[] = [
+  { value: 'cinematic-reveal', label: 'Cinematic Reveal' },
+  { value: 'line-wipe', label: 'Line Wipe' },
+  { value: 'letter-collapse', label: 'Letter Collapse' },
+  { value: 'chapter-card', label: 'Chapter Card' },
+  { value: 'slide', label: 'Slide In' },
+  { value: 'pop', label: 'Pop In (Hormozi)' },
+  { value: 'typewriter', label: 'Typewriter' },
+  { value: 'lower-third', label: 'Lower Third' },
+];
+
+/**
+ * Assigns each overlay clip a lane so clips overlapping in time never render on
+ * top of each other — the auto-expanding OV1/OV2/OV3 behaviour CapCut has.
+ *
+ * Classic interval-scheduling greedy pack: walk clips in start order and drop
+ * each into the first lane whose last clip has already ended. Purely derived
+ * from `startTime`/`duration`, never stored — so trimming or moving a clip out
+ * of an overlap re-packs the lanes automatically with nothing to keep in sync.
+ */
+const packOverlayLanes = (clips: OverlayClip[]): { laneByClipId: Record<string, number>; laneCount: number } => {
+  const ordered = [...clips].sort((a, b) => a.startTime - b.startTime);
+  const laneEnds: number[] = [];
+  const laneByClipId: Record<string, number> = {};
+
+  for (const clip of ordered) {
+    const clipEnd = clip.startTime + clip.duration;
+    // A tiny epsilon so two clips that merely touch (one ends exactly where the
+    // next begins) share a lane instead of wastefully splitting into two.
+    let lane = laneEnds.findIndex((end) => end <= clip.startTime + 0.001);
+    if (lane === -1) {
+      lane = laneEnds.length;
+      laneEnds.push(clipEnd);
+    } else {
+      laneEnds[lane] = clipEnd;
+    }
+    laneByClipId[clip.id] = lane;
+  }
+
+  return { laneByClipId, laneCount: Math.max(1, laneEnds.length) };
+};
 
 // Only scenes/clips that came from Supabase have UUID ids. Mock preview scenes ("mock-1")
 // and scenes/clips created client-side before their persistence call resolves use short
@@ -234,12 +333,14 @@ export default function TimelineEditor({
   initialScenes,
   initialMedia = [],
   initialTimelineItems = [],
+  initialOverlayClips = [],
 }: {
   workspaceId: string,
   initialProject: any,
   initialScenes: any[],
   initialMedia?: any[],
   initialTimelineItems?: any[],
+  initialOverlayClips?: any[],
 }) {
   const [scenes, setScenes] = useState<any[]>(initialScenes);
   const [timelineClips, setTimelineClips] = useState<TimelineClip[]>(() => {
@@ -248,6 +349,10 @@ export default function TimelineEditor({
       .map((item) => timelineItemToClip(item, mediaById))
       .filter((c): c is TimelineClip => c !== null);
   });
+  const [overlayClips, setOverlayClips] = useState<OverlayClip[]>(
+    () => initialOverlayClips.map(overlayRowToClip)
+  );
+  const [selectedOverlayClipId, setSelectedOverlayClipId] = useState<string | null>(null);
   const [selectedScene, setSelectedScene] = useState<any | null>(null);
   const [selectedSceneTrack, setSelectedSceneTrack] = useState<'V1' | 'A1' | 'A2' | null>(null);
   const [selectedTimelineClip, setSelectedTimelineClip] = useState<TimelineClip | null>(null);
@@ -355,7 +460,7 @@ export default function TimelineEditor({
   const [exportQuality, setExportQuality] = useState<'High' | 'Standard' | 'Draft'>('High');
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
   const [showRatioMenu, setShowRatioMenu] = useState(false);
-  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'scene' | 'clip', id: string, trackId?: string } | null>(null);
+  const [contextMenu, setContextMenu] = useState<{ x: number, y: number, type: 'scene' | 'clip' | 'overlay', id: string, trackId?: string } | null>(null);
 
   /**
    * Isolated preview — renders a ONE-scene composition instead of the whole timeline
@@ -1416,6 +1521,259 @@ export default function TimelineEditor({
     }
   };
 
+  /* ── OV track: overlay clips ─────────────────────────────────────────────
+     Same merge-and-debounce shape as the two persisters above, for
+     overlay_clips rows. Debouncing matters more here than anywhere else in
+     this file: dragging an overlay around the preview fires a position update
+     on every pointer move. */
+  const pendingOverlaySavesRef = useRef<{ [clipId: string]: Record<string, any> }>({});
+  const overlaySaveTimersRef = useRef<{ [clipId: string]: ReturnType<typeof setTimeout> }>({});
+
+  const persistOverlayClipFields = (clipId: string, fields: Record<string, any>, debounce = false) => {
+    if (!isPersistedScene(clipId)) return;
+
+    pendingOverlaySavesRef.current[clipId] = { ...pendingOverlaySavesRef.current[clipId], ...fields };
+
+    const flush = () => {
+      const payload = pendingOverlaySavesRef.current[clipId];
+      delete pendingOverlaySavesRef.current[clipId];
+      delete overlaySaveTimersRef.current[clipId];
+      if (!payload || Object.keys(payload).length === 0) return;
+      updateOverlayClip(clipId, payload).then(res => {
+        if (!res.success) console.error("[Overlay Clip Save]", res.error);
+      });
+    };
+
+    if (overlaySaveTimersRef.current[clipId]) clearTimeout(overlaySaveTimersRef.current[clipId]);
+    if (debounce) {
+      overlaySaveTimersRef.current[clipId] = setTimeout(flush, 800);
+    } else {
+      flush();
+    }
+  };
+
+  /** Local state + persistence for one field of one overlay clip. */
+  const updateOverlayClipField = (
+    clipId: string,
+    field: keyof OverlayClip,
+    value: any,
+    dbColumn: string,
+    debounce = false
+  ) => {
+    setOverlayClips(prev => prev.map(c => (c.id === clipId ? { ...c, [field]: value } : c)));
+    persistOverlayClipFields(clipId, { [dbColumn]: value }, debounce);
+  };
+
+  /**
+   * Creates a new overlay clip at the playhead, using the optimistic-create-
+   * then-reconcile pattern the rest of this file uses: a temp id renders
+   * immediately, then swaps for the real UUID once the insert resolves.
+   * `isPersistedScene` gates every write, so the temp id never reaches the DB.
+   */
+  const handleAddOverlayClip = async () => {
+    const startTime = Math.max(0, cursorPosition / scale);
+    const duration = 3;
+    const tempId = Math.random().toString(36).substring(7);
+
+    const optimistic: OverlayClip = {
+      id: tempId,
+      text: 'Your title',
+      preset: 'cinematic-reveal',
+      color: '#FFFFFF',
+      xPercent: 50,
+      yPercent: 50,
+      dimBackground: false,
+      startTime,
+      duration,
+    };
+    setOverlayClips(prev => [...prev, optimistic]);
+    setSelectedOverlayClipId(tempId);
+
+    const res = await createOverlayClip(initialProject.id, {
+      text: optimistic.text,
+      preset: optimistic.preset,
+      color: optimistic.color,
+      xPercent: optimistic.xPercent,
+      yPercent: optimistic.yPercent,
+      dimBackground: optimistic.dimBackground,
+      startTime,
+      duration,
+    });
+
+    if (res.success && res.overlayClip) {
+      const realId = res.overlayClip.id;
+      setOverlayClips(prev => prev.map(c => (c.id === tempId ? { ...c, id: realId } : c)));
+      setSelectedOverlayClipId(prev => (prev === tempId ? realId : prev));
+    } else {
+      console.error('[handleAddOverlayClip] Failed to create overlay clip:', res.error);
+      // Roll the optimistic clip back rather than leaving a ghost that looks
+      // saved but will vanish on the next page load.
+      setOverlayClips(prev => prev.filter(c => c.id !== tempId));
+      setSelectedOverlayClipId(prev => (prev === tempId ? null : prev));
+    }
+  };
+
+  /**
+   * The video's real on-screen rectangle inside the Player's container, in
+   * container-relative pixels.
+   *
+   * The Player letterboxes: a 9:16 composition in a 16:9 container leaves black
+   * bars either side, and the container rect covers those bars while the video
+   * doesn't. Measuring the container instead of the video would put every
+   * dragged overlay off by the width of the bars, and differently so per aspect
+   * ratio — the exact failure the plan flagged to watch for.
+   */
+  const playerStageRef = useRef<HTMLDivElement>(null);
+  const [playerStageRect, setPlayerStageRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
+  // The measuring effect itself lives further down, next to `remotionDimensions`
+  // — it needs the composition's aspect ratio, which isn't computed until then.
+
+  /**
+   * Drag an overlay around the preview.
+   *
+   * Position is written continuously so what's on screen during the drag IS the
+   * real value — no separate "preview" representation that could disagree with
+   * what lands. Persistence is debounced during the move and flushed on release.
+   */
+  const handleOverlayPositionDragStart = (e: React.PointerEvent, clip: OverlayClip) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (playerStageRect.width === 0 || playerStageRect.height === 0) return;
+
+    const stageElement = playerStageRef.current;
+    if (!stageElement) return;
+    const stageBox = stageElement.getBoundingClientRect();
+    const videoLeft = stageBox.left + playerStageRect.left;
+    const videoTop = stageBox.top + playerStageRect.top;
+
+    let latest = { xPercent: clip.xPercent, yPercent: clip.yPercent };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const rawX = ((moveEvent.clientX - videoLeft) / playerStageRect.width) * 100;
+      const rawY = ((moveEvent.clientY - videoTop) / playerStageRect.height) * 100;
+
+      // Snap to the centre lines and the title-safe margins, then clamp so the
+      // overlay can never be dragged fully out of frame.
+      const snap = (value: number) => {
+        const target = SNAP_TARGETS.find(t => Math.abs(value - t) <= POSITION_SNAP_TOLERANCE);
+        return target ?? value;
+      };
+
+      latest = {
+        xPercent: Math.min(100, Math.max(0, snap(rawX))),
+        yPercent: Math.min(100, Math.max(0, snap(rawY))),
+      };
+      setOverlayClipPosition(clip.id, latest.xPercent, latest.yPercent, true);
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      // Final, un-debounced write so the last position can't be lost to a
+      // pending timer if the user navigates away immediately after dropping.
+      persistOverlayClipFields(clip.id, { x_percent: latest.xPercent, y_percent: latest.yPercent });
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  /** Writes both position axes at once — used by the preset buttons and the drag. */
+  const setOverlayClipPosition = (clipId: string, xPercent: number, yPercent: number, debounce = false) => {
+    setOverlayClips(prev =>
+      prev.map(c => (c.id === clipId ? { ...c, xPercent, yPercent } : c))
+    );
+    persistOverlayClipFields(clipId, { x_percent: xPercent, y_percent: yPercent }, debounce);
+  };
+
+  /**
+   * Move an overlay clip along the timeline.
+   *
+   * Pointer-events rather than <Rnd>'s own dragging (which is disabled here, as
+   * it is for A1/A2 clips) so a drag can't be confused with a click-to-select,
+   * and so the persist fires once on release instead of on every pointer move.
+   */
+  const handleOverlayDragStart = (e: React.PointerEvent, clip: OverlayClip) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const originalStart = clip.startTime;
+    let latestStart = originalStart;
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaSeconds = (moveEvent.clientX - startX) / scale;
+      latestStart = Math.max(0, originalStart + deltaSeconds);
+      setOverlayClips(prev => prev.map(c => (c.id === clip.id ? { ...c, startTime: latestStart } : c)));
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      persistOverlayClipFields(clip.id, { start_time: latestStart });
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  /**
+   * Trim an overlay clip from either edge.
+   *
+   * Dragging the LEFT edge moves the start and shortens the clip by the same
+   * amount so its end stays put; dragging the right edge only changes duration.
+   * Unlike an audio clip there's no source media to run out of, so the only
+   * limit is a 0.5s floor — a title shorter than that can't finish animating in.
+   */
+  const handleOverlayResizeStart = (
+    e: React.PointerEvent,
+    clip: OverlayClip,
+    edge: 'left' | 'right'
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX;
+    const originalStart = clip.startTime;
+    const originalDuration = clip.duration;
+    let latest = { startTime: originalStart, duration: originalDuration };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      const deltaSeconds = (moveEvent.clientX - startX) / scale;
+
+      if (edge === 'left') {
+        // Clamped so the left edge can't cross the right one, nor go negative.
+        const maxShift = originalDuration - 0.5;
+        const shift = Math.min(maxShift, Math.max(-originalStart, deltaSeconds));
+        latest = { startTime: originalStart + shift, duration: originalDuration - shift };
+      } else {
+        latest = { startTime: originalStart, duration: Math.max(0.5, originalDuration + deltaSeconds) };
+      }
+
+      setOverlayClips(prev => prev.map(c => (c.id === clip.id ? { ...c, ...latest } : c)));
+    };
+
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      persistOverlayClipFields(clip.id, {
+        start_time: latest.startTime,
+        duration: latest.duration,
+      });
+    };
+
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+  };
+
+  const handleDeleteOverlayClip = (clipId: string) => {
+    setOverlayClips(prev => prev.filter(c => c.id !== clipId));
+    setSelectedOverlayClipId(prev => (prev === clipId ? null : prev));
+    if (isPersistedScene(clipId)) {
+      deleteOverlayClip(clipId).then(res => {
+        if (!res.success) console.error('[handleDeleteOverlayClip]', res.error);
+      });
+    }
+  };
+
   // Dropping a just-uploaded asset onto the timeline before its upload request
   // resolves means we don't have a real mediaId to create the scene/clip row
   // with yet. Queue the deferred creation keyed by the asset's temp id and
@@ -2105,6 +2463,8 @@ export default function TimelineEditor({
     } else if (contextMenu.type === 'clip') {
       setTimelineClips(prev => prev.filter(c => c.id !== contextMenu.id));
       if (isPersistedScene(contextMenu.id)) deleteTimelineItem(contextMenu.id);
+    } else if (contextMenu.type === 'overlay') {
+      handleDeleteOverlayClip(contextMenu.id);
     }
     setContextMenu(null);
   };
@@ -2302,6 +2662,40 @@ export default function TimelineEditor({
     }
   })();
 
+  // Measures the video's real letterboxed rect inside the Player container —
+  // see `playerStageRef` above for why the container rect alone is wrong.
+  // Re-runs on container resize AND on an aspect-ratio change, since either
+  // moves where the black bars fall.
+  useLayoutEffect(() => {
+    const element = playerStageRef.current;
+    if (!element) return;
+
+    const measure = () => {
+      const { width: boxWidth, height: boxHeight } = element.getBoundingClientRect();
+      if (boxWidth === 0 || boxHeight === 0) return;
+
+      const compositionAspect = remotionDimensions.width / remotionDimensions.height;
+      const boxAspect = boxWidth / boxHeight;
+
+      // Box wider than the composition → pillarboxed, so height fills.
+      // Otherwise letterboxed, so width fills.
+      const videoWidth = boxAspect > compositionAspect ? boxHeight * compositionAspect : boxWidth;
+      const videoHeight = boxAspect > compositionAspect ? boxHeight : boxWidth / compositionAspect;
+
+      setPlayerStageRect({
+        left: (boxWidth - videoWidth) / 2,
+        top: (boxHeight - videoHeight) / 2,
+        width: videoWidth,
+        height: videoHeight,
+      });
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [remotionDimensions.width, remotionDimensions.height]);
+
   const remotionScenes: CompositionScene[] = useMemo(() =>
     scenes.map(s => {
       // An unapplied stock pick stands in for this scene's media everywhere it's
@@ -2372,6 +2766,38 @@ export default function TimelineEditor({
     return { remotionAudioClips: clips, unexportableClipNames: unexportable };
   }, [timelineClips, trackStates]);
 
+  // Render payload for the OV track. Straight camelCase mapping — an overlay
+  // clip needs no URL resolution the way audio clips do, since it has no media
+  // behind it, so there is nothing here that can be "unexportable".
+  const remotionOverlayClips: OverlayClipData[] = useMemo(
+    () => overlayClips.map(clip => ({
+      id: clip.id,
+      text: clip.text,
+      kickerText: clip.kickerText,
+      preset: clip.preset,
+      color: clip.color,
+      fontSize: clip.fontSize,
+      xPercent: clip.xPercent,
+      yPercent: clip.yPercent,
+      dimBackground: clip.dimBackground,
+      startInSeconds: clip.startTime,
+      durationInSeconds: clip.duration,
+    })),
+    [overlayClips]
+  );
+
+  // Which OV lane each clip sits in, so overlapping clips never render stacked
+  // on top of each other in the timeline. Derived, never stored.
+  const { laneByClipId: overlayLaneByClipId, laneCount: overlayLaneCount } = useMemo(
+    () => packOverlayLanes(overlayClips),
+    [overlayClips]
+  );
+
+  const selectedOverlayClip = useMemo(
+    () => overlayClips.find(c => c.id === selectedOverlayClipId) ?? null,
+    [overlayClips, selectedOverlayClipId]
+  );
+
   const remotionTotalDurationInFrames = useMemo(() => {
     // Shares `layoutScenes` with the composition rather than summing seconds here.
     // The old local sum rounded once at the end while the composition rounds each
@@ -2390,20 +2816,28 @@ export default function TimelineEditor({
       Math.max(masterAudioDuration || 0, clipsEnd) * remotionFps
     );
 
-    return Math.max(1, scenesFrames, trailingAudioFrames);
-  }, [remotionScenes, masterAudioDuration, remotionFps, remotionAudioClips]);
+    // An overlay clip placed past the last scene would otherwise be cut off by
+    // the composition ending early — same reasoning as the audio clips above.
+    const overlaysEnd = remotionOverlayClips.reduce(
+      (acc, c) => Math.max(acc, c.startInSeconds + c.durationInSeconds),
+      0
+    );
+
+    return Math.max(1, scenesFrames, trailingAudioFrames, Math.round(overlaysEnd * remotionFps));
+  }, [remotionScenes, masterAudioDuration, remotionFps, remotionAudioClips, remotionOverlayClips]);
 
   const remotionInputProps: VideoCompositionProps = useMemo(() => ({
     scenes: remotionScenes,
     audioUrl: masterAudioUrl || undefined,
     audioClips: remotionAudioClips,
+    overlayClips: remotionOverlayClips,
     captionWords,
     showCaptions: captionsEnabled,
     fps: remotionFps,
     width: remotionDimensions.width,
     height: remotionDimensions.height,
     durationInFrames: remotionTotalDurationInFrames,
-  }), [remotionScenes, masterAudioUrl, remotionAudioClips, captionWords, captionsEnabled, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
+  }), [remotionScenes, masterAudioUrl, remotionAudioClips, remotionOverlayClips, captionWords, captionsEnabled, remotionFps, remotionDimensions.width, remotionDimensions.height, remotionTotalDurationInFrames]);
 
   // Resolved from `scenes` rather than captured at toggle time, so edits to the
   // isolated scene (a duration change, a regenerated visual) show up live.
@@ -2431,7 +2865,17 @@ export default function TimelineEditor({
     // A one-scene array puts that scene at frame 0, so the Player needs no knowledge
     // of where the scene sits on the real timeline — and `trimStartInSeconds` still
     // rides along on the scene itself, so the correct part of the source still plays.
-    return { ...base, scenes: [isolatedScene], durationInFrames: isolatedDurationInFrames };
+    //
+    // Overlay clips are dropped in this mode rather than re-based: their times are
+    // absolute to the real timeline, so against a composition that now starts at the
+    // isolated scene they would appear at meaningless moments (or not at all). The
+    // isolated preview is for inspecting one scene's own visual, not the OV track.
+    return {
+      ...base,
+      scenes: [isolatedScene],
+      overlayClips: undefined,
+      durationInFrames: isolatedDurationInFrames,
+    };
   }, [remotionInputProps, isolatedScene, isolatedDurationInFrames]);
 
   // The sync effect bails out entirely in isolation mode, so nothing else would ever
@@ -2913,7 +3357,121 @@ export default function TimelineEditor({
             {/* SCENE DETAILS TAB */}
             {activeTab === 'scene' && (
               <div className="animate-in fade-in duration-200 h-full flex flex-col">
-                {selectedTimelineClip && (selectedSceneTrack === 'A1' || selectedSceneTrack === 'A2') ? (
+                {selectedOverlayClip ? (
+                  /* ── Overlay clip properties ──
+                     Takes priority over the scene/audio-clip panels below: an
+                     overlay clip is its own thing on its own track, so while one
+                     is selected this panel is what the right-hand column shows. */
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3 pb-4 border-b border-gray-100">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="bg-fuchsia-100 text-fuchsia-700 w-8 h-8 rounded-lg flex items-center justify-center shadow-sm shrink-0">
+                          <Type size={18} />
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="font-bold text-gray-900 text-sm">Text Overlay</h3>
+                          <span className="text-[10px] text-gray-400 font-mono">
+                            {selectedOverlayClip.startTime.toFixed(1)}s · {selectedOverlayClip.duration.toFixed(1)}s long
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteOverlayClip(selectedOverlayClip.id)}
+                        className="text-gray-400 hover:text-red-600 transition-colors shrink-0"
+                        title="Delete this overlay"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Text</label>
+                      <input
+                        type="text"
+                        className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
+                        value={selectedOverlayClip.text}
+                        // Debounced: this fires on every keystroke, and an
+                        // un-debounced write per character would hammer the DB.
+                        onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
+                        placeholder="e.g. The Discovery"
+                      />
+                    </div>
+
+                    {selectedOverlayClip.preset === 'chapter-card' && (
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Kicker</label>
+                        <input
+                          type="text"
+                          className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
+                          value={selectedOverlayClip.kickerText || ''}
+                          onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'kickerText', e.target.value, 'kicker_text', true)}
+                          placeholder="e.g. CHAPTER 02"
+                        />
+                        <p className="text-[10px] text-gray-400 mt-1">Small label that animates in above the headline.</p>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-500 mb-1">Animation</label>
+                        <select
+                          value={selectedOverlayClip.preset}
+                          onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
+                          className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
+                        >
+                          {OVERLAY_PRESET_OPTIONS.map(option => (
+                            <option key={option.value} value={option.value}>{option.label}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-gray-500 mb-1">Color</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedOverlayClip.color}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                            className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
+                          />
+                          <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <label className="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-lg shadow-sm cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={selectedOverlayClip.dimBackground}
+                        onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'dimBackground', e.target.checked, 'dim_background')}
+                        className="accent-fuchsia-600"
+                      />
+                      <span className="text-xs font-bold text-gray-700">Dim background</span>
+                    </label>
+
+                    {/* Position — quick presets alongside the drag-on-preview
+                        interaction, since "put it at the bottom" is faster to
+                        click than to aim. */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                        Position — {Math.round(selectedOverlayClip.xPercent)}% / {Math.round(selectedOverlayClip.yPercent)}%
+                      </label>
+                      <div className="grid grid-cols-5 gap-1">
+                        {POSITION_PRESETS.map(preset => (
+                          <button
+                            key={preset.label}
+                            onClick={() => setOverlayClipPosition(selectedOverlayClip.id, preset.xPercent, preset.yPercent)}
+                            className="px-1 py-1.5 rounded-md border border-gray-200 bg-white text-[9px] font-bold text-gray-600 hover:border-fuchsia-300 hover:bg-fuchsia-50/50 transition-colors"
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
+                      </div>
+                      <p className="text-[10px] text-fuchsia-600 font-medium bg-fuchsia-50 border border-fuchsia-200 rounded-md px-2 py-1 mt-2">
+                        ✨ Drag the text directly on the preview above to place it anywhere.
+                      </p>
+                    </div>
+                  </div>
+                ) : selectedTimelineClip && (selectedSceneTrack === 'A1' || selectedSceneTrack === 'A2') ? (
                   <div className="space-y-6">
                     <div className="flex items-center gap-3 pb-4 border-b border-gray-100">
                       <div className="bg-blue-100 text-blue-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
@@ -3910,7 +4468,7 @@ export default function TimelineEditor({
                   </div>
                ) : scenes.length > 0 ? (
                   /* Remotion Player — renders the full composition with all scenes and overlays */
-                  <div className="absolute inset-0">
+                  <div className="absolute inset-0" ref={playerStageRef}>
                     {isolatedScene && (
                       <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-3 bg-purple-600/95 backdrop-blur-sm text-white rounded-lg px-3 py-2 shadow-lg">
                         <span className="text-[11px] font-bold flex items-center gap-2 min-w-0">
@@ -3948,6 +4506,62 @@ export default function TimelineEditor({
                       // stripped from remotionPreviewProps), so the V1 mute button drives it.
                       initiallyMuted={trackStates.V1.muted}
                     />
+
+                    {/* ── Drag-to-position layer ──
+                        Only mounted while an overlay clip is selected, and sized
+                        to the VIDEO's letterboxed rect rather than this
+                        container, so a percentage here means the same thing it
+                        means in the render. Deliberately not shown in isolation
+                        mode, where overlay clips aren't rendered at all. */}
+                    {selectedOverlayClip && !isolatedScene && playerStageRect.width > 0 && (
+                      <div
+                        className="absolute z-20"
+                        style={{
+                          left: playerStageRect.left,
+                          top: playerStageRect.top,
+                          width: playerStageRect.width,
+                          height: playerStageRect.height,
+                          // The layer itself must not swallow clicks meant for the
+                          // player; only the handle below is interactive.
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {/* Snap guides, shown only while this overlay is sitting
+                            on one — a permanent grid would just be noise. */}
+                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.xPercent)) && (
+                          <div
+                            className="absolute top-0 bottom-0 w-px bg-fuchsia-400/70"
+                            style={{ left: `${selectedOverlayClip.xPercent}%` }}
+                          />
+                        )}
+                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.yPercent)) && (
+                          <div
+                            className="absolute left-0 right-0 h-px bg-fuchsia-400/70"
+                            style={{ top: `${selectedOverlayClip.yPercent}%` }}
+                          />
+                        )}
+
+                        <div
+                          onPointerDown={(e) => handleOverlayPositionDragStart(e, selectedOverlayClip)}
+                          className="absolute flex items-center gap-1.5 px-2 py-1 rounded-md border-2 border-dashed border-fuchsia-400 bg-fuchsia-500/15 backdrop-blur-[1px] cursor-move select-none"
+                          style={{
+                            left: `${selectedOverlayClip.xPercent}%`,
+                            top: `${selectedOverlayClip.yPercent}%`,
+                            // Matches OverlayFrame's own centring, so this handle
+                            // sits exactly where the rendered text sits.
+                            transform: 'translate(-50%, -50%)',
+                            pointerEvents: 'auto',
+                            maxWidth: '80%',
+                          }}
+                          title="Drag to reposition this overlay"
+                        >
+                          <Type size={11} className="text-white shrink-0 drop-shadow" />
+                          <span className="text-[10px] font-bold text-white truncate drop-shadow">
+                            {selectedOverlayClip.text || 'Text'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                   </div>
                ) : (
                   <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 bg-gray-900">
@@ -4273,6 +4887,120 @@ export default function TimelineEditor({
                           <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-black"></div>
                        </div>
                     </div>
+                 </div>
+              </div>
+
+              {/* ── Overlay Track (OV) ──
+                  Above V1 because overlays paint on top of everything, matching
+                  the V2-above-V1 convention every NLE uses. Unlike V1/A1/A2 this
+                  is a track GROUP: it grows extra lanes on its own whenever two
+                  clips overlap in time (see packOverlayLanes), so simultaneous
+                  overlays never render stacked on one another. */}
+              <div className="flex items-stretch group relative">
+                 <div className="w-32 shrink-0 sticky left-0 z-[52] bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
+                    <span
+                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      title="Text overlay track"
+                    >
+                      OV
+                    </span>
+                    <button
+                      onClick={handleAddOverlayClip}
+                      className="flex items-center gap-1 text-[10px] font-bold text-gray-500 hover:text-purple-600 transition-colors"
+                      title="Add a text overlay at the playhead"
+                    >
+                      <Type size={14} /> Add
+                    </button>
+                 </div>
+                 <div
+                   className="flex flex-1 relative rounded-r-md border border-dashed border-gray-200 bg-gray-50 transition-colors"
+                   style={{
+                     width: `${timelineDuration * scale}px`,
+                     // One lane is 40px; the row grows as lanes are added rather
+                     // than squeezing clips into a fixed height.
+                     height: `${overlayLaneCount * 40}px`,
+                   }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                     setSelectedOverlayClipId(null);
+                   }}
+                 >
+                    {overlayClips.length === 0 && (
+                      <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50">
+                        <Type size={12} className="mr-2 text-gray-500" />
+                        <span className="text-[10px] text-gray-500 font-bold italic">
+                          Add a text overlay — it can sit anywhere, across any scene
+                        </span>
+                      </div>
+                    )}
+
+                    {overlayClips.map((clip) => {
+                      const lane = overlayLaneByClipId[clip.id] ?? 0;
+                      const isSelected = selectedOverlayClipId === clip.id;
+                      return (
+                        <Rnd
+                          key={clip.id}
+                          bounds="parent"
+                          dragAxis="x"
+                          minWidth={0.5 * scale}
+                          enableResizing={false}
+                          disableDragging={true}
+                          size={{ width: clip.duration * scale, height: 32 }}
+                          position={{ x: clip.startTime * scale, y: lane * 40 + 4 }}
+                          className={`rounded-md border overflow-hidden shadow-sm px-1 transition-[filter,background-color,border-color] ${
+                            isSelected
+                              ? 'border-fuchsia-500 ring-2 ring-fuchsia-500 ring-offset-1 bg-fuchsia-200 z-30'
+                              : 'border-fuchsia-400 bg-fuchsia-100/90 hover:brightness-95 z-20'
+                          }`}
+                          onClick={(e: any) => {
+                            e.stopPropagation();
+                            setSelectedOverlayClipId(clip.id);
+                            // An overlay clip isn't a scene or an A1/A2 clip, so clear
+                            // both — otherwise the right panel would still be showing
+                            // whichever of those was last selected.
+                            setSelectedScene(null);
+                            setSelectedTimelineClip(null);
+                            setSelectedSceneKeys([]);
+                            setSelectedAsset(null);
+                            setActiveTab('scene');
+                          }}
+                          onContextMenu={(e: any) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setSelectedOverlayClipId(clip.id);
+                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'overlay', id: clip.id });
+                          }}
+                        >
+                          {/* Move handle. Same split as A1/A2 clips: the label drags
+                              the clip, the edge handles trim it. */}
+                          <div
+                            className="flex items-center gap-1 h-full cursor-move text-fuchsia-900 overflow-hidden"
+                            onPointerDown={(e) => handleOverlayDragStart(e, clip)}
+                          >
+                            <Type size={10} className="shrink-0" />
+                            <span className="text-[9px] font-bold truncate">
+                              {clip.text || 'Text'}
+                            </span>
+                          </div>
+
+                          <div
+                            className="absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize bg-fuchsia-600/80 hover:bg-fuchsia-500 z-50 rounded-l-md flex items-center justify-center"
+                            title="Drag to change when this overlay starts"
+                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'left')}
+                          >
+                            <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                          </div>
+                          <div
+                            className="absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize bg-fuchsia-600/80 hover:bg-fuchsia-500 z-50 rounded-r-md flex items-center justify-center"
+                            title="Drag to change how long this overlay lasts"
+                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'right')}
+                          >
+                            <div className="w-0.5 h-3 bg-white/80 rounded-full" />
+                          </div>
+                        </Rnd>
+                      );
+                    })}
                  </div>
               </div>
 
@@ -5221,7 +5949,9 @@ export default function TimelineEditor({
             ? 'Remove narration'
             : contextMenu.type === 'scene'
               ? 'Delete scene'
-              : 'Delete clip';
+              : contextMenu.type === 'overlay'
+                ? 'Delete overlay'
+                : 'Delete clip';
 
         // The scene-scoped actions only make sense for a single scene's visual: A1 is
         // the same scene row viewed as narration, and clips carry a library asset

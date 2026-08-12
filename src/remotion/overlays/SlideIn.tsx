@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
+import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface SlideInProps {
   text: string;
@@ -58,30 +58,25 @@ export const SlideIn: React.FC<SlideInProps> = ({
   const x = frame < exitStart ? translateX : exitTranslateX;
   const opacity = frame < exitStart ? enterOpacity : exitOpacity;
 
+  // Placement is OverlayFrame's job, not this component's — see
+  // overlays/OverlayFrame.tsx. This renders only the animated text itself.
   return (
-    <AbsoluteFill
+    <div
       style={{
-        justifyContent: 'center',
-        alignItems: 'center',
+        transform: `translateX(${x}%)`,
+        opacity,
+        color,
+        fontSize,
+        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontWeight: 800,
+        textAlign: 'center',
+        textShadow: '0 4px 20px rgba(0,0,0,0.6)',
+        maxWidth: '80%',
+        lineHeight: 1.2,
+        letterSpacing: '-0.02em',
       }}
     >
-      <div
-        style={{
-          transform: `translateX(${x}%)`,
-          opacity,
-          color,
-          fontSize,
-          fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
-          fontWeight: 800,
-          textAlign: 'center',
-          textShadow: '0 4px 20px rgba(0,0,0,0.6)',
-          maxWidth: '80%',
-          lineHeight: 1.2,
-          letterSpacing: '-0.02em',
-        }}
-      >
-        {text}
-      </div>
-    </AbsoluteFill>
+      {text}
+    </div>
   );
 };

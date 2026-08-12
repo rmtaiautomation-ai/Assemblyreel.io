@@ -8,7 +8,7 @@ import {
   Audio,
   interpolate,
 } from 'remotion';
-import type { SceneOverlay, VideoCompositionProps } from '../types';
+import type { OverlayClipData, OverlayPreset, SceneOverlay, VideoCompositionProps } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
 import { CaptionTrack } from '../captions/CaptionTrack';
@@ -17,6 +17,11 @@ import { SlideIn } from '../overlays/SlideIn';
 import { PopIn } from '../overlays/PopIn';
 import { Typewriter } from '../overlays/Typewriter';
 import { LowerThird } from '../overlays/LowerThird';
+import { CinematicReveal } from '../overlays/CinematicReveal';
+import { LineWipe } from '../overlays/LineWipe';
+import { LetterCollapse } from '../overlays/LetterCollapse';
+import { ChapterCard } from '../overlays/ChapterCard';
+import { OverlayFrame, defaultAlignForPreset } from '../overlays/OverlayFrame';
 
 /**
  * Main Remotion composition that sequences all scenes, overlays, and audio.
@@ -30,6 +35,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   scenes,
   audioUrl,
   audioClips,
+  overlayClips,
   captionWords,
   showCaptions,
 }) => {
@@ -37,15 +43,18 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
 
   const { segments } = layoutScenes(scenes, fps);
 
-  const renderOverlay = (overlay: SceneOverlay, nominalDurationInFrames: number) => {
-    const props = {
-      text: overlay.text,
-      color: overlay.color,
-      fontSize: overlay.fontSize,
-      durationInFrames: nominalDurationInFrames,
-    };
-
-    switch (overlay.preset) {
+  /**
+   * Picks the animation component for a preset. Returns only the moving text —
+   * placement is applied by the `OverlayFrame` each caller wraps this in, which
+   * is what lets the same eight presets serve both the scene-scoped overlay
+   * (fixed default position) and a freely-dragged overlay clip.
+   */
+  const renderPreset = (
+    preset: OverlayPreset,
+    props: { text: string; color?: string; fontSize?: number; durationInFrames: number },
+    kickerText?: string
+  ) => {
+    switch (preset) {
       case 'slide':
         return <SlideIn {...props} />;
       case 'pop':
@@ -54,9 +63,60 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         return <Typewriter {...props} />;
       case 'lower-third':
         return <LowerThird {...props} />;
+      case 'cinematic-reveal':
+        return <CinematicReveal {...props} />;
+      case 'line-wipe':
+        return <LineWipe {...props} />;
+      case 'letter-collapse':
+        return <LetterCollapse {...props} />;
+      case 'chapter-card':
+        return <ChapterCard {...props} kickerText={kickerText} />;
       default:
         return null;
     }
+  };
+
+  const renderOverlay = (overlay: SceneOverlay, nominalDurationInFrames: number) => (
+    <OverlayFrame defaultAlign={defaultAlignForPreset(overlay.preset)}>
+      {renderPreset(overlay.preset, {
+        text: overlay.text,
+        color: overlay.color,
+        fontSize: overlay.fontSize,
+        durationInFrames: nominalDurationInFrames,
+      })}
+    </OverlayFrame>
+  );
+
+  /**
+   * An overlay clip from the OV track — its own timing and its own position,
+   * unrelated to whatever scene happens to be underneath it.
+   */
+  const renderOverlayClip = (clip: OverlayClipData) => {
+    const from = Math.max(0, Math.round(clip.startInSeconds * fps));
+    const durationInFrames = Math.max(1, Math.round(clip.durationInSeconds * fps));
+
+    return (
+      <Sequence key={`overlay-${clip.id}`} from={from} durationInFrames={durationInFrames}>
+        {/* Scrim sized to THIS clip, not to a scene: the whole point of the OV
+            track is that a clip's life doesn't line up with scene boundaries,
+            so the dimming can't either. */}
+        {clip.dimBackground && (
+          <AbsoluteFill style={{ backgroundColor: 'rgba(0,0,0,0.45)' }} />
+        )}
+        <OverlayFrame xPercent={clip.xPercent} yPercent={clip.yPercent}>
+          {renderPreset(
+            clip.preset,
+            {
+              text: clip.text,
+              color: clip.color,
+              fontSize: clip.fontSize,
+              durationInFrames,
+            },
+            clip.kickerText
+          )}
+        </OverlayFrame>
+      </Sequence>
+    );
   };
 
   return (
@@ -156,6 +216,11 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           </Sequence>
         );
       })}
+
+      {/* OV track — independent text-overlay clips. Rendered after the scene
+          sequences (so they paint above every scene, its own overlay, and any
+          transition) but BEFORE captions, which stay the topmost layer. */}
+      {(overlayClips ?? []).map(renderOverlayClip)}
 
       {/* Auto-captions. Rendered AFTER the scene sequences so they paint above every
           scene and above scene overlays — a caption hidden behind a transition or a

@@ -3,7 +3,18 @@
  * These mirror the scene data from the Timeline Editor.
  */
 
-export type OverlayPreset = 'slide' | 'pop' | 'typewriter' | 'lower-third' | 'none';
+export type OverlayPreset =
+  | 'slide'
+  | 'pop'
+  | 'typewriter'
+  | 'lower-third'
+  // Kinetic-typography presets. Unlike the four above — each one animation on a
+  // single text block — these animate per word or per character.
+  | 'cinematic-reveal'
+  | 'line-wipe'
+  | 'letter-collapse'
+  | 'chapter-card'
+  | 'none';
 
 export interface SceneOverlay {
   text: string;
@@ -11,6 +22,35 @@ export interface SceneOverlay {
   color: string;
   fontSize?: number;
   position?: 'center' | 'bottom' | 'top';
+}
+
+/**
+ * A text overlay that owns its own timing and screen position, instead of being
+ * welded to one scene the way `SceneOverlay` is.
+ *
+ * The two coexist deliberately: `SceneOverlay` stays the simple "one label on
+ * this scene" path, while these are timeline clips that can start and end
+ * anywhere, span a scene cut, or overlap each other. Both render.
+ */
+export interface OverlayClipData {
+  id: string;
+  text: string;
+  /** Small label above the headline. Only read by the 'chapter-card' preset. */
+  kickerText?: string;
+  preset: OverlayPreset;
+  color: string;
+  fontSize?: number;
+  /**
+   * Centre of the overlay as a percentage of frame width/height. Percentages
+   * rather than pixels so a single value is correct in 16:9, 9:16 and 1:1, and
+   * identical between the editor's scaled-down <Player> and the full-res render.
+   */
+  xPercent: number;
+  yPercent: number;
+  /** Darkens the footage behind this clip, for the length of this clip only. */
+  dimBackground?: boolean;
+  startInSeconds: number;
+  durationInSeconds: number;
 }
 
 export type TransitionType =
@@ -117,6 +157,12 @@ export type VideoCompositionProps = {
    * as well makes every clip play twice, slightly out of sync. Render payload only.
    */
   audioClips?: CompositionAudioClip[];
+  /**
+   * Independent text-overlay clips (the OV track). Included in the live preview
+   * for the same reason captions are: they're picture, not sound, so there's no
+   * double-playback hazard the way there is with `audioClips`.
+   */
+  overlayClips?: OverlayClipData[];
   /**
    * Word-level narration timings driving auto-captions. Unlike `audioClips`, these
    * ARE included in the live preview — captions are picture, not sound, so showing

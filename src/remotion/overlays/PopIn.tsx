@@ -1,5 +1,5 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
+import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface PopInProps {
   text: string;
@@ -44,30 +44,25 @@ export const PopIn: React.FC<PopInProps> = ({
   const scale = interpolate(scaleSpring, [0, 1], [0.3, 1]);
   const opacity = frame < exitStart ? scaleSpring : exitOpacity;
 
+  // Placement is OverlayFrame's job, not this component's — see
+  // overlays/OverlayFrame.tsx. This renders only the animated text itself.
   return (
-    <AbsoluteFill
+    <div
       style={{
-        justifyContent: 'center',
-        alignItems: 'center',
+        transform: `scale(${scale})`,
+        opacity,
+        color,
+        fontSize,
+        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontWeight: 900,
+        textAlign: 'center',
+        textShadow: '0 4px 24px rgba(0,0,0,0.7)',
+        maxWidth: '85%',
+        lineHeight: 1.1,
+        letterSpacing: '-0.03em',
       }}
     >
-      <div
-        style={{
-          transform: `scale(${scale})`,
-          opacity,
-          color,
-          fontSize,
-          fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
-          fontWeight: 900,
-          textAlign: 'center',
-          textShadow: '0 4px 24px rgba(0,0,0,0.7)',
-          maxWidth: '85%',
-          lineHeight: 1.1,
-          letterSpacing: '-0.03em',
-        }}
-      >
-        {text}
-      </div>
-    </AbsoluteFill>
+      {text}
+    </div>
   );
 };
