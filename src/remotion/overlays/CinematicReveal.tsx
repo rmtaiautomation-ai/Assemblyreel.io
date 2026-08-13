@@ -50,6 +50,15 @@ export const CinematicReveal: React.FC<CinematicRevealProps> = ({
         display: 'flex',
         flexWrap: 'wrap',
         justifyContent: 'center',
+        // Sized to its own content rather than left to the browser's implicit
+        // flex-item-in-a-column-parent auto-sizing, which can compute a
+        // narrower-than-necessary width and wrap a short phrase onto two
+        // lines even with plenty of room either side. `max-content` is exactly
+        // as wide as one unwrapped line needs; `maxWidth` is the only thing
+        // that still lets flexWrap kick in, and only for a phrase that
+        // genuinely wouldn't fit the frame.
+        width: 'max-content',
+        maxWidth: '90vw',
         // Row gap carries the line spacing here rather than lineHeight: each
         // word is its own positioned box, so lineHeight alone would leave
         // wrapped lines overlapping.

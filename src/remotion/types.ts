@@ -25,6 +25,44 @@ export interface SceneOverlay {
 }
 
 /**
+ * Which kind of clip an OV-track row is. 'text' is the original plain
+ * kinetic-text overlay; 'checklist-card'/'title-cutout-card' are designed
+ * graphic-card templates; 'dim-scrim' is a full-frame dim layer with its own
+ * independent timing, distinct from the `dimBackground` checkbox (which dims
+ * for exactly a text/card clip's own duration). All are just rows on the
+ * same track. Adding a kind is a code change, not a migration, same
+ * convention as `OverlayPreset`.
+ */
+export type OverlayClipKind = 'text' | 'checklist-card' | 'title-cutout-card' | 'dim-scrim';
+
+/** `template_data` shape for the `checklist-card` kind. */
+export interface ChecklistCardData {
+  bullets: string[];
+  /** Header title text color. Defaults to white. `color` itself is the header bar / checkmark accent, not the text. */
+  textColor?: string;
+  /** Uniform scale of the whole card (header + bullets). Defaults to 1. Independent of `fontSize`, which only sizes the header title text. */
+  scale?: number;
+}
+
+/** `template_data` shape for the `title-cutout-card` kind. */
+export interface TitleCutoutCardData {
+  backgroundImageUrl?: string;
+  foregroundImageUrl?: string;
+  /** Headline text color. Defaults to white. `color` itself is the fallback background, not the text. */
+  textColor?: string;
+  /** Uniform scale of the whole card, images included. Defaults to 1. Independent of `fontSize`, which only sizes the headline text. */
+  scale?: number;
+}
+
+/** `template_data` shape for the `dim-scrim` kind. */
+export interface DimScrimData {
+  /** Peak opacity, 0-1. Defaults to 0.45 — matches the `dimBackground` checkbox's own fixed dim elsewhere in this app. */
+  opacity?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/**
  * A text overlay that owns its own timing and screen position, instead of being
  * welded to one scene the way `SceneOverlay` is.
  *
@@ -34,6 +72,8 @@ export interface SceneOverlay {
  */
 export interface OverlayClipData {
   id: string;
+  /** Defaults to 'text' for every row written before this field existed. */
+  kind: OverlayClipKind;
   text: string;
   /** Small label above the headline. Only read by the 'chapter-card' preset. */
   kickerText?: string;
@@ -44,6 +84,10 @@ export interface OverlayClipData {
    * Centre of the overlay as a percentage of frame width/height. Percentages
    * rather than pixels so a single value is correct in 16:9, 9:16 and 1:1, and
    * identical between the editor's scaled-down <Player> and the full-res render.
+   *
+   * For a graphic-card kind, this centres the whole card (checklist-card) or
+   * the headline+cutout group (title-cutout-card) — see the `kind`-specific
+   * data types above for what else that kind reads.
    */
   xPercent: number;
   yPercent: number;
@@ -51,6 +95,13 @@ export interface OverlayClipData {
   dimBackground?: boolean;
   startInSeconds: number;
   durationInSeconds: number;
+  /**
+   * Kind-specific fields, unenforced JSON — `kind` and `templateData` must
+   * always agree (e.g. a 'checklist-card' row should carry `ChecklistCardData`
+   * shaped data, never `TitleCutoutCardData`). Render paths must guard on
+   * `kind` before reading fields off this rather than assume they're present.
+   */
+  templateData?: ChecklistCardData | TitleCutoutCardData | DimScrimData | Record<string, never>;
 }
 
 export type TransitionType =

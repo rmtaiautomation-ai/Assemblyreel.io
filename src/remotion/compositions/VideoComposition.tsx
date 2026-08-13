@@ -8,7 +8,7 @@ import {
   Audio,
   interpolate,
 } from 'remotion';
-import type { OverlayClipData, OverlayPreset, SceneOverlay, VideoCompositionProps } from '../types';
+import type { ChecklistCardData, DimScrimData, OverlayClipData, OverlayPreset, SceneOverlay, TitleCutoutCardData, VideoCompositionProps } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
 import { CaptionTrack } from '../captions/CaptionTrack';
@@ -22,6 +22,9 @@ import { LineWipe } from '../overlays/LineWipe';
 import { LetterCollapse } from '../overlays/LetterCollapse';
 import { ChapterCard } from '../overlays/ChapterCard';
 import { OverlayFrame, defaultAlignForPreset } from '../overlays/OverlayFrame';
+import { ChecklistCard } from '../templates/ChecklistCard';
+import { TitleCutoutCard } from '../templates/TitleCutoutCard';
+import { DimScrim } from '../templates/DimScrim';
 
 /**
  * Main Remotion composition that sequences all scenes, overlays, and audio.
@@ -88,12 +91,89 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   );
 
   /**
+   * WHAT renders inside the OverlayFrame for a given clip — the only thing
+   * that branches on `kind`. Timing, positioning, the scrim, and persistence
+   * are all handled once in `renderOverlayClip` below regardless of kind.
+   */
+  const renderOverlayClipContent = (clip: OverlayClipData, durationInFrames: number) => {
+    if (clip.kind === 'checklist-card') {
+      // `template_data` is unenforced JSON — a row with a missing/wrongly-typed
+      // `bullets` still renders (as header-only), it never throws.
+      const data = clip.templateData as ChecklistCardData | undefined;
+      const bullets = Array.isArray(data?.bullets) ? data.bullets : [];
+      return (
+        <ChecklistCard
+          text={clip.text}
+          bullets={bullets}
+          color={clip.color}
+          textColor={data?.textColor}
+          fontSize={clip.fontSize}
+          scale={data?.scale}
+          durationInFrames={durationInFrames}
+        />
+      );
+    }
+
+    if (clip.kind === 'title-cutout-card') {
+      const data = clip.templateData as TitleCutoutCardData | undefined;
+      return (
+        <TitleCutoutCard
+          backgroundImageUrl={data?.backgroundImageUrl}
+          foregroundImageUrl={data?.foregroundImageUrl}
+          color={clip.color}
+          scale={data?.scale}
+          renderHeadline={() =>
+            renderPreset(
+              clip.preset,
+              // The headline never reads `clip.color` — that field means
+              // "fallback background color" for this kind (see the OverlayClipData
+              // field-mapping notes). Its own text color is the independent
+              // `template_data.textColor`, defaulting white like every preset does.
+              { text: clip.text, color: data?.textColor, fontSize: clip.fontSize, durationInFrames },
+              clip.kickerText
+            )
+          }
+        />
+      );
+    }
+
+    return renderPreset(
+      clip.preset,
+      {
+        text: clip.text,
+        color: clip.color,
+        fontSize: clip.fontSize,
+        durationInFrames,
+      },
+      clip.kickerText
+    );
+  };
+
+  /**
    * An overlay clip from the OV track — its own timing and its own position,
    * unrelated to whatever scene happens to be underneath it.
    */
   const renderOverlayClip = (clip: OverlayClipData) => {
     const from = Math.max(0, Math.round(clip.startInSeconds * fps));
     const durationInFrames = Math.max(1, Math.round(clip.durationInSeconds * fps));
+
+    // A dim-scrim clip has no "position" and no text/card content — it's a
+    // full-frame layer with its own fade, so it skips OverlayFrame entirely
+    // rather than being centred like every other kind.
+    if (clip.kind === 'dim-scrim') {
+      const data = clip.templateData as DimScrimData | undefined;
+      return (
+        <Sequence key={`overlay-${clip.id}`} from={from} durationInFrames={durationInFrames}>
+          <DimScrim
+            color={clip.color}
+            opacity={data?.opacity}
+            fadeInSeconds={data?.fadeInSeconds}
+            fadeOutSeconds={data?.fadeOutSeconds}
+            durationInFrames={durationInFrames}
+          />
+        </Sequence>
+      );
+    }
 
     return (
       <Sequence key={`overlay-${clip.id}`} from={from} durationInFrames={durationInFrames}>
@@ -104,16 +184,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           <AbsoluteFill style={{ backgroundColor: 'rgba(0,0,0,0.45)' }} />
         )}
         <OverlayFrame xPercent={clip.xPercent} yPercent={clip.yPercent}>
-          {renderPreset(
-            clip.preset,
-            {
-              text: clip.text,
-              color: clip.color,
-              fontSize: clip.fontSize,
-              durationInFrames,
-            },
-            clip.kickerText
-          )}
+          {renderOverlayClipContent(clip, durationInFrames)}
         </OverlayFrame>
       </Sequence>
     );
@@ -219,8 +290,13 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
 
       {/* OV track — independent text-overlay clips. Rendered after the scene
           sequences (so they paint above every scene, its own overlay, and any
-          transition) but BEFORE captions, which stay the topmost layer. */}
-      {(overlayClips ?? []).map(renderOverlayClip)}
+          transition) but BEFORE captions, which stay the topmost layer.
+          Dim-scrim clips always paint FIRST within the OV track regardless of
+          where they sit in this array — a scrim is meant to sit behind
+          text/cards, and array order is just whatever order clips were
+          created in, not a deliberate z-order the user controls. */}
+      {(overlayClips ?? []).filter(c => c.kind === 'dim-scrim').map(renderOverlayClip)}
+      {(overlayClips ?? []).filter(c => c.kind !== 'dim-scrim').map(renderOverlayClip)}
 
       {/* Auto-captions. Rendered AFTER the scene sequences so they paint above every
           scene and above scene overlays — a caption hidden behind a transition or a
@@ -231,7 +307,9 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         <CaptionTrack words={captionWords} />
       )}
 
-      {/* Global audio track (voiceover / narration) — always starts at frame 0 */}
+      {/* Global audio track (voiceover / narration) — always starts at frame 0.
+          The A1 bar can be grabbed in the editor but springs back to 0, so there is
+          deliberately no offset to honor here. */}
       {audioUrl && (
         <Audio src={audioUrl} volume={1} />
       )}

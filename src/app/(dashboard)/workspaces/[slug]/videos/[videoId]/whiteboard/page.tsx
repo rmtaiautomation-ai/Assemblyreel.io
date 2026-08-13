@@ -5,9 +5,13 @@ import { loadProjectForWhiteboard } from "@/app/actions/whiteboard-actions";
 import Whiteboard from "@/components/ui/Whiteboard";
 
 /**
- * Persistent home for a project's Story Whiteboard.
+ * Persistent home for a project's Scene Board.
  *
- * Before this route existed, the Whiteboard was pure React state inside
+ * Also reachable without leaving the editor: TimelineEditor renders the same
+ * `<Whiteboard>` in a modal via the A1 right-click menu. This route remains the
+ * home for act-by-act generation resumed after a refresh or a fresh visit.
+ *
+ * Before this route existed, the board was pure React state inside
  * `NewVideoForm` — leaving the page (a refresh, a wrong click, closing the tab) meant
  * losing the ability to see the act structure at all, even though every scene was
  * already safely in Supabase. This route reads that same data back via
@@ -58,7 +62,7 @@ export default async function WhiteboardPage({
         <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
           <span className="flex items-center gap-1.5 text-[11px] font-bold text-white bg-purple-600 px-2.5 py-1 rounded-md">
             <Clapperboard size={13} />
-            Whiteboard
+            Scene Board
           </span>
           <Link
             href={`/workspaces/${workspaceId}/videos/${videoId}`}

@@ -58,6 +58,14 @@ export interface WhiteboardProps {
    * have scenes and burn more of the same rate-limited quota for nothing.
    */
   resumedActs?: ResumedAct[];
+  /**
+   * Overrides the post-approval navigation. The default behavior pushes to the
+   * Timeline route, which is right when this board owns the page — but wrong when
+   * it is rendered as a modal from inside the Timeline editor, where that push
+   * targets the URL already open and the editor would keep showing pre-approval
+   * scenes. The modal passes this to close itself and resync instead.
+   */
+  onFinalized?: () => void;
 }
 
 export default function Whiteboard({
@@ -72,6 +80,7 @@ export default function Whiteboard({
   targetDuration,
   isSinglePass,
   resumedActs,
+  onFinalized,
 }: WhiteboardProps) {
   const router = useRouter();
   const [cards, setCards] = useState<ActCardState[]>(() =>
@@ -252,7 +261,11 @@ export default function Whiteboard({
 
     if (result.success) {
       setIsFinalized(true);
-      router.push(`/workspaces/${workspaceId}/videos/${projectId}`);
+      if (onFinalized) {
+        onFinalized();
+      } else {
+        router.push(`/workspaces/${workspaceId}/videos/${projectId}`);
+      }
     }
   };
 
@@ -276,7 +289,7 @@ export default function Whiteboard({
           <div className="flex items-center gap-2">
             <Clapperboard className="text-purple-600" size={22} />
             <div>
-              <h2 className="text-xl font-bold text-gray-900">Story Whiteboard</h2>
+              <h2 className="text-xl font-bold text-gray-900">Scene Board</h2>
               <p className="text-xs text-gray-500">
                 {isSinglePass ? "Single-pass generation" : `${acts.length} Acts`} ·{" "}
                 {totalScenes} scenes generated
@@ -290,7 +303,7 @@ export default function Whiteboard({
             className="bg-gray-900 hover:bg-gray-800 text-white font-bold px-6 py-3 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Play size={16} />
-            {isFinalized ? "Approved" : "Approve & Open Timeline"}
+            {isFinalized ? "Approved" : onFinalized ? "Approve & Close" : "Approve & Open Timeline"}
           </button>
         </div>
 

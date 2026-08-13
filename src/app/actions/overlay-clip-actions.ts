@@ -10,6 +10,12 @@ import { createClient } from "@/lib/supabase/server";
 // whole, so there is no partial-migration hazard here the way there is for a
 // column added to an existing table: either the table exists with every one of
 // these, or it doesn't exist at all.
+//
+// "kind" and "template_data" are the exception — they require
+// db/add-overlay-clip-templates.sql to have run first, same "requires
+// migration" caveat as every other field added to an existing table elsewhere
+// in this app. Writing them before that migration runs fails at the DB level
+// (unknown column), not silently.
 const UPDATABLE_FIELDS = [
   "text",
   "kicker_text",
@@ -21,6 +27,8 @@ const UPDATABLE_FIELDS = [
   "dim_background",
   "start_time",
   "duration",
+  "kind",
+  "template_data",
 ] as const;
 
 export async function createOverlayClip(
@@ -36,6 +44,9 @@ export async function createOverlayClip(
     dimBackground?: boolean;
     startTime: number;
     duration: number;
+    /** Requires db/add-overlay-clip-templates.sql to have run. Defaults to 'text'. */
+    kind?: string;
+    templateData?: Record<string, unknown>;
   }
 ) {
   if (!projectId) {
@@ -46,7 +57,7 @@ export async function createOverlayClip(
   // than relying on them, so a clip created here has the same shape the editor
   // already rendered optimistically — a round-trip can't silently change what
   // the user is looking at.
-  const payload = {
+  const payload: Record<string, any> = {
     project_id: projectId,
     text: fields.text ?? "",
     kicker_text: fields.kickerText ?? null,
@@ -59,6 +70,12 @@ export async function createOverlayClip(
     start_time: fields.startTime,
     duration: fields.duration,
   };
+
+  // Only sent when provided, so a plain-text clip's insert payload is
+  // byte-for-byte what it was before this field existed — no dependency on
+  // the migration having run for the common case.
+  if (fields.kind !== undefined) payload.kind = fields.kind;
+  if (fields.templateData !== undefined) payload.template_data = fields.templateData;
 
   const supabase = await createClient();
   const { data, error } = await supabase.from("overlay_clips").insert(payload).select().single();

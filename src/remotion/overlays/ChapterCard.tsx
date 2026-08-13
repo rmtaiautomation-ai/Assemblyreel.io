@@ -99,6 +99,12 @@ export const ChapterCard: React.FC<ChapterCardProps> = ({
           display: 'flex',
           flexWrap: 'wrap',
           justifyContent: 'center',
+          // Sized to its own content rather than left to the browser's
+          // implicit flex-item-in-a-column-parent auto-sizing — see the
+          // identical fix (and full explanation) in CinematicReveal.tsx,
+          // which shares this exact per-word row structure.
+          width: 'max-content',
+          maxWidth: '90vw',
           gap: `${fontSize * 0.16}px ${fontSize * 0.26}px`,
           fontWeight: 800,
           fontSize,
