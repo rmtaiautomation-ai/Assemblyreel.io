@@ -62,9 +62,21 @@ function statusView(raw: string | null | undefined) {
         chip: 'bg-emerald-100 text-emerald-700',
         dot: 'bg-emerald-100',
       };
-    // Long-form only: scenes and per-Act narration exist, the visual pass is
-    // deliberately withheld until the user approves. Given its own badge because the
-    // whole point of the phase is that the user can tell they are in it.
+    // Long-form only: every Act's script exists and the project's one shared cast is
+    // locked, but no Act has audio or visuals yet — those now happen per-Act, in
+    // whatever order, from the Timeline Editor rather than as one bulk step here.
+    case 'scripted':
+      return {
+        kind: 'scripted' as const,
+        label: 'Ready To Narrate',
+        activity: 'Script Approved — Cast Locked',
+        bar: 'bg-purple-500',
+        chip: 'bg-purple-100 text-purple-700',
+        dot: 'bg-purple-100',
+      };
+    // Short/mid-form only now: single-pass projects still narrate the whole project
+    // in one action. Given its own badge because the whole point of the phase is that
+    // the user can tell they are in it.
     case 'narrated':
       return {
         kind: 'narrated' as const,
@@ -100,7 +112,7 @@ function StatusIcon({ kind }: { kind: ReturnType<typeof statusView>['kind'] }) {
   if (kind === 'rendering') return <Loader2 size={12} className="text-blue-600 animate-spin" />;
   if (kind === 'failed') return <AlertTriangle size={12} className="text-red-600" />;
   if (kind === 'approved') return <CheckCircle2 size={12} className="text-emerald-600" />;
-  if (kind === 'narrated') return <Mic size={12} className="text-purple-600" />;
+  if (kind === 'narrated' || kind === 'scripted') return <Mic size={12} className="text-purple-600" />;
   return <Edit3 size={12} className="text-yellow-600" />;
 }
 

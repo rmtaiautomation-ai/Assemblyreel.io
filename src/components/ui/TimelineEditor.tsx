@@ -6,9 +6,10 @@ import Link from "next/link";
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
 import { loadProjectForWhiteboard } from "@/app/actions/whiteboard-actions";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise } from "lucide-react";
+import { resolveDurationProfile } from "@/lib/ai/generation-rules";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices, getActNarrations, type ActNarration } from "@/app/actions/audio-actions";
-import { regenerateActNarration, approveAndGenerateVisuals } from "@/app/actions/whiteboard-actions";
+import { regenerateActNarration, approveAndGenerateVisuals, approveActVisuals, regenerateActVisuals, type ActOutline } from "@/app/actions/whiteboard-actions";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
 import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
@@ -539,6 +540,23 @@ export default function TimelineEditor({
   // Short/mid-form only; long-form uses `actNarrations` below instead.
   const [masterAudioUrl, setMasterAudioUrl] = useState<string | null>(initialProject.narration_url || null);
 
+  // True independent of whether any Act has narration yet — that's the whole point.
+  // Right after the Whiteboard hands off (`status: 'scripted'`), zero Acts have audio
+  // or visuals, but the per-Act workflow still needs to render N Act placeholders on
+  // A1 so there's something to click "generate audio" on in the first place.
+  const isLongForm = useMemo(
+    () => resolveDurationProfile(initialProject.target_duration).isLongForm,
+    [initialProject.target_duration]
+  );
+
+  // The Act plan itself — titles/descriptions, persisted at project creation and
+  // independent of narration or visual state. This is what lets A1 draw a block for
+  // Act 7 before Act 7 has ever been recorded.
+  const actOutlines: ActOutline[] = useMemo(
+    () => (Array.isArray(initialProject.act_outlines) ? initialProject.act_outlines : []),
+    [initialProject.act_outlines]
+  );
+
   // Long-form narration, one file per Act.
   //
   // The audio track is chunked by ACT, not by scene: a 25-minute video is 9 blocks
@@ -547,16 +565,55 @@ export default function TimelineEditor({
   // what lets Act 5 be replaced without re-synthesising the other 22 minutes.
   const [actNarrations, setActNarrations] = useState<ActNarration[]>([]);
   const [selectedActNumber, setSelectedActNumber] = useState<number | null>(null);
+  // Shared by both "generate this Act's audio for the first time" (from an empty
+  // placeholder block) and "re-record" (an Act that already has audio) — both are the
+  // same underlying call (`regenerateActNarration` reads whatever text is currently
+  // stored and upserts), so one flag and one handler cover both. See
+  // `handleRegenerateAct` below.
   const [regeneratingActNumber, setRegeneratingActNumber] = useState<number | null>(null);
+  // An Act's own visual-approval spinner, separate from the whole-project `isApproving`
+  // below — approving Act 3 must not make Acts 1-9's UI all show "approving".
+  const [approvingActNumber, setApprovingActNumber] = useState<number | null>(null);
 
-  // Presence of act rows *is* the long-form signal: they only ever exist for projects
-  // that were generated Act-by-Act.
   const hasActNarration = actNarrations.length > 0;
 
   const actNarrationDuration = useMemo(
     () => actNarrations.reduce((acc, a) => Math.max(acc, a.startSeconds + a.durationSeconds), 0),
     [actNarrations]
   );
+
+  // Per-Act visual-approval state, derived from scene rows rather than tracked
+  // separately — `environment` is written only by agents 4-7, never by the Scene
+  // Slicer (confirmed against slicer-actions.ts), so it can never drift out of sync
+  // with what `approveActVisuals` actually did.
+  const actVisualState = useMemo(() => {
+    const byAct = new Map<number, { total: number; approved: number }>();
+    for (const scene of scenes) {
+      const actNumber = Number(scene.act_number ?? 1);
+      const entry = byAct.get(actNumber) ?? { total: 0, approved: 0 };
+      entry.total += 1;
+      if (scene.environment != null) entry.approved += 1;
+      byAct.set(actNumber, entry);
+    }
+    return byAct;
+  }, [scenes]);
+
+  // One row per Act, merging the outline (always present) with whatever narration and
+  // visual-approval state exists so far — this is what both the A1 track and the Act
+  // inspector render from, so they can never disagree about an Act's state.
+  const actSummaries = useMemo(() => {
+    return actOutlines.map(outline => {
+      const narration = actNarrations.find(a => a.actNumber === outline.actNumber) ?? null;
+      const visuals = actVisualState.get(outline.actNumber) ?? { total: 0, approved: 0 };
+      return {
+        outline,
+        narration,
+        sceneTotal: visuals.total,
+        sceneApproved: visuals.approved,
+        visualsApproved: visuals.total > 0 && visuals.approved === visuals.total,
+      };
+    });
+  }, [actOutlines, actNarrations, actVisualState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -567,6 +624,47 @@ export default function TimelineEditor({
       .catch(err => console.warn("[Timeline] Could not load act narrations:", err));
     return () => { cancelled = true; };
   }, [initialProject.id]);
+
+  const handleApproveActVisuals = async (actNumber: number) => {
+    setApprovingActNumber(actNumber);
+    try {
+      const res = await approveActVisuals({
+        projectId: initialProject.id,
+        actNumber,
+        topic: initialProject.topic,
+        visualAesthetic: initialProject.visual_aesthetic || "Cinematic",
+      });
+      if (!res.success) {
+        alert(res.error || `Could not generate visuals for Act ${actNumber}.`);
+        return;
+      }
+      if (res.projectFullyApproved) setProjectStatus('approved');
+      router.refresh();
+      if (res.warnings.length > 0) alert(res.warnings.join("\n\n"));
+    } finally {
+      setApprovingActNumber(null);
+    }
+  };
+
+  const handleRegenerateActVisuals = async (actNumber: number) => {
+    setApprovingActNumber(actNumber);
+    try {
+      const res = await regenerateActVisuals({
+        projectId: initialProject.id,
+        actNumber,
+        topic: initialProject.topic,
+        visualAesthetic: initialProject.visual_aesthetic || "Cinematic",
+      });
+      if (!res.success) {
+        alert(res.error || `Could not regenerate visuals for Act ${actNumber}.`);
+        return;
+      }
+      router.refresh();
+      if (res.warnings.length > 0) alert(res.warnings.join("\n\n"));
+    } finally {
+      setApprovingActNumber(null);
+    }
+  };
 
   const [isApproving, setIsApproving] = useState(false);
 
@@ -3790,8 +3888,12 @@ export default function TimelineEditor({
     failed: { label: 'Render failed', cls: 'bg-red-50 text-red-700 border-red-200', icon: <AlertTriangle size={11} /> },
     pending: { label: 'Pending', cls: 'bg-gray-100 text-gray-600 border-gray-200', icon: <Clock size={11} /> },
     drafting: { label: 'Draft', cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Film size={11} /> },
-    // Long-form audio-first phases. `narrated` means scenes and per-Act narration
-    // exist but the visual pass has deliberately not run yet.
+    // Long-form audio-first phases. `scripted` means every Act's script exists and
+    // the project's ONE shared cast is locked, but no Act has audio or visuals yet —
+    // audio and visual approval happen per-Act from here, in whatever order.
+    // `narrated` is short/mid-form only now (see timeline-types.ts); long-form goes
+    // straight from `scripted` to `approved` once every Act is individually done.
+    scripted: { label: 'Ready to narrate', cls: 'bg-purple-50 text-purple-700 border-purple-200', icon: <Mic size={11} /> },
     narrated: { label: 'Review audio', cls: 'bg-purple-50 text-purple-700 border-purple-200', icon: <Mic size={11} /> },
     approved: { label: 'Approved', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <CheckCircle2 size={11} /> },
   }[projectStatus] ?? { label: 'Draft', cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Film size={11} /> };
@@ -3851,16 +3953,18 @@ export default function TimelineEditor({
         </div>
       </header>
 
-      {/* Phase banner. V1 blocks exist and are correctly sized from the narration
-          timings, but they carry no generated visual yet — that pass is withheld until
-          the narration is approved. Saying so explicitly beats leaving the user to
-          wonder why the video track looks empty. */}
-      {hasActNarration && projectStatus === 'narrated' && (
+      {/* Phase banner. Shown for the whole per-Act audio+visual phase — from right
+          after the Whiteboard hands off (zero Acts narrated yet, all placeholders on
+          A1) through to every Act individually approved. V1 blocks for an unapproved
+          Act carry no generated visual yet — that pass is withheld per-Act until the
+          user approves it — so this explains why parts of the video track look empty
+          instead of leaving the user to wonder. */}
+      {isLongForm && projectStatus !== 'approved' && projectStatus !== 'rendering' && projectStatus !== 'exported' && (
         <div className="flex items-center gap-2 px-3 py-2 flex-none bg-purple-50 border-b border-purple-200">
           <Mic size={13} className="text-purple-600 flex-none" />
-          <span className="text-[11px] font-bold text-purple-800">Audio review</span>
+          <span className="text-[11px] font-bold text-purple-800">Audio &amp; visual review</span>
           <span className="text-[11px] text-purple-700/90">
-            {actNarrations.length} acts narrated · click any act on A1 to re-record it on its own. Visuals are generated once you approve.
+            {actNarrations.length} of {actOutlines.length || '?'} acts narrated · click an act on A1 to record, re-record, or approve its visuals — in any order.
           </span>
         </div>
       )}
@@ -3939,8 +4043,12 @@ export default function TimelineEditor({
              muted={trackStates.A1.muted}
            />
          ))}
-         {/* Per-scene audio clips — used only when no master narration exists */}
-         {!masterAudioUrl && !hasActNarration && scenes.map((scene, idx) => scene.audio_url && (
+         {/* Per-scene audio clips — used only when no master narration exists.
+             Gated on `!isLongForm` rather than `!hasActNarration`: a long-form scene
+             can end up with a stray `audio_url` from the legacy single-scene
+             regenerate action even before any Act has been narrated, and that must
+             never play alongside — or instead of — this project's Act blocks. */}
+         {!masterAudioUrl && !isLongForm && scenes.map((scene, idx) => scene.audio_url && (
             <audio
               key={`audio-scene-${scene.id}`}
               src={scene.audio_url}
@@ -5217,8 +5325,12 @@ export default function TimelineEditor({
                      nothing outside it is re-synthesised, re-transcribed or re-timed. */
                   (() => {
                     const act = actNarrations.find(a => a.actNumber === selectedActNumber)!;
-                    const sceneCount = scenes.filter(sc => Number(sc.act_number ?? 1) === act.actNumber).length;
+                    const summary = actSummaries.find(s => s.outline.actNumber === selectedActNumber);
+                    const sceneCount = summary?.sceneTotal ?? scenes.filter(sc => Number(sc.act_number ?? 1) === act.actNumber).length;
                     const isBusy = regeneratingActNumber === act.actNumber;
+                    const isApprovingThis = approvingActNumber === act.actNumber;
+                    const visualsApproved = summary?.visualsApproved ?? false;
+                    const sceneApproved = summary?.sceneApproved ?? 0;
                     return (
                       <div className="space-y-6">
                         <div className="flex items-center gap-3 pb-4 border-b border-gray-100">
@@ -5226,7 +5338,7 @@ export default function TimelineEditor({
                             <Mic size={18} />
                           </div>
                           <div className="min-w-0">
-                            <h3 className="font-bold text-gray-900 text-sm">Act {act.actNumber} Narration</h3>
+                            <h3 className="font-bold text-gray-900 text-sm">Act {act.actNumber}</h3>
                             <p className="text-[11px] text-gray-500">
                               {act.durationSeconds.toFixed(1)}s · {sceneCount} scene{sceneCount === 1 ? '' : 's'} · starts at {act.startSeconds.toFixed(1)}s
                             </p>
@@ -5240,7 +5352,11 @@ export default function TimelineEditor({
                           <SkipBack size={13} /> Jump to this act
                         </button>
 
+                        {/* ── Audio ── */}
                         <div>
+                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                            Audio
+                          </label>
                           <button
                             onClick={() => handleRegenerateAct(act.actNumber)}
                             disabled={isBusy}
@@ -5259,6 +5375,53 @@ export default function TimelineEditor({
                           <p className="text-[10px] text-amber-800 leading-relaxed">
                             Edit the wording first in the <strong>Whiteboard</strong>, then come back and re-record. Re-recording reads whatever text is currently saved.
                           </p>
+                        </div>
+
+                        {/* ── Visuals ──
+                            Deliberately per-Act: approving Act 3 does not touch Acts
+                            1-9. Casting still only ever runs once for the whole
+                            project — whichever act is approved first computes it,
+                            every later approval (in any order) reuses that same cast. */}
+                        <div className="pt-2 border-t border-gray-100">
+                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
+                            Visuals
+                          </label>
+                          {visualsApproved ? (
+                            <>
+                              <div className="flex items-center gap-2 mb-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg">
+                                <CheckCircle2 size={13} className="text-emerald-600 flex-none" />
+                                <span className="text-[11px] font-bold text-emerald-700">
+                                  Visuals approved · {sceneCount} scene{sceneCount === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => handleRegenerateActVisuals(act.actNumber)}
+                                disabled={isApprovingThis}
+                                className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-bold text-gray-700 hover:border-purple-300 hover:bg-purple-50/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                              >
+                                {isApprovingThis
+                                  ? <><Loader2 size={13} className="animate-spin" /> Regenerating…</>
+                                  : <><RefreshCw size={13} /> Regenerate this act's visuals</>}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => handleApproveActVisuals(act.actNumber)}
+                                disabled={isApprovingThis}
+                                className="w-full px-3 py-2.5 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                              >
+                                {isApprovingThis
+                                  ? <><Loader2 size={13} className="animate-spin" /> Approving Act {act.actNumber}…</>
+                                  : <><CheckCircle2 size={13} /> Approve this act's visuals</>}
+                              </button>
+                              <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
+                                {sceneApproved > 0
+                                  ? `${sceneApproved} of ${sceneCount} scenes already have visuals from a previous attempt — this fills in the rest.`
+                                  : `Builds a visual prompt for this act's ${sceneCount} scenes. Fine to do before other acts have audio — casting only runs once, whichever act approves first.`}
+                              </p>
+                            </>
+                          )}
                         </div>
                       </div>
                     );
@@ -6254,16 +6417,19 @@ export default function TimelineEditor({
                         <p className="text-sm text-gray-800 font-bold mb-1 line-clamp-2">{initialProject.topic}</p>
                         <p className="text-xs text-gray-500 mb-3 font-medium">{scenes.length} Scenes • {Math.round(contentDuration)} seconds</p>
 
-                        {hasActNarration ? (
+                        {isLongForm ? (
                           <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg">
                             <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-purple-500 flex-none" />
+                              <div className={`w-2 h-2 rounded-full flex-none ${hasActNarration ? 'bg-purple-500' : 'bg-gray-300'}`} />
                               <span className="text-[10px] font-bold text-purple-700 truncate">
-                                {actNarrations.length} acts narrated · {Math.round(actNarrationDuration)}s
+                                {actNarrations.length} of {actOutlines.length || '?'} acts narrated
+                                {hasActNarration ? ` · ${Math.round(actNarrationDuration)}s` : ''}
                               </span>
                             </div>
                             <p className="text-[10px] text-purple-600/80 mt-1 leading-relaxed">
-                              Click any act on A1 to re-record it on its own.
+                              {hasActNarration
+                                ? 'Click any act on A1 to record, re-record, or approve its visuals.'
+                                : 'Click an act on A1 to generate its audio and get started.'}
                             </p>
                           </div>
                         ) : masterAudioUrl && (
@@ -6275,13 +6441,15 @@ export default function TimelineEditor({
                           </div>
                         )}
 
-                        {/* The approval gate. Until this runs, scenes carry no
-                            final_video_prompt — around 2 provider calls per scene are
-                            deliberately withheld so that rewriting an act costs only
-                            that act's narration. It also runs the Casting Director
-                            once across every act, which is the only way one character
-                            can look the same in Act 1 and Act 9. */}
-                        {hasActNarration && projectStatus === 'narrated' && (
+                        {/* Bulk finish-the-rest option. Per-act approval
+                            (`handleApproveActVisuals`, on each Act block) is the
+                            primary path now — this is for whoever has reviewed every
+                            act's audio and just wants the remaining visual work done
+                            in one go rather than clicking through each act. Until an
+                            act is approved its scenes carry no `final_video_prompt` —
+                            the ~2-calls-per-scene visual pass is deliberately withheld
+                            per-act so rewriting one act never costs the others. */}
+                        {isLongForm && hasActNarration && projectStatus !== 'approved' && (
                           <div className="mb-3">
                             <button
                               onClick={handleApproveAndGenerateVisuals}
@@ -6290,10 +6458,10 @@ export default function TimelineEditor({
                             >
                               {isApproving
                                 ? <><Loader2 size={16} className="animate-spin" /> Generating visuals…</>
-                                : <><CheckCircle2 size={16} /> Approve &amp; generate visuals</>}
+                                : <><CheckCircle2 size={16} /> Approve all remaining acts</>}
                             </button>
                             <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
-                              Locks in the narration and builds a visual prompt for all {scenes.length} scenes, casting characters once across every act so they stay consistent. Takes a while — do this once the audio is right.
+                              Builds a visual prompt for every scene in every act not yet approved, sharing one cast across all of them. Takes a while — usually easier to approve acts one at a time from A1 as you finish each.
                             </p>
                           </div>
                         )}
@@ -6318,11 +6486,15 @@ export default function TimelineEditor({
                           </div>
                         )}
 
-                        {/* Primary purple only for the first run. Once narration
-                            exists this overwrites it and costs another TTS pass, so
-                            it drops to a secondary outline rather than staying the
-                            loudest thing in the panel. */}
-                        {!hasActNarration && (
+                        {/* Single-file narration — short/mid-form only. Long-form
+                            never shows this: it would write a whole-project
+                            `narration_url` that plays alongside the per-Act blocks
+                            above, which is exactly the double-playback hazard
+                            `CompositionAudioClip` warns about. Primary purple only for
+                            the first run — once narration exists this overwrites it
+                            and costs another TTS pass, so it drops to a secondary
+                            outline rather than staying the loudest thing in the panel. */}
+                        {!isLongForm && (
                         <>
                         <button
                           onClick={handleGenerateFullNarration}
@@ -7450,6 +7622,30 @@ export default function TimelineEditor({
                              title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Drop a transition card here'}
                            />
                          )}
+                         {/* Awaiting-visuals overlay — long-form only. `environment` is
+                             written exclusively by agents 4-7 (never by the Scene
+                             Slicer), so its absence means this scene's Act has not
+                             been visually approved yet. Every scene in an unapproved
+                             Act carries this, which is what turns the V1 track into a
+                             legible per-Act progress readout during the interleaved
+                             audio/visual workflow rather than a wall of empty-looking
+                             blocks with no explanation. pointer-events-none so it never
+                             steals the click/drag/resize handlers above. */}
+                         {isLongForm && scene.environment == null && (
+                           <div
+                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-gray-400/25"
+                             style={{
+                               backgroundImage:
+                                 'repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0px, rgba(0,0,0,0.06) 6px, transparent 6px, transparent 12px)',
+                             }}
+                           >
+                             {getSceneDuration(scene) * scale > 40 && (
+                               <span className="text-[8px] font-bold text-gray-500 bg-white/70 px-1 py-0.5 rounded-sm whitespace-nowrap">
+                                 Awaiting visuals
+                               </span>
+                             )}
+                           </div>
+                         )}
                          {/* Resize Handles */}
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
                             <>
@@ -7630,55 +7826,101 @@ export default function TimelineEditor({
                        reviews and re-records. Clicking one selects it; the Inspector
                        then offers "re-record this act", which replaces only this
                        block's audio and slides the later acts by the difference. */}
-                   {hasActNarration ? (
+                   {isLongForm ? (
                      <>
-                     {actNarrations.map(act => {
-                       const isSelected = selectedActNumber === act.actNumber;
-                       const isBusy = regeneratingActNumber === act.actNumber;
+                     {actSummaries.map((summary, idx) => {
+                       const { outline, narration } = summary;
+                       const isSelected = selectedActNumber === outline.actNumber;
+                       const isBusy = regeneratingActNumber === outline.actNumber;
+
+                       if (narration) {
+                         return (
+                           <div
+                             key={`act-block-${outline.actNumber}`}
+                             onClick={() => {
+                               setSelectedActNumber(isSelected ? null : outline.actNumber);
+                               // Acts are their own selection kind — clear the scene and
+                               // clip selections so the Inspector cannot show two things.
+                               setSelectedScene(null);
+                               setSelectedTimelineClip(null);
+                               setSelectedSceneTrack('A1');
+                             }}
+                             onDoubleClick={() => setCursorPosition(narration.startSeconds * scale)}
+                             title={`Act ${outline.actNumber} — ${narration.durationSeconds.toFixed(1)}s. Click to select, double-click to jump here.`}
+                             className={`absolute rounded-md border overflow-hidden shadow-sm cursor-pointer transition-all ${
+                               isSelected
+                                 ? 'border-purple-600 ring-2 ring-purple-400 bg-gradient-to-r from-purple-200 to-purple-100 text-purple-900'
+                                 : 'border-purple-500 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 hover:from-purple-150'
+                             } ${isBusy ? 'opacity-60 animate-pulse' : ''}`}
+                             style={{
+                               left: narration.startSeconds * scale,
+                               // 1px gutter so neighbouring acts read as separate blocks
+                               // rather than one continuous bar.
+                               width: Math.max(2, narration.durationSeconds * scale - 1),
+                               top: '15%',
+                               height: '70%',
+                             }}
+                           >
+                             <div className="flex items-center gap-1.5 p-1 opacity-90">
+                               {isBusy
+                                 ? <Loader2 size={9} className="flex-none animate-spin" />
+                                 : summary.visualsApproved
+                                   ? <CheckCircle2 size={9} className="flex-none" />
+                                   : <Volume2 size={9} className="flex-none" />}
+                               <span className="text-[8px] font-bold truncate">
+                                 Act {outline.actNumber}
+                                 {narration.durationSeconds > 0 ? ` · ${Math.round(narration.durationSeconds)}s` : ''}
+                               </span>
+                             </div>
+                             <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                               <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                                 <path suppressHydrationWarning
+                                   d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin((i + outline.actNumber * 7) * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                                   stroke="#9333ea" strokeWidth="2.5" strokeLinecap="round"
+                                 />
+                               </svg>
+                             </div>
+                           </div>
+                         );
+                       }
+
+                       // Not recorded yet. Positioned by counting placeholder-width
+                       // slots after the last Act with real narration, rather than a
+                       // real `startSeconds` — one doesn't exist until this Act is
+                       // recorded. Purely a layout stand-in: 60s is not a duration
+                       // estimate, just enough width to read as a distinct block.
+                       const PLACEHOLDER_ACT_SECONDS = 60;
+                       const narratedTailSeconds = actNarrationDuration;
+                       const placeholderIndex = idx - actSummaries.findIndex(s => !s.narration);
+                       const placeholderStart =
+                         narratedTailSeconds + Math.max(0, placeholderIndex) * PLACEHOLDER_ACT_SECONDS;
+
                        return (
                          <div
-                           key={`act-block-${act.actNumber}`}
+                           key={`act-block-${outline.actNumber}`}
                            onClick={() => {
-                             setSelectedActNumber(isSelected ? null : act.actNumber);
-                             // Acts are their own selection kind — clear the scene and
-                             // clip selections so the Inspector cannot show two things.
-                             setSelectedScene(null);
-                             setSelectedTimelineClip(null);
-                             setSelectedSceneTrack('A1');
+                             if (isBusy) return;
+                             void handleRegenerateAct(outline.actNumber);
                            }}
-                           onDoubleClick={() => setCursorPosition(act.startSeconds * scale)}
-                           title={`Act ${act.actNumber} — ${act.durationSeconds.toFixed(1)}s. Click to select, double-click to jump here.`}
-                           className={`absolute rounded-md border overflow-hidden shadow-sm cursor-pointer transition-all ${
-                             isSelected
-                               ? 'border-purple-600 ring-2 ring-purple-400 bg-gradient-to-r from-purple-200 to-purple-100 text-purple-900'
-                               : 'border-purple-500 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 hover:from-purple-150'
-                           } ${isBusy ? 'opacity-60 animate-pulse' : ''}`}
+                           title={`Act ${outline.actNumber}: ${outline.title} — click to generate this act's audio`}
+                           className={`absolute rounded-md border-2 border-dashed overflow-hidden cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                             isBusy
+                               ? 'border-purple-400 bg-purple-50 text-purple-500 animate-pulse'
+                               : 'border-gray-300 bg-gray-50 text-gray-400 hover:border-purple-300 hover:text-purple-500 hover:bg-purple-50/40'
+                           }`}
                            style={{
-                             left: act.startSeconds * scale,
-                             // 1px gutter so neighbouring acts read as separate blocks
-                             // rather than one continuous bar.
-                             width: Math.max(2, act.durationSeconds * scale - 1),
+                             left: placeholderStart * scale,
+                             width: Math.max(2, PLACEHOLDER_ACT_SECONDS * scale - 1),
                              top: '15%',
                              height: '70%',
                            }}
                          >
-                           <div className="flex items-center gap-1.5 p-1 opacity-90">
-                             {isBusy
-                               ? <Loader2 size={9} className="flex-none animate-spin" />
-                               : <Volume2 size={9} className="flex-none" />}
-                             <span className="text-[8px] font-bold truncate">
-                               Act {act.actNumber}
-                               {act.durationSeconds > 0 ? ` · ${Math.round(act.durationSeconds)}s` : ''}
-                             </span>
-                           </div>
-                           <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                             <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
-                               <path suppressHydrationWarning
-                                 d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin((i + act.actNumber * 7) * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                                 stroke="#9333ea" strokeWidth="2.5" strokeLinecap="round"
-                               />
-                             </svg>
-                           </div>
+                           {isBusy
+                             ? <Loader2 size={11} className="flex-none animate-spin" />
+                             : <Mic size={11} className="flex-none" />}
+                           <span className="text-[8px] font-bold truncate">
+                             {isBusy ? `Recording Act ${outline.actNumber}…` : `Act ${outline.actNumber}`}
+                           </span>
                          </div>
                        );
                      })}

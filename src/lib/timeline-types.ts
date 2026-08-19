@@ -68,18 +68,32 @@ export function parseTrackStates(raw: unknown): TrackStates {
  * render pipeline. `failed` matters: without it a render that errors leaves the
  * row stuck on `rendering` forever, with no way back from the UI.
  *
- * `narrated` and `approved` split what used to be a single `drafting` state, because
- * long-form is now generated in three phases — write, hear, then see. Between
- * `narrated` and `approved` a project has scenes and audio but deliberately no
- * `final_video_prompt`: the ~2-calls-per-scene visual pass is withheld until the user
- * signs off, so rewriting an Act costs nothing but that Act's narration.
+ * `scripted`, `narrated` and `approved` split what used to be a single `drafting`
+ * state, because long-form is generated in phases: write, then per-Act hear-and-see,
+ * interleaved in whatever order the user chooses.
+ *
+ * `scripted` means every Act's script exists and characters have been cast ONCE for
+ * the whole project (`castProjectCharactersOnce`) — but no Act has audio or visuals
+ * yet. This is where the Whiteboard hands off to the Timeline Editor, which drives
+ * per-Act narration and visual approval from here. Unlike `narrated`/`approved`, this
+ * one is NOT a whole-project completion marker: individual Acts progress through audio
+ * and visuals independently after this, tracked on `act_narrations` rows and each
+ * scene's `final_video_prompt`/`environment`, not on this single project-level field.
+ * `approved` IS still meaningful as a completion marker — it is set once every Act's
+ * visuals are done, however many separate approvals that took.
+ *
+ * `narrated` is short/mid-form only now: single-pass projects still narrate the whole
+ * project in one action and land here before their (also inline, whole-project)
+ * visual pass. Long-form does not pass through this status at all — it goes straight
+ * from `scripted` to `approved` once every Act has been individually approved.
  *
  * Projects created straight from the dashboard form (short/mid-form only) still run
- * their visual pass inline and never enter `narrated`.
+ * their visual pass inline and never enter `scripted` or `narrated`.
  */
 export const PROJECT_STATUSES = [
   'pending',
   'drafting',
+  'scripted',
   'narrated',
   'approved',
   'rendering',
