@@ -53,6 +53,27 @@ function statusView(raw: string | null | undefined) {
         chip: 'bg-blue-100 text-blue-700',
         dot: 'bg-blue-100',
       };
+    case 'approved':
+      return {
+        kind: 'approved' as const,
+        label: 'Ready To Render',
+        activity: 'Script & Visuals Approved',
+        bar: 'bg-emerald-500',
+        chip: 'bg-emerald-100 text-emerald-700',
+        dot: 'bg-emerald-100',
+      };
+    // Long-form only: scenes and per-Act narration exist, the visual pass is
+    // deliberately withheld until the user approves. Given its own badge because the
+    // whole point of the phase is that the user can tell they are in it.
+    case 'narrated':
+      return {
+        kind: 'narrated' as const,
+        label: 'Review Audio',
+        activity: 'Narration Ready For Review',
+        bar: 'bg-purple-500',
+        chip: 'bg-purple-100 text-purple-700',
+        dot: 'bg-purple-100',
+      };
     case 'failed':
       return {
         kind: 'failed' as const,
@@ -78,6 +99,8 @@ function StatusIcon({ kind }: { kind: ReturnType<typeof statusView>['kind'] }) {
   if (kind === 'exported') return <CheckCircle2 size={12} className="text-green-600" />;
   if (kind === 'rendering') return <Loader2 size={12} className="text-blue-600 animate-spin" />;
   if (kind === 'failed') return <AlertTriangle size={12} className="text-red-600" />;
+  if (kind === 'approved') return <CheckCircle2 size={12} className="text-emerald-600" />;
+  if (kind === 'narrated') return <Mic size={12} className="text-purple-600" />;
   return <Edit3 size={12} className="text-yellow-600" />;
 }
 

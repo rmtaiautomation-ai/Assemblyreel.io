@@ -67,10 +67,21 @@ export function parseTrackStates(raw: unknown): TrackStates {
  * `drafting` once it does; `rendering`/`exported`/`failed` are driven by the
  * render pipeline. `failed` matters: without it a render that errors leaves the
  * row stuck on `rendering` forever, with no way back from the UI.
+ *
+ * `narrated` and `approved` split what used to be a single `drafting` state, because
+ * long-form is now generated in three phases — write, hear, then see. Between
+ * `narrated` and `approved` a project has scenes and audio but deliberately no
+ * `final_video_prompt`: the ~2-calls-per-scene visual pass is withheld until the user
+ * signs off, so rewriting an Act costs nothing but that Act's narration.
+ *
+ * Projects created straight from the dashboard form (short/mid-form only) still run
+ * their visual pass inline and never enter `narrated`.
  */
 export const PROJECT_STATUSES = [
   'pending',
   'drafting',
+  'narrated',
+  'approved',
   'rendering',
   'exported',
   'failed',

@@ -38,6 +38,19 @@ export interface OrchestrationParams {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  /**
+   * Pre-computed character blueprints, cast once across the whole project.
+   *
+   * The Casting Director is documented as "the only agent that needs to see every
+   * scene at once", precisely so a character cannot be restyled between scene 1 and
+   * scene 40. Long-form used to call this module once per Act, which meant casting ran
+   * N times, each seeing only that Act's ~17 scenes — so the same character was
+   * re-invented in every chapter of a 25-minute video and visibly changed appearance
+   * across it. Passing the cast in lets the caller run it once over all Acts.
+   *
+   * Omitted for short/mid-form, which is single-pass and casts inline below.
+   */
+  blueprints?: CharacterBlueprints;
 }
 
 export interface OrchestrationResult {
@@ -54,6 +67,7 @@ export async function enrichScenesWithVisualPrompts({
   topic,
   visualAesthetic,
   nicheTheme,
+  blueprints: providedBlueprints,
 }: OrchestrationParams): Promise<OrchestrationResult> {
   const warnings: string[] = [];
 
@@ -62,21 +76,26 @@ export async function enrichScenesWithVisualPrompts({
   }
 
   // --- Agent 3: Casting Director -------------------------------------------------
-  // A casting failure is survivable: scenes still render, they just lose cross-scene
-  // character consistency. Degrade with a warning rather than abandoning the run.
-  const casting = await castCharacters({
-    sceneTexts: scenes.map((scene) => scene.sceneText),
-    topic,
-    visualAesthetic,
-    nicheTheme,
-  });
+  // Skipped entirely when the caller has already cast the project. A casting failure is
+  // survivable either way: scenes still render, they just lose cross-scene character
+  // consistency. Degrade with a warning rather than abandoning the run.
+  let blueprints: CharacterBlueprints = providedBlueprints ?? {};
 
-  const blueprints: CharacterBlueprints = casting.blueprints ?? {};
+  if (!providedBlueprints) {
+    const casting = await castCharacters({
+      sceneTexts: scenes.map((scene) => scene.sceneText),
+      topic,
+      visualAesthetic,
+      nicheTheme,
+    });
 
-  if (!casting.success) {
-    warnings.push(
-      `Casting Director failed (${casting.error}). Characters may drift between scenes.`
-    );
+    blueprints = casting.blueprints ?? {};
+
+    if (!casting.success) {
+      warnings.push(
+        `Casting Director failed (${casting.error}). Characters may drift between scenes.`
+      );
+    }
   }
 
   // --- Agents 4 & 5: Visual Architect + Cinematic Director ------------------------

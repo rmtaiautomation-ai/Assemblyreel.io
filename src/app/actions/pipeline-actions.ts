@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { createAndGenerateVideo } from "./video-actions";
 import { generateFullNarration } from "./audio-actions";
+import { resolveDurationProfile } from "@/lib/ai/generation-rules";
 
 export async function executeFullPipeline(
   workspaceId: string,
@@ -24,6 +25,18 @@ export async function executeFullPipeline(
 
   const projectId = videoRes.projectId;
   const supabase = await createClient();
+
+  const targetDuration = formData.get("target_duration") as string;
+  const { isLongForm } = resolveDurationProfile(targetDuration);
+
+  // Long-form stops here on purpose. Narration is recorded per Act from the Whiteboard
+  // so the user can review the writing first, and re-record a single Act later without
+  // re-synthesising the other 22 minutes. Firing a whole-project narration here would
+  // both pre-empt that review and produce the single monolithic file the per-Act
+  // workflow exists to replace.
+  if (isLongForm) {
+    return { success: true, projectId, warnings: videoRes.warnings || [] };
+  }
 
   // 2. Fetch the newly created scenes to generate narration
   const { data: scenes, error: scenesError } = await supabase

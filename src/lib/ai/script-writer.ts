@@ -2,7 +2,11 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ScriptWriterSchema } from "./schemas";
-import { resolveDurationProfile, resolveNicheProfile } from "./generation-rules";
+import {
+  WORDS_PER_NARRATION_LINE,
+  resolveDurationProfile,
+  resolveNicheProfile,
+} from "./generation-rules";
 // These three functions call `@google/genai` directly rather than the Vercel AI SDK,
 // but they draw on the same provider quota as every other agent — so they share the
 // same throttle.
@@ -31,9 +35,13 @@ export async function generateScript(params: {
     const duration = resolveDurationProfile(params.targetDuration);
 
     // An Act request narrows the target to a single chapter, so the whole-video word
-    // count does not apply — but the line count still comes from the duration tier.
+    // count does not apply — but a per-Act word budget very much does. Sending only a
+    // line count (which is what this did) let the model satisfy the instruction with
+    // ~12-word lines, so every long-form tier came in 35-40% under its runtime target
+    // no matter which duration the user picked. `wordsPerAct` is pre-divided by
+    // actCount in generation-rules.ts.
     const lengthRule = params.actOutline
-      ? `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines strictly for this single Act.`
+      ? `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines strictly for this single Act, totalling ${duration.wordsPerAct.min}-${duration.wordsPerAct.max} words. This word count is the hard target — if you are short, write RICHER, more detailed lines rather than more lines.`
       : `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines (total ${duration.targetWordCount.min}-${duration.targetWordCount.max} words). Structure: ${duration.structureRule}`;
 
     const toneMatrixRule = niche.scriptTone;
@@ -45,7 +53,7 @@ Your task is to write a master Voiceover (VO) script based on the provided param
 ### CRITICAL RULES:
 1. Tone: Plain English, 8th-grade reading level. ${toneMatrixRule}
 2. Structure: ${lengthRule}
-3. Camera-Ready Rule: EVERY SINGLE LINE MUST state WHO (physical subject), WHAT (physical action), and WHERE (visible location). Do not use abstract concepts or metaphors. Describe what is visibly happening on screen.
+3. Camera-Ready Rule: EVERY SINGLE LINE MUST state WHO (physical subject), WHAT (physical action), and WHERE (visible location). Do not use abstract concepts or metaphors. Describe what is visibly happening on screen. Aim for roughly ${WORDS_PER_NARRATION_LINE} words per line — long enough to carry real visual detail, not a clipped fragment.
 4. Money Shot Rule: The final line must combine a visual summary and an explicit Call To Action (CTA).
 `;
 

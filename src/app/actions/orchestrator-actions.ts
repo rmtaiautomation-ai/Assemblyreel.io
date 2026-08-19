@@ -2,6 +2,7 @@
 
 import { createClient } from "@/lib/supabase/server";
 import { enrichScenesWithVisualPrompts } from "@/lib/ai/orchestrator";
+import type { CharacterBlueprints } from "@/lib/ai/agents/casting-director";
 import { SCENE_AGENT_CONCURRENCY, mapWithConcurrency } from "@/lib/ai/concurrency";
 import type { SlicedScene } from "./slicer-actions";
 
@@ -16,6 +17,12 @@ export interface EnrichScenesParams {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  /**
+   * Cast once for the whole project and passed down, rather than re-cast per call.
+   * See `OrchestrationParams.blueprints` — casting per Act is what let a character
+   * change appearance between chapters of a long-form video.
+   */
+  blueprints?: CharacterBlueprints;
 }
 
 export interface EnrichScenesResult {
@@ -40,6 +47,7 @@ export async function enrichAndPersistScenes({
   topic,
   visualAesthetic,
   nicheTheme,
+  blueprints,
 }: EnrichScenesParams): Promise<EnrichScenesResult> {
   if (sceneIds.length !== slicedScenes.length) {
     return {
@@ -58,6 +66,7 @@ export async function enrichAndPersistScenes({
     topic,
     visualAesthetic,
     nicheTheme,
+    blueprints,
   });
 
   if (!orchestration.success || !orchestration.scenes) {

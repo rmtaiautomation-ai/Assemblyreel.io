@@ -102,11 +102,28 @@ export async function mapWithConcurrency<TInput, TOutput>(
 /**
  * How many scene-level agent calls may be in flight at once.
  *
- * 1 because the rate limiter above, not parallelism, is what governs throughput on a
- * quota-limited tier — extra workers would only queue behind the same gate. Raise this
- * alongside `AI_MIN_CALL_INTERVAL_MS=0` when moving to a paid tier.
+ * Defaults to 1 because the rate limiter above, not parallelism, is what governs
+ * throughput on a quota-limited tier — extra workers would only queue behind the same
+ * gate. Now configurable so a paid tier can actually use its headroom: set
+ * `AI_SCENE_CONCURRENCY` together with `AI_MIN_CALL_INTERVAL_MS=0`. Raising this alone
+ * changes nothing, which is the whole point of the pairing.
+ *
+ * This matters most for the post-approval visual pass, which is ~2 calls per scene:
+ * a 25-minute video is ~300 calls, i.e. over an hour at the free tier's 13s spacing.
  */
-export const SCENE_AGENT_CONCURRENCY = 1;
+const DEFAULT_SCENE_AGENT_CONCURRENCY = 1;
+
+function getSceneAgentConcurrency(): number {
+  const configured = process.env.AI_SCENE_CONCURRENCY;
+  if (configured === undefined) return DEFAULT_SCENE_AGENT_CONCURRENCY;
+
+  const parsed = Number(configured);
+  return Number.isInteger(parsed) && parsed >= 1
+    ? parsed
+    : DEFAULT_SCENE_AGENT_CONCURRENCY;
+}
+
+export const SCENE_AGENT_CONCURRENCY = getSceneAgentConcurrency();
 
 /**
  * Rough wall-clock estimate for a batch, so callers can warn the user before starting

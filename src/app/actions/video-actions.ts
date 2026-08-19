@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
+import { generateAct } from "@/app/actions/whiteboard-actions";
 import { enrichAndPersistScenes } from "@/app/actions/orchestrator-actions";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
 import type { TrackStates, ProjectStatus } from "@/lib/timeline-types";
@@ -34,12 +35,12 @@ export async function createAndGenerateVideo(
   const pipelineWarnings: string[] = [];
 
   if (isLongForm) {
-    // 1. Generate 5-Act Structure (or 7, 9, 11 based on duration and niche)
+    // 1. Generate the Act structure (5, 7, 9 or 11 Acts based on the duration tier).
     const actOutlinesRes = await generateActOutlines(topic, narrativeArc, workspaceTheme, targetDuration);
     if (!actOutlinesRes.success || !actOutlinesRes.acts) {
       return { success: false, error: "Failed to generate Act Outlines for Long-Form video." };
     }
-    
+
     // Save to Database initially with pending status and empty master script
     const { data: project, error } = await supabase.from('video_projects').insert([
       {
@@ -49,7 +50,9 @@ export async function createAndGenerateVideo(
         story_hook: scriptHook,
         visual_aesthetic: visualAesthetic,
         status: 'pending',
-        master_script: ""
+        master_script: "",
+        target_duration: targetDuration,
+        act_outlines: actOutlinesRes.acts,
       }
     ]).select().single();
 
@@ -61,53 +64,45 @@ export async function createAndGenerateVideo(
     let combinedScript = "";
     let startingSequenceNumber = 1;
 
+    // Delegated to the Whiteboard's `generateAct` rather than reimplemented here.
+    // This loop used to be a second, subtly different copy of the same pipeline — and
+    // the copy never stamped `act_number`, so every project created through this path
+    // was permanently ineligible for per-Act narration, per-Act re-record and
+    // `regenerateActVisuals`, all of which scope their work by that column.
     for (const act of actOutlinesRes.acts) {
       console.log(`[Long-Form] Generating Act ${act.actNumber}...`);
-      const aiResult = await generateScript({
+
+      const actResult = await generateAct({
+        projectId: project.id,
+        workspaceTheme,
         topic,
         narrativeArc,
-        hook: scriptHook,
+        scriptHook,
         visualAesthetic: visualAesthetic || "Cinematic",
-        pov: "Third-person omnipresent",
-        nicheTheme: workspaceTheme,
         targetDuration,
-        actOutline: act
+        startingSequenceNumber,
+        actNumber: act.actNumber,
+        act,
       });
 
-      if (aiResult.success && aiResult.scriptLines) {
-        const actScriptText = aiResult.scriptLines.join("\n\n");
-        combinedScript += `\n\n=== ACT ${act.actNumber}: ${act.title} ===\n\n` + actScriptText;
-        
-        // Slice just this Act
-        const slicerResult = await sliceScriptIntoScenes({
-          projectId: project.id,
-          fullScript: actScriptText,
-          startingSequenceNumber,
-          nicheTheme: workspaceTheme,
-          targetDuration,
-        });
-        if (slicerResult.success && slicerResult.scenes && slicerResult.sceneIds) {
-          startingSequenceNumber += slicerResult.scenes.length;
+      pipelineWarnings.push(...actResult.warnings);
 
-          // Agents 3-7 run per Act, so a long-form video enriches incrementally
-          // instead of holding every scene in memory until the last Act lands.
-          const enrichment = await enrichAndPersistScenes({
-            projectId: project.id,
-            sceneIds: slicerResult.sceneIds,
-            slicedScenes: slicerResult.scenes,
-            topic,
-            visualAesthetic: visualAesthetic || "Cinematic",
-            nicheTheme: workspaceTheme,
-          });
-          pipelineWarnings.push(...enrichment.warnings);
-          if (!enrichment.success && enrichment.error) {
-            pipelineWarnings.push(`Act ${act.actNumber}: ${enrichment.error}`);
-          }
-        }
+      if (!actResult.success) {
+        pipelineWarnings.push(`Act ${act.actNumber}: ${actResult.error ?? "generation failed"}`);
+        continue;
       }
+
+      if (actResult.scriptLines) {
+        combinedScript +=
+          `\n\n=== ACT ${act.actNumber}: ${act.title} ===\n\n` +
+          actResult.scriptLines.join("\n\n");
+      }
+      startingSequenceNumber += actResult.scenes?.length ?? 0;
     }
 
-    // Update Project with final master script
+    // `drafting`, not `approved`: the scenes exist but carry no final_video_prompt yet.
+    // The ~2-calls-per-scene visual pass is withheld until the user has heard the
+    // narration and pressed Approve — see approveAndGenerateVisuals.
     await supabase.from('video_projects')
       .update({ status: 'drafting', master_script: combinedScript.trim() })
       .eq('id', project.id);

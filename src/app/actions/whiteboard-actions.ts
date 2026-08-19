@@ -5,7 +5,14 @@ import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
 import { enrichAndPersistScenes } from "@/app/actions/orchestrator-actions";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
-import { generateFullNarration } from "./audio-actions";
+import {
+  generateActNarration,
+  generateFullNarration,
+  getActNarrations,
+  recomputeActLayout,
+  type ActNarration,
+} from "./audio-actions";
+import { castCharacters } from "@/lib/ai/agents/casting-director";
 import type { SlicedScene } from "./slicer-actions";
 
 /**
@@ -160,9 +167,17 @@ export interface GenerateActResult {
 }
 
 /**
- * Step 2 — run the full agent chain for one Act: Script Writer → Scene Slicer →
- * Casting Director → Visual Architect/Cinematic Director → Prompt Assembler →
- * Safety Officer.
+ * Step 2 — write one Act: Script Writer → Scene Slicer. Nothing visual.
+ *
+ * Agents 3-7 used to run here too, which meant ~2 provider calls per scene were spent
+ * on a script the user had not approved yet — around 300 calls for a 25-minute video,
+ * and at the free tier's 13s spacing that is over an hour of throttled work thrown
+ * away the moment any Act is rewritten. Worse, the Casting Director ran once per Act
+ * and so never saw more than one chapter, defeating the very cross-scene consistency
+ * it exists to provide.
+ *
+ * The visual pass now lives in `approveAndGenerateVisuals`, which runs once over the
+ * finished project. See implementation_plans/16-long-form-audio-first-pipeline.md.
  *
  * Called once per Act by the Whiteboard, sequentially.
  */
@@ -236,21 +251,7 @@ export async function generateAct(params: {
   const slicedScenes = slicerResult.scenes;
   const sceneIds = slicerResult.sceneIds;
 
-  // --- Agents 3-7: enrichment ----------------------------------------------------
-  const enrichment = await enrichAndPersistScenes({
-    projectId,
-    sceneIds,
-    slicedScenes,
-    topic,
-    visualAesthetic: aesthetic,
-    nicheTheme: workspaceTheme,
-  });
-
-  warnings.push(...enrichment.warnings);
-  if (!enrichment.success && enrichment.error) {
-    warnings.push(enrichment.error);
-  }
-
+  // Agents 3-7 deliberately do NOT run here — see this function's doc comment.
   const supabase = await createClient();
 
   // Best-effort: needs db/add-act-persistence.sql. Without it every scene defaults to
@@ -281,23 +282,31 @@ export async function generateAct(params: {
     sceneType: (row.scene_type as string) ?? slicedScenes[index]?.sceneType ?? "",
     estimatedDurationSeconds: Number(row.video_duration ?? 0),
     finalVideoPrompt: (row.final_video_prompt as string) ?? "",
-    // The slicer's prompt surviving unchanged means agents 4-7 did not reach this scene.
-    usedFallback: (row.final_video_prompt as string) === slicedScenes[index]?.visualPrompt,
+    // Always true at this stage: the visual pass has not run, so every scene is still
+    // holding the Scene Slicer's raw prompt. Kept on the shape because the Whiteboard
+    // reuses it after `approveAndGenerateVisuals`, where it means what it says.
+    usedFallback: true,
   }));
 
   return { success: true, scriptLines, scenes, warnings };
 }
 
 /**
- * Step 3 — stitch the approved Act scripts into the project's master script.
+ * Step 3 — stitch the approved Act scripts into the project's master script and record
+ * the narration.
  *
  * Called once after every Act has generated, so a partially generated project never
  * overwrites a good master script with a truncated one.
+ *
+ * Long-form narrates one Act at a time into `act_narrations`; short/mid-form keeps the
+ * single-file `generateFullNarration`. The project lands on `narrated` rather than
+ * `drafting` for long-form, because there is still an explicit approval step before the
+ * visual pass runs.
  */
 export async function finalizeProjectScript(params: {
   projectId: string;
   acts: Array<{ actNumber: number; title: string; scriptLines: string[] }>;
-}): Promise<{ success: boolean; error?: string }> {
+}): Promise<{ success: boolean; warnings?: string[]; error?: string }> {
   const { projectId, acts } = params;
   const supabase = await createClient();
 
@@ -311,7 +320,7 @@ export async function finalizeProjectScript(params: {
 
   const { error } = await supabase
     .from("video_projects")
-    .update({ status: "drafting", master_script: masterScript.trim() })
+    .update({ master_script: masterScript.trim() })
     .eq("id", projectId);
 
   if (error) {
@@ -319,7 +328,38 @@ export async function finalizeProjectScript(params: {
     return { success: false, error: error.message };
   }
 
-  // --- NEW: Generate Narration Audio automatically upon approval ---
+  const { data: project } = await supabase
+    .from("video_projects")
+    .select("target_duration")
+    .eq("id", projectId)
+    .single();
+
+  const { isLongForm } = resolveDurationProfile(project?.target_duration as string | null);
+  const warnings: string[] = [];
+
+  if (isLongForm) {
+    // One file per Act. A synthesis failure now costs a single ~2.5 minute Act instead
+    // of the whole 25 minutes, and each Act's Deepgram alignment restarts its own word
+    // cursor, so a mis-transcribed number can no longer shift every later scene.
+    for (const act of acts) {
+      const result = await generateActNarration(projectId, act.actNumber);
+      warnings.push(...result.warnings);
+      if (!result.success && result.error) {
+        warnings.push(`Act ${act.actNumber}: ${result.error}`);
+      }
+    }
+
+    const layout = await recomputeActLayout(projectId);
+    warnings.push(...layout.warnings);
+    if (layout.error) warnings.push(layout.error);
+
+    await supabase.from("video_projects").update({ status: "narrated" }).eq("id", projectId);
+
+    return { success: true, warnings };
+  }
+
+  // Short/mid-form is single-pass: ~8 scenes, so neither the drift nor the
+  // re-record cost that motivated per-Act narration applies.
   const { data: scenes } = await supabase
     .from("scenes")
     .select("id, voice_over_beat")
@@ -327,15 +367,16 @@ export async function finalizeProjectScript(params: {
     .order("sequence_number", { ascending: true });
 
   if (scenes && scenes.length > 0) {
-    // Generate narration and let Deepgram align the timestamps automatically!
     const audioRes = await generateFullNarration(projectId, scenes);
     if (!audioRes.success) {
       console.warn("[Whiteboard] Narration generation failed during finalize:", audioRes.error);
+      warnings.push(`Narration failed: ${audioRes.error}`);
     }
   }
-  // -----------------------------------------------------------------
 
-  return { success: true };
+  await supabase.from("video_projects").update({ status: "narrated" }).eq("id", projectId);
+
+  return { success: true, warnings };
 }
 
 export interface ResumedWhiteboard {
@@ -603,4 +644,210 @@ export async function regenerateActVisuals(params: {
   }));
 
   return { success: true, scenes, warnings: enrichment.warnings };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                    Per-Act narration re-record (post-approval)              */
+/* -------------------------------------------------------------------------- */
+
+export interface RegenerateActNarrationResult {
+  success: boolean;
+  /** The full act layout after the ripple, so the editor can reposition blocks. */
+  acts?: ActNarration[];
+  /** Seconds this act grew (positive) or shrank (negative). */
+  shiftSeconds?: number;
+  totalDurationSeconds?: number;
+  warnings: string[];
+  error?: string;
+}
+
+/**
+ * Re-records ONE act's narration from whatever wording is currently stored.
+ *
+ * Mirrors `regenerateActVisuals`: it reads each scene's CURRENT `voice_over_beat` —
+ * the user's hand edit if they made one — and never re-runs the Script Writer, which
+ * would silently discard that edit the moment "regenerate" was clicked.
+ *
+ * No other act is re-synthesised, re-transcribed, or even read. Acts after this one
+ * keep their own audio and their own internal scene durations; only their start offset
+ * moves, which `recomputeActLayout` derives arithmetically. That ripple is intentional:
+ * forcing a longer act back into its old slot would mean cutting off the new words.
+ */
+export async function regenerateActNarration(params: {
+  projectId: string;
+  actNumber: number;
+  voiceId?: string;
+}): Promise<RegenerateActNarrationResult> {
+  const { projectId, actNumber, voiceId } = params;
+
+  const before = await getActNarrations(projectId);
+  const previousDuration =
+    before.find((act) => act.actNumber === actNumber)?.durationSeconds ?? 0;
+
+  const result = await generateActNarration(projectId, actNumber, voiceId);
+  if (!result.success) {
+    return { success: false, warnings: result.warnings, error: result.error };
+  }
+
+  const layout = await recomputeActLayout(projectId);
+  const warnings = [...result.warnings, ...layout.warnings];
+  if (layout.error) warnings.push(layout.error);
+
+  const newDuration =
+    layout.acts.find((act) => act.actNumber === actNumber)?.durationSeconds ?? 0;
+  const shiftSeconds = Number((newDuration - previousDuration).toFixed(2));
+
+  // Overlay clips and dragged-in music sit at fixed timestamps and do not ripple, so
+  // say how far things moved rather than silently relocating the user's work.
+  if (Math.abs(shiftSeconds) >= 0.5) {
+    warnings.push(
+      `Act ${actNumber} is now ${shiftSeconds > 0 ? "longer" : "shorter"} by ${Math.abs(shiftSeconds).toFixed(1)}s. Later acts moved accordingly — any music or overlay clips placed after this act may need re-aligning.`
+    );
+  }
+
+  return {
+    success: true,
+    acts: layout.acts,
+    shiftSeconds,
+    totalDurationSeconds: layout.totalDurationSeconds,
+    warnings,
+  };
+}
+
+/* -------------------------------------------------------------------------- */
+/*                    Approval gate — the visual pass (agents 3-7)             */
+/* -------------------------------------------------------------------------- */
+
+export interface ApproveResult {
+  success: boolean;
+  sceneCount?: number;
+  blueprintCount?: number;
+  warnings: string[];
+  error?: string;
+}
+
+/**
+ * The Approve button — runs the visual half of the pipeline over the whole project.
+ *
+ * Two things make this different from calling `enrichAndPersistScenes` per Act, which
+ * is what `generateAct` used to do:
+ *
+ * 1. It runs on FINAL text. Every scene's `voice_over_beat` is whatever the user
+ *    settled on after listening to the narration, so no prompt is built from wording
+ *    that is about to change.
+ *
+ * 2. The Casting Director runs ONCE, over every scene in every act. Its contract says
+ *    it is "the only agent that needs to see every scene at once" so a character cannot
+ *    be restyled "between scene 1 and scene 40" — but per-Act calls gave it a ~17-scene
+ *    window, so a 9-act video re-cast its cast nine times and the same character
+ *    visibly changed between chapters. One shared blueprint set fixes that.
+ */
+export async function approveAndGenerateVisuals(params: {
+  projectId: string;
+  topic: string;
+  visualAesthetic: string;
+  /** Optional — resolved from the owning workspace when the caller has no handle on it. */
+  nicheTheme?: string;
+}): Promise<ApproveResult> {
+  const { projectId, topic, visualAesthetic } = params;
+  const supabase = await createClient();
+  const warnings: string[] = [];
+
+  // The Timeline Editor has no workspace theme prop, and threading one through a
+  // 7,000-line component to reach an action that can already join to it would be the
+  // wrong trade. The niche drives prompt styling, so losing it silently would quietly
+  // flatten the look of every scene.
+  let nicheTheme = params.nicheTheme;
+  if (!nicheTheme) {
+    const { data: joined } = await supabase
+      .from("video_projects")
+      .select("workspaces(content_theme)")
+      .eq("id", projectId)
+      .single();
+
+    const workspace = joined?.workspaces as { content_theme?: string } | { content_theme?: string }[] | null;
+    nicheTheme = Array.isArray(workspace)
+      ? workspace[0]?.content_theme
+      : workspace?.content_theme;
+  }
+
+  const { data: rows, error: fetchError } = await supabase
+    .from("scenes")
+    .select("id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_type")
+    .eq("project_id", projectId)
+    .order("sequence_number");
+
+  if (fetchError) {
+    return { success: false, warnings, error: `Could not read scenes: ${fetchError.message}` };
+  }
+
+  if (!rows || rows.length === 0) {
+    return { success: false, warnings, error: "This project has no scenes to work from." };
+  }
+
+  const aesthetic = visualAesthetic || "Cinematic";
+
+  // --- Agent 3, once, across every act -------------------------------------------
+  const casting = await castCharacters({
+    sceneTexts: rows.map((row) => (row.voice_over_beat as string) ?? ""),
+    topic,
+    visualAesthetic: aesthetic,
+    nicheTheme,
+  });
+
+  const blueprints = casting.blueprints ?? {};
+
+  if (!casting.success) {
+    warnings.push(
+      `Casting Director failed (${casting.error}). Characters may drift between scenes.`
+    );
+  }
+
+  // Reshaped to SlicedScene so it can go straight into enrichAndPersistScenes, which
+  // was written to consume the Slicer's output. The current prompt doubles as the
+  // fallback: if enrichment fails, a scene keeps what it already had.
+  const slicedScenes: SlicedScene[] = rows.map((row, index) => ({
+    sceneNumber: index + 1,
+    voiceOverText: (row.voice_over_beat as string) ?? "",
+    visualPrompt: (row.final_video_prompt as string) ?? "",
+    estimatedDurationSeconds: Number(row.video_duration ?? 5),
+    sceneType: ((row.scene_type as string) || "ESTABLISH") as SlicedScene["sceneType"],
+    mediaType: ((row.custom_media_type as string) === "image" ? "image" : "video") as SlicedScene["mediaType"],
+  }));
+
+  const enrichment = await enrichAndPersistScenes({
+    projectId,
+    sceneIds: rows.map((row) => row.id as string),
+    slicedScenes,
+    topic,
+    visualAesthetic: aesthetic,
+    nicheTheme,
+    blueprints,
+  });
+
+  warnings.push(...enrichment.warnings);
+
+  if (!enrichment.success) {
+    return {
+      success: false,
+      warnings,
+      error: enrichment.error ?? "Visual generation failed.",
+    };
+  }
+
+  const { error: statusError } = await supabase
+    .from("video_projects")
+    .update({ status: "approved" })
+    .eq("id", projectId);
+
+  if (statusError) {
+    warnings.push(`Project status not updated: ${statusError.message}`);
+  }
+
+  return {
+    success: true,
+    sceneCount: rows.length,
+    blueprintCount: Object.keys(blueprints).length,
+    warnings,
+  };
 }

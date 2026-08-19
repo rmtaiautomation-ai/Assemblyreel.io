@@ -13,6 +13,16 @@
 export const NARRATION_WORDS_PER_MINUTE = 150;
 
 /**
+ * Rough words per camera-ready narration line.
+ *
+ * CRITICAL RULE 3 in the Script Writer forces every line to name a subject, an action
+ * and a location, which lands most lines in the 12-18 word range. Line targets are
+ * derived from the word budget through this figure so that asking for more words
+ * produces *fuller lines*, not simply more of them.
+ */
+export const WORDS_PER_NARRATION_LINE = 15;
+
+/**
  * Declared as a const tuple (not annotated `readonly SceneType[]`) so the literal
  * member types survive — `z.enum(SCENE_TYPES)` needs them to build its union.
  */
@@ -126,6 +136,16 @@ export interface DurationProfile {
   /** Human-readable label, used in prompts and logs. */
   label: string;
   targetWordCount: { min: number; max: number };
+  /**
+   * Word budget for a single Script Writer request.
+   *
+   * For long-form this is `targetWordCount / actCount`, because the Script Writer is
+   * invoked once per Act and has no idea how many Acts there are. Omitting it was why
+   * every long-form tier produced roughly the same runtime regardless of the duration
+   * the user picked — see `buildLongFormProfile`. Single-pass tiers write the whole
+   * script in one call, so this equals `targetWordCount`.
+   */
+  wordsPerAct: { min: number; max: number };
   /** Narration lines the Script Writer should emit for a single request. */
   targetLineCount: { min: number; max: number };
   /** Number of Acts. Long-form scales this with runtime; others are single-pass. */
@@ -153,6 +173,8 @@ const DURATION_PROFILES_BY_FORM_VALUE: Record<string, DurationProfile> = {
     tier: "short-form",
     label: "Short-Form (30s - 60s)",
     targetWordCount: { min: 75, max: 150 },
+    // Single-pass: one call writes the whole script.
+    wordsPerAct: { min: 75, max: 150 },
     targetLineCount: { min: 6, max: 10 },
     actCount: 1,
     isLongForm: false,
@@ -165,6 +187,8 @@ const DURATION_PROFILES_BY_FORM_VALUE: Record<string, DurationProfile> = {
     tier: "mid-form-short",
     label: "Mid-Form Short (2m - 3m)",
     targetWordCount: { min: 300, max: 450 },
+    // Single-pass: one call writes the whole script.
+    wordsPerAct: { min: 300, max: 450 },
     targetLineCount: { min: 20, max: 25 },
     actCount: 3,
     isLongForm: false,
@@ -177,6 +201,8 @@ const DURATION_PROFILES_BY_FORM_VALUE: Record<string, DurationProfile> = {
     tier: "mid-form-long",
     label: "Mid-Form Long (4m - 5m)",
     targetWordCount: { min: 600, max: 750 },
+    // Single-pass: one call writes the whole script.
+    wordsPerAct: { min: 600, max: 750 },
     targetLineCount: { min: 35, max: 45 },
     actCount: 3,
     isLongForm: false,
@@ -198,12 +224,31 @@ function buildLongFormProfile(
   minWords: number,
   maxWords: number
 ): DurationProfile {
+  // Long-form is generated one Act at a time, so every per-request target has to be
+  // divided by the Act count. Previously `targetLineCount` was hardcoded to
+  // { min: 15, max: 25 } for all four long-form tiers and `targetWordCount` never
+  // reached the Script Writer at all on the Act path, so a 25-30m project asked for
+  // exactly as much prose per Act as a 10-15m one. Runtime was therefore driven only
+  // by actCount, and every tier landed 35-40% under its target.
+  const wordsPerAct = {
+    min: Math.round(minWords / actCount),
+    max: Math.round(maxWords / actCount),
+  };
+
+  // Derived, not constant: a bigger word budget must buy fuller lines rather than an
+  // ever-growing list of short ones, which is what the Scene Slicer's 6-12s pacing
+  // needs to work with.
+  const targetLineCount = {
+    min: Math.round(wordsPerAct.min / WORDS_PER_NARRATION_LINE),
+    max: Math.round(wordsPerAct.max / WORDS_PER_NARRATION_LINE),
+  };
+
   return {
     tier: "long-form",
     label,
     targetWordCount: { min: minWords, max: maxWords },
-    // Long-form is generated one Act at a time, so the line target is per-Act.
-    targetLineCount: { min: 15, max: 25 },
+    wordsPerAct,
+    targetLineCount,
     actCount,
     isLongForm: true,
     structureRule: `${actCount}-Act modular/chapterised documentary structure: Forbidden Hook & Context → Rising Threat → Deep Dive / Revelation → Implications & Climax → Aftermath & CTA.`,
