@@ -1,5 +1,6 @@
 import React from 'react';
-import { AbsoluteFill, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
+import { AbsoluteFill, useCurrentFrame, useVideoConfig } from 'remotion';
+import { fadeProgress } from './fadeProgress';
 
 interface DimScrimProps {
   /** Scrim color. Defaults to black. */
@@ -33,18 +34,7 @@ export const DimScrim: React.FC<DimScrimProps> = ({
   const frame = useCurrentFrame();
   const { fps } = useVideoConfig();
 
-  const fadeInFrames = Math.max(1, Math.round(fps * Math.max(0, fadeInSeconds)));
-  const fadeOutFrames = Math.max(1, Math.round(fps * Math.max(0, fadeOutSeconds)));
-  // Clamped so this is never a zero-width interpolate() range, even when the
-  // fades are longer than the clip itself or overlap each other.
-  const fadeOutStart = Math.min(durationInFrames - 1, Math.max(fadeInFrames, durationInFrames - fadeOutFrames));
-
-  // Below fadeInFrames: ramping in. At/above it: the second call governs —
-  // its extrapolateLeft:'clamp' holds at 1 for the whole "hold" period
-  // between the two fades, then ramps out from fadeOutStart.
-  const progress = frame < fadeInFrames
-    ? interpolate(frame, [0, fadeInFrames], [0, 1], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' })
-    : interpolate(frame, [fadeOutStart, durationInFrames], [1, 0], { extrapolateLeft: 'clamp', extrapolateRight: 'clamp' });
+  const progress = fadeProgress(frame, fps, fadeInSeconds, fadeOutSeconds, durationInFrames);
 
   return <AbsoluteFill style={{ backgroundColor: color, opacity: opacity * progress }} />;
 };

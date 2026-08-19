@@ -8,7 +8,8 @@ import {
   Audio,
   interpolate,
 } from 'remotion';
-import type { ChecklistCardData, DimScrimData, OverlayClipData, OverlayPreset, SceneOverlay, TitleCutoutCardData, VideoCompositionProps } from '../types';
+import type { ChecklistCardData, DimScrimData, FilmDamageData, LightBeamData, LightSweepData, OverlayClipData, OverlayClipKind, OverlayPreset, ParticleFieldData, SceneOverlay, TitleCutoutCardData, VideoCompositionProps } from '../types';
+import { isEnvironmentalKind } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
 import { CaptionTrack } from '../captions/CaptionTrack';
@@ -25,6 +26,34 @@ import { OverlayFrame, defaultAlignForPreset } from '../overlays/OverlayFrame';
 import { ChecklistCard } from '../templates/ChecklistCard';
 import { TitleCutoutCard } from '../templates/TitleCutoutCard';
 import { DimScrim } from '../templates/DimScrim';
+import { ParticleField } from '../templates/ParticleField';
+import { LightBeam } from '../templates/LightBeam';
+import { LightSweep } from '../templates/LightSweep';
+import { FilmDamage } from '../templates/FilmDamage';
+
+/**
+ * Paint order within the OV track. A scrim must sit under the light it's
+ * paired with, and both must sit under text: a lower-third lit or dimmed by an
+ * atmospheric layer looks like a bug, not an effect.
+ *
+ * This replaced a two-bucket `dim-scrim` vs. everything-else split, which
+ * quietly put a beam in the same bucket as text and left array creation order
+ * to decide whether it washed over the captions.
+ *
+ * The branch ORDER is load-bearing: both special cases must be tested before
+ * the general `isEnvironmentalKind` fallthrough, or they collapse into rank 1.
+ * Tidying either of them below it compiles fine and silently misplaces a layer.
+ */
+const zRank = (kind: OverlayClipKind): number => {
+  if (kind === 'dim-scrim') return 0;
+  // The one environmental kind that paints ABOVE text rather than below it.
+  // Print damage sits on the film, so anything composited into the shot is
+  // scratched and grained too — captions floating pristine over grain is the
+  // single most obvious tell that the effect is fake.
+  if (kind === 'film-damage') return 3;
+  if (isEnvironmentalKind(kind)) return 1;
+  return 2;
+};
 
 /**
  * Main Remotion composition that sequences all scenes, overlays, and audio.
@@ -150,6 +179,89 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   };
 
   /**
+   * WHAT renders for a full-frame environmental clip. Same "guard on `kind`
+   * before reading `templateData`" contract as `renderOverlayClipContent` —
+   * `template_data` is unenforced JSON, so every field is read optionally and
+   * falls back to the component's own default rather than throwing.
+   */
+  const renderEnvironmentalClip = (clip: OverlayClipData, durationInFrames: number) => {
+    if (clip.kind === 'particles') {
+      const data = clip.templateData as ParticleFieldData | undefined;
+      return (
+        <ParticleField
+          count={data?.count}
+          color={clip.color}
+          speed={data?.speed}
+          sizeScale={data?.sizeScale}
+          xBias={data?.xBias}
+          fadeInSeconds={data?.fadeInSeconds}
+          fadeOutSeconds={data?.fadeOutSeconds}
+          durationInFrames={durationInFrames}
+        />
+      );
+    }
+
+    if (clip.kind === 'light-beam') {
+      const data = clip.templateData as LightBeamData | undefined;
+      return (
+        <LightBeam
+          xPercent={data?.xPercent}
+          width={data?.width}
+          intensity={data?.intensity}
+          color={clip.color}
+          fadeInSeconds={data?.fadeInSeconds}
+          fadeOutSeconds={data?.fadeOutSeconds}
+          durationInFrames={durationInFrames}
+        />
+      );
+    }
+
+    if (clip.kind === 'light-sweep') {
+      const data = clip.templateData as LightSweepData | undefined;
+      return (
+        <LightSweep
+          width={data?.width}
+          intensity={data?.intensity}
+          cycleSeconds={data?.cycleSeconds}
+          angle={data?.angle}
+          reverse={data?.reverse}
+          color={clip.color}
+          fadeInSeconds={data?.fadeInSeconds}
+          fadeOutSeconds={data?.fadeOutSeconds}
+          durationInFrames={durationInFrames}
+        />
+      );
+    }
+
+    if (clip.kind === 'film-damage') {
+      const data = clip.templateData as FilmDamageData | undefined;
+      return (
+        <FilmDamage
+          grainAmount={data?.grainAmount}
+          grainScale={data?.grainScale}
+          scratchCount={data?.scratchCount}
+          scratchIntensity={data?.scratchIntensity}
+          color={clip.color}
+          fadeInSeconds={data?.fadeInSeconds}
+          fadeOutSeconds={data?.fadeOutSeconds}
+          durationInFrames={durationInFrames}
+        />
+      );
+    }
+
+    const data = clip.templateData as DimScrimData | undefined;
+    return (
+      <DimScrim
+        color={clip.color}
+        opacity={data?.opacity}
+        fadeInSeconds={data?.fadeInSeconds}
+        fadeOutSeconds={data?.fadeOutSeconds}
+        durationInFrames={durationInFrames}
+      />
+    );
+  };
+
+  /**
    * An overlay clip from the OV track — its own timing and its own position,
    * unrelated to whatever scene happens to be underneath it.
    */
@@ -157,20 +269,16 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
     const from = Math.max(0, Math.round(clip.startInSeconds * fps));
     const durationInFrames = Math.max(1, Math.round(clip.durationInSeconds * fps));
 
-    // A dim-scrim clip has no "position" and no text/card content — it's a
-    // full-frame layer with its own fade, so it skips OverlayFrame entirely
-    // rather than being centred like every other kind.
-    if (clip.kind === 'dim-scrim') {
-      const data = clip.templateData as DimScrimData | undefined;
+    // The environmental kinds are full-frame atmospheric layers with no
+    // text/card content, so they skip OverlayFrame entirely rather than being
+    // centred like every other kind. Note they skip it for DIFFERENT reasons:
+    // a scrim, a particle field and film damage genuinely have no position,
+    // while a light beam does — it just needs continuous animated positioning
+    // through its own gradient mask, which the 9-slot grid cannot express.
+    if (isEnvironmentalKind(clip.kind)) {
       return (
         <Sequence key={`overlay-${clip.id}`} from={from} durationInFrames={durationInFrames}>
-          <DimScrim
-            color={clip.color}
-            opacity={data?.opacity}
-            fadeInSeconds={data?.fadeInSeconds}
-            fadeOutSeconds={data?.fadeOutSeconds}
-            durationInFrames={durationInFrames}
-          />
+          {renderEnvironmentalClip(clip, durationInFrames)}
         </Sequence>
       );
     }
@@ -288,15 +396,17 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         );
       })}
 
-      {/* OV track — independent text-overlay clips. Rendered after the scene
+      {/* OV track — independent overlay clips. Rendered after the scene
           sequences (so they paint above every scene, its own overlay, and any
           transition) but BEFORE captions, which stay the topmost layer.
-          Dim-scrim clips always paint FIRST within the OV track regardless of
-          where they sit in this array — a scrim is meant to sit behind
-          text/cards, and array order is just whatever order clips were
-          created in, not a deliberate z-order the user controls. */}
-      {(overlayClips ?? []).filter(c => c.kind === 'dim-scrim').map(renderOverlayClip)}
-      {(overlayClips ?? []).filter(c => c.kind !== 'dim-scrim').map(renderOverlayClip)}
+          Within the track, `zRank` decides paint order rather than array
+          order: array order is just whatever order clips happened to be
+          created in, not a deliberate z-order the user controls. Sorted with a
+          copy — `overlayClips` is a prop and sorting in place would mutate the
+          caller's array. */}
+      {[...(overlayClips ?? [])]
+        .sort((a, b) => zRank(a.kind) - zRank(b.kind))
+        .map(renderOverlayClip)}
 
       {/* Auto-captions. Rendered AFTER the scene sequences so they paint above every
           scene and above scene overlays — a caption hidden behind a transition or a

@@ -27,13 +27,46 @@ export interface SceneOverlay {
 /**
  * Which kind of clip an OV-track row is. 'text' is the original plain
  * kinetic-text overlay; 'checklist-card'/'title-cutout-card' are designed
- * graphic-card templates; 'dim-scrim' is a full-frame dim layer with its own
- * independent timing, distinct from the `dimBackground` checkbox (which dims
- * for exactly a text/card clip's own duration). All are just rows on the
- * same track. Adding a kind is a code change, not a migration, same
- * convention as `OverlayPreset`.
+ * graphic-card templates; 'dim-scrim', 'particles', 'light-beam',
+ * 'light-sweep' and 'film-damage' are the environmental kinds — full-frame
+ * atmospheric layers with their own independent timing. ('dim-scrim' is
+ * distinct from the `dimBackground` checkbox, which dims for exactly a
+ * text/card clip's own duration.) All are just rows on the same track. Adding
+ * a kind is a code change, not a migration, same convention as
+ * `OverlayPreset`.
  */
-export type OverlayClipKind = 'text' | 'checklist-card' | 'title-cutout-card' | 'dim-scrim';
+export type OverlayClipKind =
+  | 'text'
+  | 'checklist-card'
+  | 'title-cutout-card'
+  | 'dim-scrim'
+  | 'particles'
+  | 'light-beam'
+  | 'light-sweep'
+  | 'film-damage';
+
+/**
+ * The full-frame atmospheric kinds. They share two behaviours that separate
+ * them from text/card kinds: they skip `OverlayFrame` entirely (no 9-slot
+ * placement, so no position controls in the inspector), and they get their own
+ * timeline lane pool away from the content clips.
+ *
+ * They do NOT all share a render z-order. Most sort below text, but
+ * 'film-damage' sorts above it — see `zRank` in `VideoComposition`, which owns
+ * that distinction. This predicate is about placement, not paint order.
+ *
+ * Exported as one predicate deliberately — the render path
+ * (`VideoComposition`) and the timeline lane packing (`TimelineEditor`)
+ * previously each hard-coded their own `=== 'dim-scrim'` check, which meant
+ * adding a kind silently broke both in different ways. One definition, so
+ * they cannot drift apart again.
+ */
+export const isEnvironmentalKind = (kind: OverlayClipKind): boolean =>
+  kind === 'dim-scrim' ||
+  kind === 'particles' ||
+  kind === 'light-beam' ||
+  kind === 'light-sweep' ||
+  kind === 'film-damage';
 
 /** `template_data` shape for the `checklist-card` kind. */
 export interface ChecklistCardData {
@@ -58,6 +91,90 @@ export interface TitleCutoutCardData {
 export interface DimScrimData {
   /** Peak opacity, 0-1. Defaults to 0.45 — matches the `dimBackground` checkbox's own fixed dim elsewhere in this app. */
   opacity?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/**
+ * `template_data` shape for the `particles` kind — a field of drifting motes
+ * ("dust particles" / "bokeh overlay" in stock-footage terms), generated
+ * procedurally rather than from a stock video.
+ */
+export interface ParticleFieldData {
+  /** How many motes. Defaults to 45. */
+  count?: number;
+  /** Vertical drift multiplier. Defaults to 1. */
+  speed?: number;
+  /** Uniform size multiplier. Defaults to 1. */
+  sizeScale?: number;
+  /** 0-100 horizontal cluster centre. Omitted = spread evenly across the frame. */
+  xBias?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/**
+ * `template_data` shape for the `light-beam` kind — a soft god-ray shaft
+ * ("light rays" in Resolve, Trapcode Shine in After Effects).
+ *
+ * Carries its own `xPercent` rather than reusing `OverlayClipData.xPercent`
+ * because this kind skips `OverlayFrame`: the shaft is positioned by its own
+ * gradient mask (and animated within it), not by the 9-slot placement grid.
+ */
+export interface LightBeamData {
+  /** Shaft centre as a percentage of frame width. Defaults to 50. */
+  xPercent?: number;
+  /** Half-width of the bright core, as a percentage of frame width. Defaults to 14. */
+  width?: number;
+  /** Peak brightness, 0-1. Defaults to 0.75. */
+  intensity?: number;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/**
+ * `template_data` shape for the `light-sweep` kind — a band of light raking
+ * across the frame ("CC Light Sweep" in After Effects).
+ *
+ * Distinct from `light-beam`: a beam holds its position in the scene, a sweep
+ * crosses the whole frame edge to edge and repeats on its own cycle.
+ */
+export interface LightSweepData {
+  /** Half-width of the band, as a percentage of frame width. Defaults to 5 — the gradient spans 2x this either side. */
+  width?: number;
+  /** Peak brightness, 0-1. Defaults to 0.5. */
+  intensity?: number;
+  /** Seconds for one edge-to-edge pass. Defaults to 4. */
+  cycleSeconds?: number;
+  /** Gradient angle in degrees; 90 is perfectly vertical. Defaults to 100 for a raking lean. */
+  angle?: number;
+  /** Sweep right-to-left instead of left-to-right. */
+  reverse?: boolean;
+  fadeInSeconds?: number;
+  fadeOutSeconds?: number;
+}
+
+/**
+ * `template_data` shape for the `film-damage` kind — old-film print damage:
+ * drifting vertical scratch lines plus emulsion grain. The look sold as an
+ * "old film overlay" in stock packs, generated procedurally here.
+ *
+ * Both sub-effects live on one kind because the look needs both together —
+ * grain alone reads as video noise, scratches alone as a glitch. Either can be
+ * dialled to zero to isolate the other.
+ *
+ * Unlike the other environmental kinds this paints ABOVE text: print damage
+ * sits on the film, so burned-in captions are scratched and grained too.
+ */
+export interface FilmDamageData {
+  /** Grain strength, 0-1. Defaults to 0.35. 0 skips the grain layer entirely. */
+  grainAmount?: number;
+  /** Grain coarseness; higher is finer. Defaults to 0.8. */
+  grainScale?: number;
+  /** How many scratches can be visible at once. Defaults to 4. 0 skips the scratch layer. */
+  scratchCount?: number;
+  /** Scratch brightness, 0-1. Defaults to 0.5. */
+  scratchIntensity?: number;
   fadeInSeconds?: number;
   fadeOutSeconds?: number;
 }
@@ -101,7 +218,15 @@ export interface OverlayClipData {
    * shaped data, never `TitleCutoutCardData`). Render paths must guard on
    * `kind` before reading fields off this rather than assume they're present.
    */
-  templateData?: ChecklistCardData | TitleCutoutCardData | DimScrimData | Record<string, never>;
+  templateData?:
+    | ChecklistCardData
+    | TitleCutoutCardData
+    | DimScrimData
+    | ParticleFieldData
+    | LightBeamData
+    | LightSweepData
+    | FilmDamageData
+    | Record<string, never>;
 }
 
 export type TransitionType =

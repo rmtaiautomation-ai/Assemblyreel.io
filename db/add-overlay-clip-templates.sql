@@ -20,5 +20,10 @@ alter table public.overlay_clips
   add column if not exists kind text not null default 'text',
   add column if not exists template_data jsonb not null default '{}'::jsonb;
 
+-- Kinds added after this migration was first written (dim-scrim, particles,
+-- light-beam, light-sweep) need NO further migration: `kind` is free text and
+-- `template_data` is jsonb, so a new kind is a code change only. This comment
+-- is the one thing that has to be kept current, and re-running the file is
+-- safe.
 comment on column public.overlay_clips.kind is
-  'text | checklist-card | title-cutout-card. Determines which fields in template_data are read.';
+  'text | checklist-card | title-cutout-card | dim-scrim | particles | light-beam | light-sweep. Determines which fields in template_data are read.';
