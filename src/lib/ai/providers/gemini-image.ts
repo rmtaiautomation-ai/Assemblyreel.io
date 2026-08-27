@@ -4,6 +4,22 @@ import type { GenerateInput, ProviderResult, VideoProvider } from "./types";
 
 const MODEL = "gemini-3-pro-image";
 
+const REFERENCE_MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
+
+/** Reads a local, public-relative image URL (see `GenerateInput.referenceImageUrl`) as an inline part. */
+async function loadReferenceImagePart(referenceImageUrl: string) {
+  const relativePath = referenceImageUrl.replace(/^\/+/, "");
+  const absolutePath = path.join(process.cwd(), "public", relativePath);
+  const data = await fs.readFile(absolutePath);
+  const mimeType = REFERENCE_MIME_TYPES[path.extname(absolutePath).toLowerCase()] ?? "image/png";
+  return { inlineData: { mimeType, data: data.toString("base64") } };
+}
+
 export const geminiImageProvider: VideoProvider = {
   id: "gemini-image",
   kind: "image",
@@ -14,12 +30,18 @@ export const geminiImageProvider: VideoProvider = {
     }
 
     try {
+      const parts: Record<string, unknown>[] = [];
+      if (input.referenceImageUrl) {
+        parts.push(await loadReferenceImagePart(input.referenceImageUrl));
+      }
+      parts.push({ text: input.prompt });
+
       const url = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent?key=${apiKey}`;
       const response = await fetch(url, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: input.prompt }] }],
+          contents: [{ parts }],
           generationConfig: { responseMimeType: "image/png" },
         }),
       });

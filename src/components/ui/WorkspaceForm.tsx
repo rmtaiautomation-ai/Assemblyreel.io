@@ -1,51 +1,50 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { createClient } from '@/lib/supabase/client';
-import { Check, Info, Play, Image as ImageIcon } from 'lucide-react';
+import { Check, Info, Image as ImageIcon } from 'lucide-react';
+import {
+  ART_STYLES,
+  ASPECT_RATIOS,
+  DESTINATIONS,
+  DURATIONS,
+  LANGUAGES,
+  NICHES,
+} from '@/lib/workspace-options';
+import { getAvailableVoices } from '@/app/actions/audio-actions';
 
-const NICHES = [
-  { title: 'Mythology & Ancient Lore', match: 'Cinema Studio / Short Studio', prompt: 'Epic scale, archaic vocabulary, dramatic world-building.' },
-  { title: 'Horror & Paranormal Suspense', match: 'Cinema Studio / Short Studio', prompt: 'Build slow tension, dark/shadowy visual cues, explicit sound-effect markers.' },
-  { title: 'True Crime & Investigation', match: 'Cinema Studio', prompt: 'Grounded, objective journalistic tone. Legal documents, evidence boards.' },
-  { title: 'Cosmic & Space Science', match: 'Cinema Studio / Short Studio', prompt: 'Awe-inspiring, abstract cosmic visuals, expansive soundscapes.' },
-  { title: 'Philosophy & Stoicism', match: 'Short Studio', prompt: 'Calm, resonant, authoritative tone. Classical stone textures, statues.' },
-  { title: 'Financial Case Studies & Wealth', match: 'Cinema Studio / Marketing Studio', prompt: 'Fast-paced, high RPM business hooks, charts, wealth symbolism.' },
-  { title: 'Alternative History & Lost Civilizations', match: 'Cinema Studio', prompt: 'Speculative, mysterious undertones. Ancient architecture, archeological sketches.' },
-  { title: 'Tech, AI & Future Trends', match: 'Short Studio / Marketing Studio', prompt: 'High-energy, modern narrative pacing. Slick UI wireframes, neon glows.' },
-  { title: 'Geopolitics & Global Documentaries', match: 'Cinema Studio', prompt: 'Nuanced investigative script structure. Dynamic charts, vector maps.' },
-  { title: 'Deep Sea & Earth Anomalies', match: 'Cinema Studio / Short Studio', prompt: 'Unknown, claustrophobic atmosphere, deep-ocean grading.' },
-  { title: 'Dark Psychology & Human Behavior', match: 'Short Studio', prompt: 'Highly click-driven script structures. Expressions, micro-movements.' },
-  { title: 'Survival, Disasters & True Accounts', match: 'Cinema Studio', prompt: 'High-stakes, action-oriented. High-contrast environmental effects.' },
-  { title: 'Internet Mysteries & Creepypastas', match: 'Short Studio / Cinema Studio', prompt: 'Glitchy, analog-horror aesthetic formatting. Old forum threads.' },
-  { title: 'Pop Culture & Media Lore (Anime/Gaming)', match: 'Short Studio', prompt: 'Direct, high-retention fan service language. Dynamic fight sequences.' },
-  { title: 'Biographies & Historical Figures', match: 'Cinema Studio', prompt: 'Chronological storytelling style. Period-accurate descriptive keywords.' },
-  { title: 'Self-Improvement & Parables', match: 'Short Studio', prompt: 'Allegorical, fable-driven narrative structure. Simple, high-impact symbolic visuals.' },
-  { title: 'Corporate Empires & Brand Breakdowns', match: 'Marketing Studio / Cinema Studio', prompt: 'Commercial analytical tone. Consumer psychologies, sleek boardroom cinematography.' },
-  { title: 'Micro-History & Forgotten Archives', match: 'Short Studio', prompt: 'Casual "Did you know?" style hook. Retro 16mm film reels, antique items.' },
-  { title: 'Health, Longevity & Biohacking Facts', match: 'Short Studio / Marketing Studio', prompt: 'Scientific but accessible language. Clinical clean lines, anatomical highlights.' },
-  { title: 'Luxury Lifestyle & Architecture', match: 'Marketing Studio / Short Studio', prompt: 'Elegant, slow cinematic pans. Upscale color grading palettes, high minimalism.' }
-];
+/**
+ * The niche / art style / ratio / duration lists live in `@/lib/workspace-options` rather
+ * than here, because Workspace Settings now edits the very same columns this wizard
+ * writes. Two copies of the option lists would let the two screens drift, and a channel
+ * created under one list but re-saved under another would silently change value.
+ */
 
-const ART_STYLES = ['Charcoal', 'Cinematic', 'Minimalist', 'Cyberpunk', 'Watercolor', 'Anime', 'Photorealistic', 'Oil Painting', 'Claymation', 'Vector Art'];
-const VOICES = [
-  { id: 'cartesia_echo', name: 'Echo', desc: 'Male, American, Excited' },
-  { id: 'cartesia_alloy', name: 'Alloy', desc: 'Female, American' },
-  { id: 'cartesia_onyx', name: 'Onyx', desc: 'Male, American, Slow, Deep' },
-  { id: 'cartesia_fable', name: 'Fable', desc: 'Female, British' },
-  ...Array.from({ length: 16 }, (_, i) => ({ id: `voice_${i+5}`, name: `Voice Option ${i+5}`, desc: 'Generic Description' }))
-];
-
-const ASPECT_RATIOS = ['Vertical 9:16', 'Horizontal 16:9', 'Square 1:1'];
-const DURATIONS = ['30-60s', '60-90s', '2-3m', '3-5m', '5-10m', '10-20m', '20-30 minutes'];
+/**
+ * One voice as the local Voice Studio reports it.
+ *
+ * This step used to render a hardcoded list of twenty Cartesia-style ids
+ * (`cartesia_echo`, `voice_5`, …) with a play button that played nothing. None of those
+ * ids exist: narration is synthesised by Voice Studio on the user's own machine, and
+ * `resolveValidVoice` silently discards any id it doesn't serve. So every channel ever
+ * created here stored a voice id that the pipeline then ignored — and Settings, which now
+ * lists the real voices, would flag each one as unrecognised. Reading the same live list
+ * the Timeline Editor and Settings read makes the choice real at the point it is made.
+ */
+interface VoiceOption {
+  id: string;
+  name?: string;
+  engine?: string;
+  gender?: string;
+}
 
 const StepHeader = ({ step, title, subtitle }: { step: number, title: string, subtitle: string }) => (
   <div className="mb-4 mt-12 first:mt-0">
-    <span className="inline-block px-3 py-1 text-xs font-bold text-purple-600 border border-purple-200 rounded-full mb-2 bg-white">
+    <span className="inline-block px-3 py-1 text-xs font-bold text-ed-accent-text border border-ed-accent-border rounded-full mb-2 bg-ed-surface">
       Step {step}
     </span>
-    <h2 className="text-3xl font-bold text-purple-700 tracking-tight">{title}</h2>
-    <p className="text-gray-500 mt-1 text-sm">{subtitle}</p>
+    <h2 className="text-3xl font-bold text-ed-accent-text tracking-tight">{title}</h2>
+    <p className="text-ed-text-dim mt-1 text-sm">{subtitle}</p>
   </div>
 );
 
@@ -53,6 +52,28 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
   const [expandedNiche, setExpandedNiche] = useState<number | null>(null);
   const [isNicheDropdownOpen, setIsNicheDropdownOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  const [voices, setVoices] = useState<VoiceOption[]>([]);
+  const [voiceState, setVoiceState] = useState<'loading' | 'ready' | 'unreachable'>('loading');
+  // Separate from `formData.voice_id` because the valid choice "Auto" IS the empty id.
+  // Gating the next step on the id alone would make Auto impossible to pick, and would
+  // wall off workspace creation entirely whenever Voice Studio isn't running.
+  const [voiceChosen, setVoiceChosen] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    getAvailableVoices()
+      .then((result) => {
+        if (cancelled) return;
+        const list: VoiceOption[] = result.success ? (result.voices ?? []) : [];
+        setVoices(list);
+        setVoiceState(list.length > 0 ? 'ready' : 'unreachable');
+      })
+      .catch(() => {
+        if (!cancelled) setVoiceState('unreachable');
+      });
+    return () => { cancelled = true; };
+  }, []);
   
   const [formData, setFormData] = useState({
     name: '',
@@ -78,7 +99,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
         name: formData.name,
         linked_accounts: [formData.linkedAccount],
         content_theme: formData.niche,
-        narration_voice_id: formData.voice_id,
+        narration_voice_id: formData.voice_id || null,
         visual_aesthetic: formData.art_style_preset,
         aspect_ratio: formData.aspectRatio,
         video_language: formData.videoLanguage,
@@ -100,14 +121,14 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
   // Logic to show subsequent steps progressively
   const step2Visible = formData.name.length > 0 && formData.linkedAccount.length > 0;
   const step3Visible = step2Visible && formData.niche.length > 0;
-  const step4Visible = step3Visible && formData.voice_id.length > 0;
+  const step4Visible = step3Visible && voiceChosen;
   const step5Visible = step4Visible && formData.art_style_preset.length > 0;
   const step6Visible = step5Visible && formData.aspectRatio.length > 0;
   const step7Visible = step6Visible && formData.videoLanguage.length > 0;
   const allComplete = step7Visible && formData.duration.length > 0;
 
   return (
-    <div className="bg-white border border-gray-200 shadow-sm rounded-3xl p-8 sm:p-12 text-gray-900 mb-24">
+    <div className="bg-ed-surface border border-ed-border shadow-sm rounded-3xl p-8 sm:p-12 text-ed-text mb-24">
       <form onSubmit={handleSubmit} className="space-y-4">
         
         {/* STEP 1: DESTINATION */}
@@ -122,7 +143,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
             <input 
               required 
               type="text" 
-              className="w-full bg-white border border-gray-300 text-gray-900 px-4 py-3 rounded-lg focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500" 
+              className="w-full bg-ed-surface border border-ed-border-strong text-ed-text px-4 py-3 rounded-lg focus:outline-none focus:border-ed-accent-border focus:ring-1 focus:ring-ed-accent-border" 
               placeholder="Workspace Name (e.g. Finance Shorts)"
               value={formData.name}
               onChange={(e) => setFormData({...formData, name: e.target.value})}
@@ -131,23 +152,22 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
             <div className="relative">
               <select
                 required
-                className="w-full bg-white border border-gray-300 text-gray-900 px-4 py-3 rounded-lg appearance-none focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                className="w-full bg-ed-surface border border-ed-border-strong text-ed-text px-4 py-3 rounded-lg appearance-none focus:outline-none focus:border-ed-accent-border focus:ring-1 focus:ring-ed-accent-border"
                 value={formData.linkedAccount}
                 onChange={(e) => setFormData({...formData, linkedAccount: e.target.value})}
               >
                 <option value="" disabled>Select an Account</option>
-                <option value="Email Me Instead">@ Email Me Instead</option>
-                <option value="TikTok">@ TikTok Account</option>
-                <option value="YouTube">@ YouTube Channel</option>
-                <option value="Instagram">@ Instagram Page</option>
+                {DESTINATIONS.map((destination) => (
+                  <option key={destination} value={destination}>@ {destination}</option>
+                ))}
               </select>
-              <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-gray-500">
+              <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-ed-text-dim">
                 ▼
               </div>
             </div>
 
-            <div className="bg-blue-50 border border-blue-100 text-blue-800 text-sm px-4 py-3 rounded-lg flex gap-2 items-center">
-              <Info size={16} className="text-blue-500 min-w-4" />
+            <div className="bg-ed-info-soft border border-ed-info-border text-ed-info text-sm px-4 py-3 rounded-lg flex gap-2 items-center">
+              <Info size={16} className="text-ed-info min-w-4" />
               <span><strong>Tip:</strong> Make sure your account is <a href="#" className="underline">warmed up</a> for the best results.</span>
             </div>
           </div>
@@ -164,22 +184,22 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
             
             <div className="relative">
               <div className="relative">
-                <span className="absolute -top-2.5 left-3 bg-white px-1 text-xs text-gray-500 font-medium">Choose Content</span>
+                <span className="absolute -top-2.5 left-3 bg-ed-surface px-1 text-xs text-ed-text-dim font-medium">Choose Content</span>
                 <div 
-                  className="w-full bg-white border border-gray-300 text-gray-900 px-4 py-3 rounded-lg cursor-pointer flex justify-between items-center"
+                  className="w-full bg-ed-surface border border-ed-border-strong text-ed-text px-4 py-3 rounded-lg cursor-pointer flex justify-between items-center"
                   onClick={() => setIsNicheDropdownOpen(!isNicheDropdownOpen)}
                 >
                   <span>{formData.niche || "Select a theme..."}</span>
-                  <span className="text-gray-500 text-xs">▼</span>
+                  <span className="text-ed-text-dim text-xs">▼</span>
                 </div>
               </div>
 
               {isNicheDropdownOpen && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-200 rounded-lg shadow-xl max-h-[300px] overflow-y-auto custom-scrollbar">
+                <div className="absolute z-10 w-full mt-1 bg-ed-surface border border-ed-border rounded-lg shadow-xl max-h-[300px] overflow-y-auto custom-scrollbar">
                   {NICHES.map((niche, idx) => (
                     <div 
                       key={idx} 
-                      className={`border-b border-gray-100 last:border-0 hover:bg-gray-50 transition-colors ${formData.niche === niche.title ? 'bg-purple-50' : ''}`}
+                      className={`border-b border-ed-border last:border-0 hover:bg-ed-well transition-colors ${formData.niche === niche.title ? 'bg-ed-accent-soft' : ''}`}
                     >
                       <div 
                         className="p-3 cursor-pointer flex justify-between items-center"
@@ -188,19 +208,19 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
                           setIsNicheDropdownOpen(false);
                         }}
                       >
-                        <span className="font-medium text-gray-900">{niche.title}</span>
+                        <span className="font-medium text-ed-text">{niche.title}</span>
                         <button 
                           type="button"
                           onClick={(e) => { e.stopPropagation(); setExpandedNiche(expandedNiche === idx ? null : idx); }}
-                          className="text-gray-400 hover:text-purple-600 p-1"
+                          className="text-ed-text-faint hover:text-ed-accent-text p-1"
                         >
                           <Info size={16} />
                         </button>
                       </div>
                       {expandedNiche === idx && (
-                        <div className="px-4 pb-3 text-sm text-gray-600 bg-gray-50 border-t border-gray-100 pt-2">
-                          <p className="mb-1"><strong className="text-gray-900">Best Match:</strong> {niche.match}</p>
-                          <p><strong className="text-gray-900">Prompt:</strong> {niche.prompt}</p>
+                        <div className="px-4 pb-3 text-sm text-ed-text-dim bg-ed-well border-t border-ed-border pt-2">
+                          <p className="mb-1"><strong className="text-ed-text">Best Match:</strong> {niche.match}</p>
+                          <p><strong className="text-ed-text">Prompt:</strong> {niche.prompt}</p>
                         </div>
                       )}
                     </div>
@@ -208,7 +228,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
                 </div>
               )}
               {formData.niche && (
-                <button type="button" className="text-purple-500 text-xs mt-2 hover:underline">Show Sample</button>
+                <button type="button" className="text-ed-accent-text text-xs mt-2 hover:underline">Show Sample</button>
               )}
             </div>
           </div>
@@ -225,29 +245,51 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
             
             <div className="space-y-6">
               <div>
-                <div className="flex items-center gap-2 mb-3 text-gray-700 font-medium">
+                <div className="flex items-center gap-2 mb-3 text-ed-text-dim font-medium">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
                   <span>Narration Voice</span>
                 </div>
                 
-                <div className="border border-gray-200 rounded-xl overflow-hidden bg-white shadow-sm max-h-[300px] overflow-y-auto">
-                  {VOICES.map((voice) => (
-                    <div 
+                {voiceState === 'loading' && (
+                  <p className="text-sm text-ed-text-dim">Looking for Voice Studio…</p>
+                )}
+
+                {voiceState === 'unreachable' && (
+                  <div className="rounded-xl border border-ed-warn-border bg-ed-warn-soft px-4 py-3 text-sm text-ed-warn">
+                    <strong>Voice Studio isn&apos;t running.</strong> Narration is synthesised
+                    on your own machine, so there are no voices to list right now. Continue
+                    with Auto below — you can pick a specific voice later in Settings.
+                  </div>
+                )}
+
+                <div className="border border-ed-border rounded-xl overflow-hidden bg-ed-surface shadow-sm max-h-[300px] overflow-y-auto">
+                  <div
+                    onClick={() => { setFormData({ ...formData, voice_id: '' }); setVoiceChosen(true); }}
+                    className={`flex items-center justify-between p-4 border-b border-ed-border cursor-pointer transition-colors ${voiceChosen && formData.voice_id === '' ? 'bg-ed-well' : 'hover:bg-ed-well'}`}
+                  >
+                    <div>
+                      <div className="font-semibold text-ed-text">Auto</div>
+                      <div className="text-xs text-ed-text-dim">Voice Studio&apos;s default for its active engine</div>
+                    </div>
+                    {voiceChosen && formData.voice_id === '' && (
+                      <Check size={20} className="text-ed-accent-text" />
+                    )}
+                  </div>
+
+                  {voices.map((voice) => (
+                    <div
                       key={voice.id}
-                      onClick={() => setFormData({...formData, voice_id: voice.id})}
-                      className={`flex items-center justify-between p-4 border-b border-gray-100 last:border-0 cursor-pointer transition-colors ${formData.voice_id === voice.id ? 'bg-gray-50' : 'hover:bg-gray-50'}`}
+                      onClick={() => { setFormData({ ...formData, voice_id: voice.id }); setVoiceChosen(true); }}
+                      className={`flex items-center justify-between p-4 border-b border-ed-border last:border-0 cursor-pointer transition-colors ${formData.voice_id === voice.id ? 'bg-ed-well' : 'hover:bg-ed-well'}`}
                     >
-                      <div className="flex items-center gap-4">
-                        <button type="button" className="text-purple-600 p-1 rounded-full border border-purple-200 hover:bg-purple-100 transition-colors">
-                          <Play size={16} fill="currentColor" className="ml-0.5" />
-                        </button>
-                        <div>
-                          <div className="font-semibold text-gray-900">{voice.name}</div>
-                          <div className="text-xs text-gray-500">{voice.desc}</div>
+                      <div>
+                        <div className="font-semibold text-ed-text">{voice.name ?? voice.id}</div>
+                        <div className="text-xs text-ed-text-dim">
+                          {[voice.engine, voice.gender].filter(Boolean).join(' · ') || voice.id}
                         </div>
                       </div>
                       {formData.voice_id === voice.id && (
-                        <Check size={20} className="text-purple-600" />
+                        <Check size={20} className="text-ed-accent-text" />
                       )}
                     </div>
                   ))}
@@ -260,7 +302,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
         {/* STEP 4: ART STYLE */}
         {step4Visible && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 pt-6">
-             <div className="flex items-center gap-2 mb-3 text-gray-700 font-medium">
+             <div className="flex items-center gap-2 mb-3 text-ed-text-dim font-medium">
                 <ImageIcon size={16} />
                 <span>Art Style</span>
               </div>
@@ -269,12 +311,12 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
                 <div 
                   key={style}
                   onClick={() => setFormData({...formData, art_style_preset: style})}
-                  className={`relative aspect-square rounded-xl border-2 cursor-pointer overflow-hidden transition-all flex items-center justify-center bg-gray-100 ${formData.art_style_preset === style ? 'border-purple-600 shadow-md' : 'border-transparent hover:border-gray-300'}`}
+                  className={`relative aspect-square rounded-xl border-2 cursor-pointer overflow-hidden transition-all flex items-center justify-center bg-ed-raised ${formData.art_style_preset === style ? 'border-ed-accent shadow-md' : 'border-transparent hover:border-ed-border-strong'}`}
                 >
-                  <span className="font-medium text-gray-700 text-center px-2 z-10">{style}</span>
+                  <span className="font-medium text-ed-text-dim text-center px-2 z-10">{style}</span>
                   {formData.art_style_preset === style && (
-                    <div className="absolute top-2 right-2 bg-purple-600 rounded-full p-0.5 z-20">
-                      <Check size={14} className="text-white" />
+                    <div className="absolute top-2 right-2 bg-ed-accent rounded-full p-0.5 z-20">
+                      <Check size={14} className="text-ed-base" />
                     </div>
                   )}
                 </div>
@@ -296,11 +338,11 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
                 <div 
                   key={ratio}
                   onClick={() => setFormData({...formData, aspectRatio: ratio})}
-                  className={`p-6 rounded-xl border-2 text-center cursor-pointer flex flex-col items-center gap-4 transition-all ${formData.aspectRatio === ratio ? 'border-purple-600 bg-purple-50' : 'border-gray-200 bg-white hover:border-gray-300'}`}
+                  className={`p-6 rounded-xl border-2 text-center cursor-pointer flex flex-col items-center gap-4 transition-all ${formData.aspectRatio === ratio ? 'border-ed-accent-border bg-ed-accent-soft' : 'border-ed-border bg-ed-surface hover:border-ed-border-strong'}`}
                 >
-                  <div className={`border-2 ${formData.aspectRatio === ratio ? 'border-purple-600' : 'border-gray-400'} 
+                  <div className={`border-2 ${formData.aspectRatio === ratio ? 'border-ed-accent-border' : 'border-ed-border-strong'} 
                     ${ratio.includes('9:16') ? 'w-10 h-16' : ratio.includes('16:9') ? 'w-16 h-10' : 'w-12 h-12'} rounded-md`} />
-                  <span className={`font-semibold ${formData.aspectRatio === ratio ? 'text-purple-700' : 'text-gray-700'}`}>{ratio}</span>
+                  <span className={`font-semibold ${formData.aspectRatio === ratio ? 'text-ed-accent-text' : 'text-ed-text-dim'}`}>{ratio}</span>
                 </div>
               ))}
             </div>
@@ -318,18 +360,16 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
             <div className="relative">
               <select
                 required
-                className="w-full bg-white border border-gray-300 text-gray-900 px-4 py-3 rounded-lg appearance-none focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
+                className="w-full bg-ed-surface border border-ed-border-strong text-ed-text px-4 py-3 rounded-lg appearance-none focus:outline-none focus:border-ed-accent-border focus:ring-1 focus:ring-ed-accent-border"
                 value={formData.videoLanguage}
                 onChange={(e) => setFormData({...formData, videoLanguage: e.target.value})}
               >
                 <option value="" disabled>Select a language</option>
-                <option value="English">English</option>
-                <option value="Spanish">Spanish</option>
-                <option value="French">French</option>
-                <option value="German">German</option>
-                <option value="Japanese">Japanese</option>
+                {LANGUAGES.map((language) => (
+                  <option key={language} value={language}>{language}</option>
+                ))}
               </select>
-              <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-gray-500">
+              <div className="absolute inset-y-0 right-0 flex items-center px-4 pointer-events-none text-ed-text-dim">
                 ▼
               </div>
             </div>
@@ -349,7 +389,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
                 <div 
                   key={dur}
                   onClick={() => setFormData({...formData, duration: dur})}
-                  className={`p-3 rounded-lg border-2 text-center cursor-pointer font-medium transition-all ${formData.duration === dur ? 'border-purple-600 bg-purple-50 text-purple-700' : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'}`}
+                  className={`p-3 rounded-lg border-2 text-center cursor-pointer font-medium transition-all ${formData.duration === dur ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text' : 'border-ed-border bg-ed-surface text-ed-text-dim hover:border-ed-border-strong'}`}
                 >
                   {dur}
                 </div>
@@ -360,11 +400,11 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
 
         {/* SUBMIT BUTTON */}
         {allComplete && (
-          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 pt-8 mt-4 border-t border-gray-100">
+          <div className="animate-in fade-in slide-in-from-bottom-4 duration-500 pt-8 mt-4 border-t border-ed-border">
             <button 
               type="submit" 
               disabled={isSubmitting}
-              className="w-full bg-purple-600 hover:bg-purple-700 text-white font-semibold py-4 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-70"
+              className="w-full bg-ed-accent hover:bg-ed-accent-hover text-ed-base font-semibold py-4 rounded-xl shadow-lg transition-colors flex items-center justify-center gap-2 disabled:opacity-70"
             >
               {isSubmitting ? "Saving to Database..." : "Complete Setup"} {!isSubmitting && <Check size={20} />}
             </button>

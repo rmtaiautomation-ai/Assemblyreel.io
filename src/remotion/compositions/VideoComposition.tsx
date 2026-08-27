@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useMemo } from 'react';
 import {
   AbsoluteFill,
   Sequence,
@@ -73,7 +73,13 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
 }) => {
   const { fps } = useVideoConfig();
 
-  const { segments } = layoutScenes(scenes, fps);
+  // The Player re-invokes this whole component on every frame during playback (that's
+  // how Remotion works — frame-driven, not incremental), so an unmemoized layoutScenes
+  // pass over every scene ran 30-60x/sec regardless of scene count. Invisible on a
+  // handful of short-form scenes; on a 200+ scene long-form project this was the actual
+  // cost behind visible playback jank. `scenes` doesn't change frame-to-frame, so this
+  // only needs to recompute when the project's scene list itself changes.
+  const { segments } = useMemo(() => layoutScenes(scenes, fps), [scenes, fps]);
 
   /**
    * Picks the animation component for a preset. Returns only the moving text —
@@ -298,10 +304,16 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
     );
   };
 
-  return (
-    <AbsoluteFill style={{ backgroundColor: 'black' }}>
-      {/* Scene sequences */}
-      {segments.map((segment) => {
+  // Same reasoning as the layoutScenes memo above: this creates a `<Sequence>` subtree
+  // per scene (207 of them on a long-form project), and without memoization the Player
+  // rebuilt and re-diffed all of them on every frame during playback even though only
+  // one Sequence is ever actually visible at a time. Frame-reactive behavior inside
+  // (KenBurns, OffthreadVideo, SceneTransition, the overlay) still updates correctly —
+  // those subscribe to Remotion's own current-frame context directly, independent of
+  // whether this parent array was rebuilt.
+  const sceneSequences = useMemo(
+    () =>
+      segments.map((segment) => {
         const { scene, transitionInFrames } = segment;
         const hasOverlay = Boolean(scene.overlay && scene.overlay.preset !== 'none');
 
@@ -394,7 +406,14 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
             </SceneTransition>
           </Sequence>
         );
-      })}
+      }),
+    [segments, fps]
+  );
+
+  return (
+    <AbsoluteFill style={{ backgroundColor: 'black' }}>
+      {/* Scene sequences */}
+      {sceneSequences}
 
       {/* OV track — independent overlay clips. Rendered after the scene
           sequences (so they paint above every scene, its own overlay, and any

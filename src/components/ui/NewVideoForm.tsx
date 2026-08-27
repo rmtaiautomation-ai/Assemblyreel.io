@@ -3,8 +3,7 @@
 import React, { useState } from "react";
 import { Sparkles, Wand2, Loader2, Bot, X, Send, Zap, Layout, Mic, Image as ImageIcon, MonitorPlay, Settings } from "lucide-react";
 import { generateArcAndHook } from "@/lib/ai/script-writer";
-import { createProjectWithActs, type ActOutline } from "@/app/actions/whiteboard-actions";
-import Whiteboard from "@/components/ui/Whiteboard";
+import { createProjectWithActs } from "@/app/actions/whiteboard-actions";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 
@@ -43,14 +42,6 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
-  // Whiteboard handoff: once the project shell and Act outlines exist, the Whiteboard
-  // takes over and drives generation act by act.
-  const [whiteboardState, setWhiteboardState] = useState<{
-    projectId: string;
-    acts: ActOutline[];
-    isSinglePass: boolean;
-  } | null>(null);
-
   const [targetDuration, setTargetDuration] = useState("Short (< 60s)");
   
   // AI Sidebar state
@@ -106,7 +97,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
     setIsSubmitting(true);
     setError(null);
 
-    // Only plans the Act structure — the Whiteboard runs the agent chain per Act so a
+    // Only plans the Act structure — the Scene Board runs the agent chain per Act so a
     // long-form video shows progress instead of blocking on one very long request.
     const result = await createProjectWithActs({
       workspaceId: workspace.id,
@@ -118,58 +109,45 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
       targetDuration,
     });
 
-    setIsSubmitting(false);
+    if (result.success && result.projectId) {
+      /* Navigate to the Scene Board rather than swapping the board in as local state.
+         Rendering it here meant a refresh, a stray click or a closed tab lost the whole
+         screen mid-generation, and it made the "new project" board and the "reopened"
+         board two different things behaving differently. There is now exactly one Scene
+         Board, and it is a route.
 
-    if (result.success && result.projectId && result.acts) {
-      setWhiteboardState({
-        projectId: result.projectId,
-        acts: result.acts,
-        isSinglePass: Boolean(result.isSinglePass),
-      });
-      router.refresh();
-    } else {
-      setError(result.error || "Failed to create video project.");
+         `isSubmitting` deliberately stays true — the navigation is the end of this
+         form's life, and clearing it would flash the button back to idle underneath a
+         page that is already leaving. */
+      router.push(`/workspaces/${workspace.id}/videos/${result.projectId}/scene-board`);
+      return;
     }
-  };
 
-  if (whiteboardState) {
-    return (
-      <Whiteboard
-        projectId={whiteboardState.projectId}
-        workspaceId={workspace.id}
-        acts={whiteboardState.acts}
-        workspaceTheme={workspace.content_theme}
-        topic={topic}
-        narrativeArc={narrativeArc}
-        scriptHook={scriptHook}
-        visualAesthetic={visualAesthetic || workspace.visual_aesthetic || ""}
-        targetDuration={targetDuration}
-        isSinglePass={whiteboardState.isSinglePass}
-      />
-    );
-  }
+    setIsSubmitting(false);
+    setError(result.error || "Failed to create video project.");
+  };
 
   return (
     <div className="space-y-6">
-        <div className="bg-white border border-gray-100 rounded-2xl shadow-sm p-6 sm:p-8 relative overflow-hidden">
-        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-purple-500 to-indigo-600"></div>
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-gray-100">
+        <div className="bg-ed-surface border border-ed-border rounded-2xl shadow-sm p-6 sm:p-8 relative overflow-hidden">
+        <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-ed-accent to-ed-accent"></div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-ed-border">
           <div className="flex items-center gap-2">
-            <Sparkles className="text-purple-600" size={24} />
-            <h2 className="text-2xl font-bold text-gray-900 tracking-tight">Create New Video</h2>
+            <Sparkles className="text-ed-accent-text" size={24} />
+            <h2 className="text-2xl font-bold text-ed-text tracking-tight">Create New Video</h2>
           </div>
           
           <div className="flex items-center gap-2 overflow-x-auto pb-1">
             {workspace.aspect_ratio && (
-              <div className="flex items-center gap-1.5 text-[11px] font-medium text-gray-600 bg-gray-50 border border-gray-200 px-2 py-1 rounded-md shadow-sm whitespace-nowrap">
-                <Layout size={12} className="text-purple-500 shrink-0" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-ed-text-dim bg-ed-well border border-ed-border px-2 py-1 rounded-md shadow-sm whitespace-nowrap">
+                <Layout size={12} className="text-ed-accent-text shrink-0" />
                 {workspace.aspect_ratio}
               </div>
             )}
 
             {workspace.visual_aesthetic && (
-              <div className="flex items-center gap-1.5 text-[11px] font-medium text-gray-600 bg-gray-50 border border-gray-200 px-2 py-1 rounded-md shadow-sm whitespace-nowrap">
-                <ImageIcon size={12} className="text-purple-500 shrink-0" />
+              <div className="flex items-center gap-1.5 text-[11px] font-medium text-ed-text-dim bg-ed-well border border-ed-border px-2 py-1 rounded-md shadow-sm whitespace-nowrap">
+                <ImageIcon size={12} className="text-ed-accent-text shrink-0" />
                 {workspace.visual_aesthetic}
               </div>
             )}
@@ -181,15 +159,15 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
           {/* Row 1: Full Story Outline + Auto Gen Button */}
           <div className="space-y-2">
             <div>
-              <label className="block text-sm font-bold text-gray-800 mb-1">Full Story Outline</label>
-              <p className="text-xs text-gray-500 mb-2">The complete plot or sequence of events for your story.</p>
+              <label className="block text-sm font-bold text-ed-text mb-1">Full Story Outline</label>
+              <p className="text-xs text-ed-text-dim mb-2">The complete plot or sequence of events for your story.</p>
             </div>
             <div className="relative">
               <textarea 
                 name="narrative_arc" 
                 value={narrativeArc}
                 onChange={(e) => setNarrativeArc(e.target.value)}
-                className="w-full bg-gray-50/50 border border-gray-200 text-gray-900 p-4 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all resize-none min-h-[140px] shadow-inner"
+                className="w-full bg-ed-well border border-ed-border text-ed-text p-4 rounded-xl focus:outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border/10 transition-all resize-none min-h-[140px] shadow-inner"
                 placeholder="e.g. A blinded, captive warrior asks for one last burst of strength..."
               />
             </div>
@@ -197,7 +175,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
               <button
                 type="button"
                 onClick={() => setIsAiSidebarOpen(true)}
-                className="bg-purple-600 hover:bg-purple-700 text-white font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                className="bg-ed-accent hover:bg-ed-accent-hover text-ed-base font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-sm"
               >
                 <Bot size={14} />
                 Open AI Co-Writer
@@ -209,29 +187,29 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="flex flex-col">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">Topic</label>
-                <p className="text-xs text-gray-500 mb-2">The main subject or title of this video.</p>
+                <label className="block text-sm font-bold text-ed-text mb-1">Topic</label>
+                <p className="text-xs text-ed-text-dim mb-2">The main subject or title of this video.</p>
               </div>
               <textarea
                 name="topic"
                 required
                 value={topic}
                 onChange={(e) => setTopic(e.target.value)}
-                className="flex-1 w-full bg-gray-50/50 border border-gray-200 text-gray-900 p-4 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all resize-none min-h-[100px] shadow-inner"
+                className="flex-1 w-full bg-ed-well border border-ed-border text-ed-text p-4 rounded-xl focus:outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border/10 transition-all resize-none min-h-[100px] shadow-inner"
                 placeholder="e.g. Samson's Final Stand"
               />
             </div>
 
             <div className="flex flex-col">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">Script Hook</label>
-                <p className="text-xs text-gray-500 mb-2">The attention-grabbing first 5 seconds.</p>
+                <label className="block text-sm font-bold text-ed-text mb-1">Script Hook</label>
+                <p className="text-xs text-ed-text-dim mb-2">The attention-grabbing first 5 seconds.</p>
               </div>
               <textarea
                 name="script_hook"
                 value={scriptHook}
                 onChange={(e) => setScriptHook(e.target.value)}
-                className="flex-1 w-full bg-gray-50/50 border border-gray-200 text-gray-900 p-4 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 transition-all resize-none min-h-[100px] shadow-inner"
+                className="flex-1 w-full bg-ed-well border border-ed-border text-ed-text p-4 rounded-xl focus:outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border/10 transition-all resize-none min-h-[100px] shadow-inner"
                 placeholder="e.g. One man destroys an entire empire's leadership..."
               />
             </div>
@@ -241,21 +219,21 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
             <div className="flex flex-col">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">Visual Aesthetic</label>
-                <p className="text-xs text-gray-500 mb-2">The visual style and atmosphere for this video.</p>
+                <label className="block text-sm font-bold text-ed-text mb-1">Visual Aesthetic</label>
+                <p className="text-xs text-ed-text-dim mb-2">The visual style and atmosphere for this video.</p>
               </div>
               <textarea 
                 name="visual_aesthetic" 
                 value={visualAesthetic}
                 onChange={(e) => setVisualAesthetic(e.target.value)}
-                className="flex-1 w-full bg-gray-50/50 border border-gray-200 text-gray-900 p-4 rounded-xl focus:outline-none focus:border-purple-500 focus:ring-4 focus:ring-purple-500/10 resize-none min-h-[100px] shadow-inner"
+                className="flex-1 w-full bg-ed-well border border-ed-border text-ed-text p-4 rounded-xl focus:outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border/10 resize-none min-h-[100px] shadow-inner"
               />
             </div>
 
             <div className="flex flex-col">
               <div>
-                <label className="block text-sm font-bold text-gray-800 mb-1">Target Duration</label>
-                <p className="text-xs text-gray-500 mb-2">How long should this video be?</p>
+                <label className="block text-sm font-bold text-ed-text mb-1">Target Duration</label>
+                <p className="text-xs text-ed-text-dim mb-2">How long should this video be?</p>
               </div>
               <div className="grid grid-cols-3 gap-2">
                 {DURATION_OPTIONS.map((opt) => (
@@ -265,8 +243,8 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
                     onClick={() => setTargetDuration(opt.value)}
                     className={`p-2 rounded-xl border text-sm transition-all flex flex-col items-center justify-center gap-0.5 ${
                       targetDuration === opt.value 
-                        ? "bg-purple-600 border-purple-600 text-white shadow-md" 
-                        : "bg-white border-gray-200 text-gray-700 hover:border-purple-400 hover:bg-purple-50"
+                        ? "bg-ed-accent-soft border-ed-accent text-ed-accent-text" 
+                        : "bg-ed-surface border-ed-border text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft"
                     }`}
                   >
                     <span className="font-bold">{opt.label}</span>
@@ -280,14 +258,14 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
 
 
           {error && (
-            <div className="text-red-500 text-sm font-medium bg-red-50 p-3 rounded-lg border border-red-100">{error}</div>
+            <div className="text-ed-danger text-sm font-medium bg-ed-danger-soft p-3 rounded-lg border border-ed-danger-border">{error}</div>
           )}
 
-          <div className="flex justify-end pt-6 border-t border-gray-100 mt-4">
+          <div className="flex justify-end pt-6 border-t border-ed-border mt-4">
             <button
               type="submit"
               disabled={isSubmitting}
-              className="bg-gray-900 hover:bg-gray-800 text-white font-bold px-8 py-3.5 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-[1px]"
+              className="bg-ed-surface hover:bg-ed-raised text-white font-bold px-8 py-3.5 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-[1px]"
             >
               {isSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Wand2 size={18} />}
               {isSubmitting ? "Planning acts…" : "Generate Story"}
@@ -299,37 +277,37 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
       {/* AI Sidebar Overlay */}
       {isAiSidebarOpen && (
         <div className="fixed inset-0 z-50 flex justify-end">
-          <div className="absolute inset-0 bg-black/20 backdrop-blur-sm" onClick={() => setIsAiSidebarOpen(false)}></div>
-          <div className="relative w-full max-w-md bg-white h-full shadow-2xl flex flex-col animate-in slide-in-from-right-full duration-300">
+          <div className="absolute inset-0 bg-ed-media/20 backdrop-blur-sm" onClick={() => setIsAiSidebarOpen(false)}></div>
+          <div className="relative w-full max-w-md bg-ed-surface h-full shadow-2xl flex flex-col animate-in slide-in-from-right-full duration-300">
             
-            <div className="p-4 border-b flex justify-between items-center bg-gray-50">
+            <div className="p-4 border-b flex justify-between items-center bg-ed-well">
               <div className="flex items-center gap-2">
-                <div className="bg-purple-100 p-2 rounded-lg">
-                  <Bot className="text-purple-600" size={20} />
+                <div className="bg-ed-accent-soft p-2 rounded-lg">
+                  <Bot className="text-ed-accent-text" size={20} />
                 </div>
-                <h3 className="font-bold text-gray-900">AI Co-Writer</h3>
+                <h3 className="font-bold text-ed-text">AI Co-Writer</h3>
               </div>
-              <button onClick={() => setIsAiSidebarOpen(false)} className="p-2 hover:bg-gray-200 rounded-lg text-gray-500 transition-colors">
+              <button onClick={() => setIsAiSidebarOpen(false)} className="p-2 hover:bg-ed-hover rounded-lg text-ed-text-dim transition-colors">
                 <X size={20} />
               </button>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-gray-50/50">
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-ed-base">
               {chatMessages.length === 0 && (
-                <div className="text-center text-gray-500 mt-10">
-                  <Sparkles className="mx-auto mb-3 text-purple-400" size={32} />
+                <div className="text-center text-ed-text-dim mt-10">
+                  <Sparkles className="mx-auto mb-3 text-ed-accent-text" size={32} />
                   <p className="text-sm">I can help you brainstorm a topic, write a catchy hook, and build your narrative arc. What kind of story do you want to tell?</p>
                 </div>
               )}
               {chatMessages.map((msg, i) => (
                 <div key={i} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-                  <div className={`p-3 rounded-2xl max-w-[85%] text-sm ${msg.role === 'user' ? 'bg-purple-600 text-white rounded-br-none' : 'bg-white border shadow-sm text-gray-800 rounded-bl-none'}`}>
+                  <div className={`p-3 rounded-2xl max-w-[85%] text-sm ${msg.role === 'user' ? 'bg-ed-accent-soft border border-ed-accent-border text-ed-text rounded-br-none' : 'bg-ed-surface border shadow-sm text-ed-text rounded-bl-none'}`}>
                     {msg.content}
                   </div>
                   {msg.parsed && msg.role === 'ai' && (
                     <button 
                       onClick={() => handleApplyAiSuggestion(msg.parsed)}
-                      className="mt-2 text-xs bg-purple-100 text-purple-700 hover:bg-purple-200 px-3 py-1.5 rounded-full font-bold transition-colors"
+                      className="mt-2 text-xs bg-ed-accent-soft text-ed-accent-text hover:bg-ed-accent-soft px-3 py-1.5 rounded-full font-bold transition-colors"
                     >
                       Apply to Form ✨
                     </button>
@@ -338,16 +316,16 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
               ))}
               {isChatLoading && (
                 <div className="flex justify-start">
-                  <div className="p-3 bg-white border shadow-sm rounded-2xl rounded-bl-none flex gap-1 items-center">
-                    <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce"></span>
-                    <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{animationDelay: '150ms'}}></span>
-                    <span className="w-2 h-2 bg-purple-400 rounded-full animate-bounce" style={{animationDelay: '300ms'}}></span>
+                  <div className="p-3 bg-ed-surface border shadow-sm rounded-2xl rounded-bl-none flex gap-1 items-center">
+                    <span className="w-2 h-2 bg-ed-accent rounded-full animate-bounce"></span>
+                    <span className="w-2 h-2 bg-ed-accent rounded-full animate-bounce" style={{animationDelay: '150ms'}}></span>
+                    <span className="w-2 h-2 bg-ed-accent rounded-full animate-bounce" style={{animationDelay: '300ms'}}></span>
                   </div>
                 </div>
               )}
             </div>
 
-            <div className="p-4 bg-white border-t">
+            <div className="p-4 bg-ed-surface border-t">
               <form 
                 onSubmit={(e) => { e.preventDefault(); handleSendChat(); }}
                 className="flex items-center gap-2"
@@ -357,12 +335,12 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
                   value={chatInput}
                   onChange={(e) => setChatInput(e.target.value)}
                   placeholder="Ask for ideas..."
-                  className="flex-1 bg-gray-100 border-none rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500"
+                  className="flex-1 bg-ed-raised border-none rounded-full px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-ed-accent-border"
                 />
                 <button 
                   type="submit"
                   disabled={!chatInput.trim() || isChatLoading}
-                  className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 text-white p-2.5 rounded-full transition-colors flex-shrink-0"
+                  className="bg-ed-accent hover:bg-ed-accent-hover disabled:bg-ed-border-strong text-ed-base p-2.5 rounded-full transition-colors flex-shrink-0"
                 >
                   <Send size={18} />
                 </button>

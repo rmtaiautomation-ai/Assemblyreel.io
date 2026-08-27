@@ -5,6 +5,16 @@ import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
 import { enrichAndPersistScenes } from "@/app/actions/orchestrator-actions";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
+import { type FormatProfile } from "@/lib/ai/format-profile";
+import { factsNamedIn } from "@/lib/ai/channel-facts";
+import {
+  getWorkspaceFormatProfile,
+  readActContinuity,
+  recordActContinuity,
+  resolveProjectFormatProfile,
+  resolveProjectFramingDevice,
+} from "@/app/actions/format-actions";
+import { resolveProjectFactLedger } from "@/app/actions/fact-actions";
 import {
   generateActNarration,
   generateFullNarration,
@@ -95,6 +105,12 @@ export async function createProjectWithActs(params: {
     return { success: false, error: error?.message || "Failed to create project" };
   }
 
+  // Resolved ONCE, here, and frozen onto the project below. Every later Act — even one
+  // generated in a separate request after the user has edited the Channel Format tab —
+  // reads this same snapshot via resolveProjectFormatProfile, never the live workspace
+  // row. That is what keeps a whole video sounding like one channel.
+  const { profile: formatProfile } = await getWorkspaceFormatProfile(workspaceId);
+
   // Short and mid-form are a single pass — one "Act" covering the whole script, so the
   // Whiteboard renders one card and the same per-act code path still applies.
   const isSinglePass = !duration.isLongForm;
@@ -113,7 +129,8 @@ export async function createProjectWithActs(params: {
       topic,
       narrativeArc,
       workspaceTheme,
-      targetDuration
+      targetDuration,
+      formatProfile
     );
 
     if (!actOutlinesRes.success || !actOutlinesRes.acts) {
@@ -141,6 +158,28 @@ export async function createProjectWithActs(params: {
       "[Whiteboard] act_outlines/target_duration not saved — run db/add-act-persistence.sql:",
       persistError.message
     );
+  }
+
+  // Separate call, and best-effort: these columns need db/add-channel-blueprint.sql,
+  // which is a different (and possibly not-yet-run) migration from the one above. A
+  // missing snapshot column must not fail act_outlines/target_duration, so this cannot
+  // share that update. Every later read of this project's format falls back to a live
+  // workspace resolve when this write did not happen — see resolveProjectFormatProfile.
+  if (formatProfile) {
+    const { error: snapshotError } = await supabase
+      .from("video_projects")
+      .update({
+        format_blueprint_snapshot: formatProfile,
+        format_blueprint_version: formatProfile.version,
+      })
+      .eq("id", project.id);
+
+    if (snapshotError) {
+      console.warn(
+        "[Whiteboard] format_blueprint_snapshot not saved — run db/add-channel-blueprint.sql:",
+        snapshotError.message
+      );
+    }
   }
 
   return { success: true, projectId: project.id, isSinglePass, acts };
@@ -194,6 +233,14 @@ export async function generateAct(params: {
   actNumber: number;
   /** Omitted for single-pass (short/mid-form) generation. */
   act?: ActOutline;
+  /**
+   * Resolved format spec, when the caller already has one (e.g. right after
+   * `createProjectWithActs`). Omitted callers get the project's frozen snapshot via
+   * `resolveProjectFormatProfile` below — the same guarantee whether this Act is
+   * generated inline during project creation or later, from a separate request, after
+   * the Whiteboard's per-Act approval gate has already passed on earlier Acts.
+   */
+  formatProfile?: FormatProfile;
 }): Promise<GenerateActResult> {
   const {
     projectId,
@@ -211,15 +258,62 @@ export async function generateAct(params: {
   const warnings: string[] = [];
   const aesthetic = visualAesthetic || "Cinematic";
 
+  // Created here rather than where scenes are first written below, so the format
+  // profile — needed before Agent 1 even runs — and the scene writes later can share
+  // one client instead of two.
+  const supabase = await createClient();
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId, params.formatProfile);
+
+  // Rotation ledger (Phase 7): ONE device for the whole video, drawn on the first Act and
+  // reused by every later one. This used to call `consumeRotationCursor` directly, which
+  // advances the channel cursor on every call — so a 9-Act video drew nine devices from a
+  // 7-entry pool and re-framed itself three times over. `resolveProjectFramingDevice` is
+  // idempotent per project and degrades to null on every failure path (no pool, migration
+  // not run, project missing), in which case selectedFramingDevice stays undefined and the
+  // Script Writer prompt falls back to its pre-Phase-7 "choose one from the pool"
+  // instruction.
+  const selectedFramingDevice =
+    (await resolveProjectFramingDevice(projectId, formatProfile)) ?? undefined;
+
+  // The closed set of named sources this Act may cite. Frozen onto the project on first
+  // call, for the same reason the format profile is: with a human approval gate between
+  // Acts, a fact ticked or unticked mid-video must not change what a later Act is allowed
+  // to say. Returns [] rather than throwing on any failure — including a database that has
+  // not run db/add-channel-facts.sql — and an empty ledger compiles to no instruction at
+  // all, which is exactly the behaviour before this existed.
+  const facts = await resolveProjectFactLedger(supabase, projectId);
+
+  // What earlier Acts of THIS video already spent. The arcBeats reserve list tells this Act
+  // which beats belong elsewhere, but says nothing about what has already been said — which
+  // is why the Council of Laodicea landed in both Act 7 and Act 8 of two separate videos.
+  // Empty for Act 1 and for an un-migrated database, in which case no block is emitted.
+  const continuity = act ? await readActContinuity(supabase, projectId) : [];
+
   // --- Agent 1: Script Writer ----------------------------------------------------
+  //
+  // scriptHook is a cold-open line, written once at project creation for the video's
+  // OPENING five seconds. Every act used to receive it verbatim regardless of act
+  // number — so Act 7 was handed "Hook: [Act 1's opening image]" alongside a system
+  // instruction telling it every Act carries its own self-contained cold open. Same
+  // call, two contradictory instructions about how this act should begin.
+  //
+  // Scoped to the act that actually owns the cold open: Act 1 of a multi-act video, or
+  // the single generation call for a short/mid-form video (no `act` at all — the whole
+  // script IS the opening in that case, so the hook still belongs in every word of it).
+  const hookAppliesHere = !act || act.actNumber === 1;
+
   const scriptResult = await generateScript({
     topic,
     narrativeArc,
-    hook: scriptHook,
+    hook: hookAppliesHere ? scriptHook : "",
     visualAesthetic: aesthetic,
     pov: "Third-person omnipresent",
     nicheTheme: workspaceTheme,
     targetDuration,
+    formatProfile,
+    selectedFramingDevice,
+    facts,
+    continuity,
     ...(act ? { actOutline: { actNumber: act.actNumber, description: act.description } } : {}),
   });
 
@@ -230,6 +324,18 @@ export async function generateAct(params: {
   const scriptLines = scriptResult.scriptLines;
   const actScriptText = scriptLines.join("\n\n");
 
+  // Record what this Act actually named, for the Acts that follow. Written from the
+  // generated narration rather than from what the prompt asked for, because the two differ
+  // — the point is what the viewer was really told. Single-pass short/mid-form has no later
+  // Act to inform, so it is skipped entirely.
+  if (act) {
+    await recordActContinuity(supabase, projectId, {
+      actNumber: act.actNumber,
+      title: act.title,
+      namedFacts: factsNamedIn(actScriptText, facts),
+    });
+  }
+
   // --- Agent 2: Scene Slicer -----------------------------------------------------
   const slicerResult = await sliceScriptIntoScenes({
     projectId,
@@ -237,6 +343,7 @@ export async function generateAct(params: {
     startingSequenceNumber,
     nicheTheme: workspaceTheme,
     targetDuration,
+    formatProfile,
   });
 
   if (!slicerResult.success || !slicerResult.scenes || !slicerResult.sceneIds) {
@@ -252,7 +359,6 @@ export async function generateAct(params: {
   const sceneIds = slicerResult.sceneIds;
 
   // Agents 3-7 deliberately do NOT run here — see this function's doc comment.
-  const supabase = await createClient();
 
   // Best-effort: needs db/add-act-persistence.sql. Without it every scene defaults to
   // act_number 1, which only matters for resuming — this act's scenes are already
@@ -388,140 +494,6 @@ export async function finalizeProjectScript(params: {
   return { success: true, warnings };
 }
 
-export interface ResumedWhiteboard {
-  projectId: string;
-  workspaceId: string;
-  workspaceTheme: string;
-  topic: string;
-  narrativeArc: string;
-  scriptHook: string;
-  visualAesthetic: string;
-  targetDuration: string;
-  isSinglePass: boolean;
-  acts: Array<{
-    outline: ActOutline;
-    scriptLines: string[];
-    scenes: GeneratedActScene[];
-  }>;
-}
-
-/**
- * Rebuilds a Whiteboard session from the database, so leaving the page and coming
- * back — or a hard refresh — does not lose which scenes belong to which Act.
- *
- * Degrades in three independent ways when `db/add-act-persistence.sql` has not run
- * yet: `act_outlines` comes back null (via `select("*")`, so a missing column is just
- * an absent key, not an error), so a single synthetic Act is reconstructed from
- * whatever scenes exist; `target_duration` comes back null for the same reason, so
- * pacing rules fall back to `generation-rules.ts`'s short-form default; and the scene
- * query below retries without `act_number` if that column doesn't exist yet, since
- * PostgREST fails an entire `select()` when *any* named column is missing — a first
- * live run of this route showed the scenes list coming back completely empty because
- * of exactly that, not because there were no scenes.
- */
-export async function loadProjectForWhiteboard(
-  projectId: string
-): Promise<{ success: boolean; data?: ResumedWhiteboard; error?: string }> {
-  const supabase = await createClient();
-
-  const { data: project, error: projectError } = await supabase
-    .from("video_projects")
-    .select("*")
-    .eq("id", projectId)
-    .single();
-
-  if (projectError || !project) {
-    return { success: false, error: projectError?.message || "Project not found." };
-  }
-
-  const { data: workspace } = await supabase
-    .from("workspaces")
-    .select("content_theme")
-    .eq("id", project.workspace_id)
-    .single();
-
-  const SCENE_BASE_COLUMNS =
-    "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt";
-
-  let sceneRows: Array<Record<string, unknown>> | null = null;
-
-  const { data: sceneRowsWithAct, error: sceneError } = await supabase
-    .from("scenes")
-    .select(`${SCENE_BASE_COLUMNS}, act_number`)
-    .eq("project_id", projectId)
-    .order("sequence_number");
-
-  if (sceneError) {
-    const { data: fallbackRows } = await supabase
-      .from("scenes")
-      .select(SCENE_BASE_COLUMNS)
-      .eq("project_id", projectId)
-      .order("sequence_number");
-    sceneRows = fallbackRows;
-  } else {
-    sceneRows = sceneRowsWithAct;
-  }
-
-  const scenes: (GeneratedActScene & { actNumber: number })[] = (sceneRows ?? []).map(
-    (row) => ({
-      id: row.id as string,
-      sequenceNumber: row.sequence_number as number,
-      voiceOverText: (row.voice_over_beat as string) ?? "",
-      sceneType: (row.scene_type as string) ?? "",
-      estimatedDurationSeconds: Number(row.video_duration ?? 0),
-      finalVideoPrompt: (row.final_video_prompt as string) ?? "",
-      // Read-back has no access to the slicer's original prompt, so a resumed session
-      // cannot tell fallback scenes from enriched ones — the amber badge only ever
-      // appears live, during generation. Acceptable: it is informational, and the
-      // finalVideoPrompt itself is correct either way.
-      usedFallback: false,
-      actNumber: (row.act_number as number) ?? 1,
-    })
-  );
-
-  const storedOutlines = project.act_outlines as ActOutline[] | null;
-  const distinctActNumbers = [...new Set(scenes.map((s) => s.actNumber))].sort(
-    (a, b) => a - b
-  );
-
-  const outlines: ActOutline[] =
-    storedOutlines && storedOutlines.length > 0
-      ? storedOutlines
-      : distinctActNumbers.length > 0
-        ? distinctActNumbers.map((n) => ({
-            actNumber: n,
-            title: `Act ${n}`,
-            description: "",
-          }))
-        : [{ actNumber: 1, title: "Act 1", description: project.narrative_arc || project.topic }];
-
-  const acts = outlines.map((outline) => ({
-    outline,
-    scriptLines: scenes
-      .filter((s) => s.actNumber === outline.actNumber)
-      .map((s) => s.voiceOverText),
-    scenes: scenes
-      .filter((s) => s.actNumber === outline.actNumber)
-      .map(({ actNumber: _actNumber, ...scene }) => scene),
-  }));
-
-  return {
-    success: true,
-    data: {
-      projectId: project.id,
-      workspaceId: project.workspace_id,
-      workspaceTheme: workspace?.content_theme ?? "",
-      topic: project.topic ?? "",
-      narrativeArc: project.narrative_arc ?? "",
-      scriptHook: project.story_hook ?? "",
-      visualAesthetic: project.visual_aesthetic ?? "",
-      targetDuration: (project.target_duration as string) ?? "Short (< 60s)",
-      isSinglePass: outlines.length <= 1,
-      acts,
-    },
-  };
-}
-
 /**
  * Persists a user's edit to an Act's scenes after they revise text on the Whiteboard.
  * Scoped to one Act so editing Act 2 never touches Acts 1 or 3.
@@ -574,13 +546,41 @@ export async function regenerateActVisuals(params: {
   visualAesthetic: string;
   /** Optional — resolved from the owning workspace when the caller has no handle on it. */
   nicheTheme?: string;
+  /** Optional — resolved from the project's frozen snapshot when the caller has none. */
+  formatProfile?: FormatProfile;
 }): Promise<RegenerateActVisualsResult> {
   const { projectId, actNumber, topic, visualAesthetic } = params;
   const supabase = await createClient();
 
+  // Same reasoning as `approveActVisuals`: visuals must be built against this Act's
+  // real narrated timing. A regenerate reaching here without narration would mean
+  // something bypassed the normal approve-then-regenerate path.
+  const { data: narrationRow, error: narrationCheckError } = await supabase
+    .from("act_narrations")
+    .select("act_number")
+    .eq("project_id", projectId)
+    .eq("act_number", actNumber)
+    .maybeSingle();
+
+  if (narrationCheckError) {
+    return {
+      success: false,
+      warnings: [],
+      error: `Could not verify Act ${actNumber}'s narration status (${narrationCheckError.message}).`,
+    };
+  }
+  if (!narrationRow) {
+    return {
+      success: false,
+      warnings: [],
+      error: `Narrate Act ${actNumber} before generating its visuals — visuals need the real, aligned timing from that act's audio.`,
+    };
+  }
+
   // The Timeline Editor (this function's other caller, alongside the Whiteboard) has
   // no workspace theme prop — same reasoning as `approveActVisuals`.
   const nicheTheme = await resolveWorkspaceNicheTheme(supabase, projectId, params.nicheTheme);
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId, params.formatProfile);
 
   const { data: rows, error: fetchError } = await supabase
     .from("scenes")
@@ -626,7 +626,7 @@ export async function regenerateActVisuals(params: {
   // was the exact bug this whole restructuring exists to fix: a per-act Casting
   // Director call only ever saw that act's ~17 scenes, so the same character could be
   // re-cast differently every time an act's visuals were (re)generated.
-  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme });
+  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme, formatProfile });
 
   const enrichment = await enrichAndPersistScenes({
     projectId,
@@ -635,6 +635,7 @@ export async function regenerateActVisuals(params: {
     topic,
     visualAesthetic,
     nicheTheme,
+    formatProfile,
     blueprints: cast.blueprints,
   });
 
@@ -678,6 +679,11 @@ export interface RegenerateActNarrationResult {
   /** Seconds this act grew (positive) or shrank (negative). */
   shiftSeconds?: number;
   totalDurationSeconds?: number;
+  /**
+   * This act's newly-aligned per-scene durations. The caller's local `scenes`
+   * state won't otherwise learn about them — see `GenerateActNarrationResult.updatedScenes`.
+   */
+  updatedScenes?: Array<{ id: string; video_duration: number }>;
   warnings: string[];
   error?: string;
 }
@@ -735,6 +741,7 @@ export async function regenerateActNarration(params: {
     acts: layout.acts,
     shiftSeconds,
     totalDurationSeconds: layout.totalDurationSeconds,
+    updatedScenes: result.updatedScenes,
     warnings,
   };
 }
@@ -799,6 +806,7 @@ export async function castProjectCharactersOnce(params: {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  formatProfile?: FormatProfile;
 }): Promise<CastProjectResult> {
   const { projectId, topic, visualAesthetic } = params;
   const supabase = await createClient();
@@ -819,6 +827,7 @@ export async function castProjectCharactersOnce(params: {
   }
 
   const nicheTheme = await resolveWorkspaceNicheTheme(supabase, projectId, params.nicheTheme);
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId, params.formatProfile);
 
   const { data: rows, error: scenesError } = await supabase
     .from("scenes")
@@ -835,6 +844,7 @@ export async function castProjectCharactersOnce(params: {
     topic,
     visualAesthetic: visualAesthetic || "Cinematic",
     nicheTheme,
+    formatProfile,
   });
 
   const blueprints = casting.blueprints ?? {};
@@ -893,19 +903,51 @@ export async function approveActVisuals(params: {
   visualAesthetic: string;
   /** Optional — resolved from the owning workspace when the caller has no handle on it. */
   nicheTheme?: string;
+  /** Optional — resolved from the project's frozen snapshot when the caller has none. */
+  formatProfile?: FormatProfile;
 }): Promise<ApproveActResult> {
   const { projectId, actNumber, topic, visualAesthetic } = params;
   const supabase = await createClient();
   const warnings: string[] = [];
 
+  // Visuals must be built against this Act's REAL narrated timing, not the Scene
+  // Slicer's estimate — that estimate is what Deepgram alignment overwrites the
+  // moment this Act is narrated, so generating visuals before that exists means
+  // building against a duration that's about to change out from under them. This
+  // was previously allowed "in any order" (see commit 48a810b), which is exactly
+  // what produced visuals whose pacing no longer matched the real audio.
+  const { data: narrationRow, error: narrationCheckError } = await supabase
+    .from("act_narrations")
+    .select("act_number")
+    .eq("project_id", projectId)
+    .eq("act_number", actNumber)
+    .maybeSingle();
+
+  if (narrationCheckError) {
+    return {
+      success: false,
+      warnings,
+      error: `Could not verify Act ${actNumber}'s narration status (${narrationCheckError.message}).`,
+    };
+  }
+  if (!narrationRow) {
+    return {
+      success: false,
+      warnings,
+      error: `Narrate Act ${actNumber} before generating its visuals — visuals need the real, aligned timing from that act's audio.`,
+    };
+  }
+
   // The Timeline Editor has no workspace theme prop, and threading one through a
   // 7,000-line component to reach an action that can already join to it would be the
   // wrong trade. Resolved once here rather than left to `castProjectCharactersOnce`'s
-  // own resolution, so the SAME niche reaches both casting and the enrichment call
-  // below — otherwise an unsupplied nicheTheme would silently diverge between the two.
+  // own resolution, so the SAME niche (and format) reaches both casting and the
+  // enrichment call below — otherwise an unsupplied value would silently diverge
+  // between the two.
   const nicheTheme = await resolveWorkspaceNicheTheme(supabase, projectId, params.nicheTheme);
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId, params.formatProfile);
 
-  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme });
+  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme, formatProfile });
   if (cast.error) warnings.push(cast.error);
 
   const { data: rows, error: fetchError } = await supabase
@@ -950,6 +992,7 @@ export async function approveActVisuals(params: {
     topic,
     visualAesthetic: aesthetic,
     nicheTheme,
+    formatProfile,
     blueprints: cast.blueprints,
   });
 
@@ -997,6 +1040,13 @@ export interface ApproveResult {
   success: boolean;
   sceneCount?: number;
   blueprintCount?: number;
+  /**
+   * Whether EVERY act in the project now has visuals. Not implied by `success`:
+   * this action skips acts that have no narration yet, so a successful bulk run can
+   * still leave the project unfinished. The caller needs the real answer to decide
+   * whether to show the project as approved.
+   */
+  projectFullyApproved?: boolean;
   warnings: string[];
   error?: string;
 }
@@ -1013,12 +1063,14 @@ export async function approveAndGenerateVisuals(params: {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  formatProfile?: FormatProfile;
 }): Promise<ApproveResult> {
   const { projectId, topic, visualAesthetic } = params;
   const supabase = await createClient();
   const warnings: string[] = [];
 
   const nicheTheme = await resolveWorkspaceNicheTheme(supabase, projectId, params.nicheTheme);
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId, params.formatProfile);
 
   const { data: rows, error: fetchError } = await supabase
     .from("scenes")
@@ -1041,24 +1093,64 @@ export async function approveAndGenerateVisuals(params: {
     )
   ).sort((a, b) => a - b);
 
+  // Only acts that already have narration are eligible — `approveActVisuals` now
+  // refuses the rest, and letting the loop hit that refusal once per un-narrated act
+  // would bury the real result in a wall of identical warnings. Skipped acts are
+  // reported once, together, as a single actionable line instead.
+  const { data: narratedRows, error: narratedError } = await supabase
+    .from("act_narrations")
+    .select("act_number")
+    .eq("project_id", projectId);
+
+  if (narratedError) {
+    return {
+      success: false,
+      warnings,
+      error: `Could not read which acts have narration: ${narratedError.message}`,
+    };
+  }
+
+  const narratedActs = new Set((narratedRows ?? []).map((r) => r.act_number as number));
+  const eligibleActs = unapprovedActs.filter((actNumber) => narratedActs.has(actNumber));
+  const skippedActs = unapprovedActs.filter((actNumber) => !narratedActs.has(actNumber));
+
+  if (skippedActs.length > 0) {
+    warnings.push(
+      `Skipped act${skippedActs.length === 1 ? '' : 's'} ${skippedActs.join(', ')} — narrate ${skippedActs.length === 1 ? 'it' : 'them'} first so visuals are timed against real audio.`
+    );
+  }
+
+  if (eligibleActs.length === 0) {
+    return {
+      success: false,
+      warnings,
+      error: "No acts are ready for visuals yet — narrate at least one act first.",
+    };
+  }
+
   let sceneCount = 0;
-  for (const actNumber of unapprovedActs) {
-    const result = await approveActVisuals({ projectId, actNumber, topic, visualAesthetic, nicheTheme });
+  let projectFullyApproved = false;
+  for (const actNumber of eligibleActs) {
+    const result = await approveActVisuals({ projectId, actNumber, topic, visualAesthetic, nicheTheme, formatProfile });
     warnings.push(...result.warnings);
     if (!result.success && result.error) {
       warnings.push(`Act ${actNumber}: ${result.error}`);
       continue;
     }
     sceneCount += result.sceneCount ?? 0;
+    // Each per-act call already derives this from scene state and flips the project
+    // status when it's true, so the last act to complete carries the real answer.
+    if (result.projectFullyApproved) projectFullyApproved = true;
   }
 
-  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme });
+  const cast = await castProjectCharactersOnce({ projectId, topic, visualAesthetic, nicheTheme, formatProfile });
   if (cast.error) warnings.push(cast.error);
 
   return {
     success: true,
     sceneCount,
     blueprintCount: Object.keys(cast.blueprints).length,
+    projectFullyApproved,
     warnings,
   };
 }

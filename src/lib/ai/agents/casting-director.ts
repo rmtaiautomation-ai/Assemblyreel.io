@@ -7,7 +7,7 @@ import {
   gemini,
   isGeminiConfigured,
 } from "../gemini-provider";
-import { resolveNicheProfile } from "../generation-rules";
+import { resolveFormatProfile, type FormatProfile } from "../format-profile";
 import { acquireCallSlot } from "../concurrency";
 
 /**
@@ -55,6 +55,8 @@ export interface CastingDirectorParams {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  /** Resolved format spec; falls back to `nicheTheme`. See generateScript. */
+  formatProfile?: FormatProfile;
 }
 
 export interface CastingDirectorResult {
@@ -68,12 +70,13 @@ export async function castCharacters({
   topic,
   visualAesthetic,
   nicheTheme,
+  formatProfile,
 }: CastingDirectorParams): Promise<CastingDirectorResult> {
   if (!isGeminiConfigured()) {
     return { success: false, error: MISSING_GEMINI_KEY_ERROR };
   }
 
-  const niche = resolveNicheProfile(nicheTheme);
+  const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
 
   try {
     await acquireCallSlot();
@@ -90,7 +93,7 @@ RULES:
 2. Descriptions must be concrete and visual — colours, materials, physical traits. Never abstract ("noble bearing" is weak; "broad-shouldered, scarred jaw, upright military posture" is right).
 3. Never include actions, camera directions or locations. Those belong to other agents. Describe only what the subject permanently looks like.
 4. Style the descriptions to match this visual aesthetic: ${visualAesthetic}.
-5. Niche styling: ${niche.visualBias}
+5. Niche styling: ${profile.visual.visualBias}
 6. If the script has no recurring human or creature subjects (for example, a purely abstract or landscape piece), return an empty array.`,
       prompt: `Topic: ${topic}
 Niche: ${nicheTheme || "General"}

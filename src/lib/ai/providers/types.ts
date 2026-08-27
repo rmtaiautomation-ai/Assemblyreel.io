@@ -23,6 +23,14 @@ export interface GenerateInput {
   aspectRatio?: string;
   projectId: string;
   mediaId: string;
+  /**
+   * A local, public-relative image URL (the same shape as `media.url`, e.g.
+   * '/media/{projectId}/{mediaId}.png') to composite onto rather than generate from
+   * text alone. Only `gemini-image` honours it today — the thumbnail generator's
+   * "AI-composited" pass depends on this: the model receives the actual key art or
+   * extracted video frame alongside the prompt, instead of reimagining the scene.
+   */
+  referenceImageUrl?: string;
 }
 
 export interface VideoProvider {

@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { enrichScenesWithVisualPrompts } from "@/lib/ai/orchestrator";
 import type { CharacterBlueprints } from "@/lib/ai/agents/casting-director";
+import type { FormatProfile } from "@/lib/ai/format-profile";
 import { SCENE_AGENT_CONCURRENCY, mapWithConcurrency } from "@/lib/ai/concurrency";
 import type { SlicedScene } from "./slicer-actions";
 
@@ -17,6 +18,8 @@ export interface EnrichScenesParams {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  /** Resolved format spec; falls back to `nicheTheme` when absent. See format-actions.ts. */
+  formatProfile?: FormatProfile;
   /**
    * Cast once for the whole project and passed down, rather than re-cast per call.
    * See `OrchestrationParams.blueprints` — casting per Act is what let a character
@@ -47,6 +50,7 @@ export async function enrichAndPersistScenes({
   topic,
   visualAesthetic,
   nicheTheme,
+  formatProfile,
   blueprints,
 }: EnrichScenesParams): Promise<EnrichScenesResult> {
   if (sceneIds.length !== slicedScenes.length) {
@@ -66,6 +70,7 @@ export async function enrichAndPersistScenes({
     topic,
     visualAesthetic,
     nicheTheme,
+    formatProfile,
     blueprints,
   });
 

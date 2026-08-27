@@ -40,27 +40,27 @@ function statusView(raw: string | null | undefined) {
         kind: 'exported' as const,
         label: 'Exported',
         activity: 'Video Exported',
-        bar: 'bg-green-500',
-        chip: 'bg-green-100 text-green-700',
-        dot: 'bg-green-100',
+        bar: 'bg-ed-ok',
+        chip: 'bg-ed-ok-soft text-ed-ok',
+        dot: 'bg-ed-ok-soft',
       };
     case 'rendering':
       return {
         kind: 'rendering' as const,
         label: 'Rendering',
         activity: 'Rendering In Progress',
-        bar: 'bg-blue-500 animate-pulse',
-        chip: 'bg-blue-100 text-blue-700',
-        dot: 'bg-blue-100',
+        bar: 'bg-ed-info animate-pulse',
+        chip: 'bg-ed-info-soft text-ed-info',
+        dot: 'bg-ed-info-soft',
       };
     case 'approved':
       return {
         kind: 'approved' as const,
         label: 'Ready To Render',
         activity: 'Script & Visuals Approved',
-        bar: 'bg-emerald-500',
-        chip: 'bg-emerald-100 text-emerald-700',
-        dot: 'bg-emerald-100',
+        bar: 'bg-ed-ok',
+        chip: 'bg-ed-ok-soft text-ed-ok',
+        dot: 'bg-ed-ok-soft',
       };
     // Long-form only: every Act's script exists and the project's one shared cast is
     // locked, but no Act has audio or visuals yet — those now happen per-Act, in
@@ -70,9 +70,9 @@ function statusView(raw: string | null | undefined) {
         kind: 'scripted' as const,
         label: 'Ready To Narrate',
         activity: 'Script Approved — Cast Locked',
-        bar: 'bg-purple-500',
-        chip: 'bg-purple-100 text-purple-700',
-        dot: 'bg-purple-100',
+        bar: 'bg-ed-accent',
+        chip: 'bg-ed-accent-soft text-ed-accent-text',
+        dot: 'bg-ed-accent-soft',
       };
     // Short/mid-form only now: single-pass projects still narrate the whole project
     // in one action. Given its own badge because the whole point of the phase is that
@@ -82,38 +82,38 @@ function statusView(raw: string | null | undefined) {
         kind: 'narrated' as const,
         label: 'Review Audio',
         activity: 'Narration Ready For Review',
-        bar: 'bg-purple-500',
-        chip: 'bg-purple-100 text-purple-700',
-        dot: 'bg-purple-100',
+        bar: 'bg-ed-accent',
+        chip: 'bg-ed-accent-soft text-ed-accent-text',
+        dot: 'bg-ed-accent-soft',
       };
     case 'failed':
       return {
         kind: 'failed' as const,
         label: 'Failed',
         activity: 'Render Failed',
-        bar: 'bg-red-500',
-        chip: 'bg-red-100 text-red-700',
-        dot: 'bg-red-100',
+        bar: 'bg-ed-danger',
+        chip: 'bg-ed-danger-soft text-ed-danger',
+        dot: 'bg-ed-danger-soft',
       };
     default: // 'drafting', 'pending', and anything unrecognised
       return {
         kind: 'drafting' as const,
         label: 'Working On',
         activity: 'Working On',
-        bar: 'bg-yellow-500',
-        chip: 'bg-yellow-100 text-yellow-700',
-        dot: 'bg-yellow-100',
+        bar: 'bg-ed-warn',
+        chip: 'bg-ed-warn-soft text-ed-warn',
+        dot: 'bg-ed-warn-soft',
       };
   }
 }
 
 function StatusIcon({ kind }: { kind: ReturnType<typeof statusView>['kind'] }) {
-  if (kind === 'exported') return <CheckCircle2 size={12} className="text-green-600" />;
-  if (kind === 'rendering') return <Loader2 size={12} className="text-blue-600 animate-spin" />;
-  if (kind === 'failed') return <AlertTriangle size={12} className="text-red-600" />;
-  if (kind === 'approved') return <CheckCircle2 size={12} className="text-emerald-600" />;
-  if (kind === 'narrated' || kind === 'scripted') return <Mic size={12} className="text-purple-600" />;
-  return <Edit3 size={12} className="text-yellow-600" />;
+  if (kind === 'exported') return <CheckCircle2 size={12} className="text-ed-ok" />;
+  if (kind === 'rendering') return <Loader2 size={12} className="text-ed-info animate-spin" />;
+  if (kind === 'failed') return <AlertTriangle size={12} className="text-ed-danger" />;
+  if (kind === 'approved') return <CheckCircle2 size={12} className="text-ed-ok" />;
+  if (kind === 'narrated' || kind === 'scripted') return <Mic size={12} className="text-ed-accent-text" />;
+  return <Edit3 size={12} className="text-ed-warn" />;
 }
 
 export default async function WorkspaceHubPage({ params }: { params: { slug: string } }) {
@@ -135,8 +135,8 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
   if (!workspace) {
     return (
       <div className="flex flex-col items-center justify-center h-[50vh]">
-        <h2 className="text-xl font-bold text-gray-800 mb-4">Workspace not found</h2>
-        <Link href="/workspaces" className="text-purple-600 hover:underline">
+        <h2 className="text-xl font-bold text-ed-text mb-4">Workspace not found</h2>
+        <Link href="/workspaces" className="text-ed-accent-text hover:underline">
           Return to Dashboard
         </Link>
       </div>
@@ -156,26 +156,28 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
       {/* Top Navigation Row */}
       <div className="mb-6 flex items-center justify-between">
         {/* Breadcrumb */}
-        <div className="flex items-center text-sm font-medium text-gray-500">
-          <Link href="/workspaces" className="hover:text-purple-600 transition-colors flex items-center gap-1">
+        <div className="flex items-center text-sm font-medium text-ed-text-dim">
+          <Link href="/workspaces" className="hover:text-ed-accent-text transition-colors flex items-center gap-1">
             ← All Workspaces
           </Link>
-          <span className="mx-2 text-gray-300">/</span>
-          <span className="text-gray-900">{workspace.name}</span>
-          <span className="ml-3 bg-purple-100 text-purple-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-purple-200">
+          <span className="mx-2 text-ed-text-faint">/</span>
+          <span className="text-ed-text">{workspace.name}</span>
+          <span className="ml-3 bg-ed-accent-soft text-ed-accent-text text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-ed-accent-border">
             Active Studio
           </span>
         </div>
 
         {/* Workspace Actions */}
+        {/*
+          The "Voice Hub" button that used to sit beside Settings is gone. It linked to a
+          Setup Identity page (UGC / Custom Business) that persisted nothing — narration
+          voices are served by the local Voice Studio, and the channel's default voice is
+          now picked in Settings → Channel, against that live list.
+        */}
         <div className="flex items-center gap-3">
-          <Link href={`/workspaces/${workspace.id}/settings`} className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5">
-            <Settings size={14} className="text-gray-500" />
+          <Link href={`/workspaces/${workspace.id}/settings`} className="bg-ed-surface border border-ed-border text-ed-text-dim hover:bg-ed-well hover:border-ed-border-strong px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5">
+            <Settings size={14} className="text-ed-text-dim" />
             Settings
-          </Link>
-          <Link href={`/workspaces/${workspace.id}/characters`} className="bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300 px-3 py-1.5 rounded-lg text-xs font-bold shadow-sm transition-all flex items-center gap-1.5">
-            <Mic size={14} className="text-gray-500" />
-            Voice Hub
           </Link>
         </div>
       </div>
@@ -186,43 +188,43 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
         <div className="lg:col-span-1 flex flex-col gap-6">
 
           {/* Workspace Pulse: production stats, real activity, style reference */}
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col flex-1 min-h-[600px]">
+          <div className="bg-ed-surface border border-ed-border rounded-xl shadow-sm flex flex-col flex-1 min-h-[600px]">
 
             {/* Production Snapshot */}
             <div className="p-5">
-              <h3 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-sm">
-                <Activity size={16} className="text-purple-600" />
+              <h3 className="font-bold text-ed-text mb-4 flex items-center gap-2 text-sm">
+                <Activity size={16} className="text-ed-accent-text" />
                 Production Snapshot
               </h3>
               <div className="grid grid-cols-3 gap-2 text-center">
-                <div className="bg-gray-50 border border-gray-100 rounded-lg py-2.5">
-                  <p className="text-lg font-black text-gray-900">{totalVideos}</p>
-                  <p className="text-[9px] uppercase font-bold text-gray-500 tracking-wider">Total</p>
+                <div className="bg-ed-well border border-ed-border rounded-lg py-2.5">
+                  <p className="text-lg font-black text-ed-text">{totalVideos}</p>
+                  <p className="text-[9px] uppercase font-bold text-ed-text-dim tracking-wider">Total</p>
                 </div>
-                <div className="bg-blue-50 border border-blue-100 rounded-lg py-2.5">
-                  <p className="text-lg font-black text-blue-700">{renderingCount}</p>
-                  <p className="text-[9px] uppercase font-bold text-blue-600 tracking-wider">Rendering</p>
+                <div className="bg-ed-info-soft border border-ed-info-border rounded-lg py-2.5">
+                  <p className="text-lg font-black text-ed-info">{renderingCount}</p>
+                  <p className="text-[9px] uppercase font-bold text-ed-info tracking-wider">Rendering</p>
                 </div>
-                <div className="bg-green-50 border border-green-100 rounded-lg py-2.5">
-                  <p className="text-lg font-black text-green-700">{exportedCount}</p>
-                  <p className="text-[9px] uppercase font-bold text-green-600 tracking-wider">Exported</p>
+                <div className="bg-ed-ok-soft border border-ed-ok-border rounded-lg py-2.5">
+                  <p className="text-lg font-black text-ed-ok">{exportedCount}</p>
+                  <p className="text-[9px] uppercase font-bold text-ed-ok tracking-wider">Exported</p>
                 </div>
               </div>
               {draftingCount > 0 && (
-                <p className="text-[10px] text-gray-500 mt-2 text-center">{draftingCount} in draft / queued</p>
+                <p className="text-[10px] text-ed-text-dim mt-2 text-center">{draftingCount} in draft / queued</p>
               )}
               {failedCount > 0 && (
-                <p className="text-[10px] text-red-600 font-semibold mt-1 text-center">
+                <p className="text-[10px] text-ed-danger font-semibold mt-1 text-center">
                   {failedCount} render{failedCount === 1 ? '' : 's'} failed
                 </p>
               )}
             </div>
 
             {/* Recent Activity (real data) */}
-            <div className="px-5 pb-5 border-t border-gray-100 pt-4">
-              <h4 className="font-bold text-gray-900 text-xs mb-4">Recent Activity</h4>
+            <div className="px-5 pb-5 border-t border-ed-border pt-4">
+              <h4 className="font-bold text-ed-text text-xs mb-4">Recent Activity</h4>
               {recentActivity.length === 0 ? (
-                <p className="text-[10px] text-gray-400">No activity yet — create your first video to get started.</p>
+                <p className="text-[10px] text-ed-text-faint">No activity yet — create your first video to get started.</p>
               ) : (
                 <div className="space-y-4">
                   {recentActivity.map((video, idx) => {
@@ -230,14 +232,14 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
                     return (
                       <div key={video.id} className="flex gap-3 relative">
                         {idx < recentActivity.length - 1 && (
-                          <div className="absolute top-6 left-2.5 bottom-[-16px] w-px bg-gray-200"></div>
+                          <div className="absolute top-6 left-2.5 bottom-[-16px] w-px bg-ed-hover"></div>
                         )}
                         <div className={`p-1.5 rounded-full z-10 shrink-0 h-fit ${view.dot}`}>
                           <StatusIcon kind={view.kind} />
                         </div>
                         <div>
-                          <p className="text-xs font-bold text-gray-800">{view.activity}</p>
-                          <p className="text-[10px] text-gray-500">{video.topic || 'Untitled'} &bull; {timeAgo(video.created_at)}</p>
+                          <p className="text-xs font-bold text-ed-text">{view.activity}</p>
+                          <p className="text-[10px] text-ed-text-dim">{video.topic || 'Untitled'} &bull; {timeAgo(video.created_at)}</p>
                         </div>
                       </div>
                     );
@@ -247,38 +249,49 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
             </div>
 
             {/* Style Reference (real workspace config) */}
-            <div className="px-5 pb-5 border-t border-gray-100 pt-4 flex-1">
-              <h4 className="font-bold text-gray-900 mb-4 flex items-center gap-2 text-xs">
-                <Palette size={14} className="text-purple-600" />
-                Style Reference
-              </h4>
+            <div className="px-5 pb-5 border-t border-ed-border pt-4 flex-1">
+              {/* Every value below is now editable — Settings → Channel writes exactly
+                  these columns. The panel read as immutable channel trivia for as long as
+                  nothing could change it, so it links to its own editor. */}
+              <div className="mb-4 flex items-center justify-between gap-2">
+                <h4 className="font-bold text-ed-text flex items-center gap-2 text-xs">
+                  <Palette size={14} className="text-ed-accent-text" />
+                  Style Reference
+                </h4>
+                <Link
+                  href={`/workspaces/${workspace.id}/settings`}
+                  className="text-[10px] font-bold uppercase tracking-wider text-ed-accent-text hover:text-ed-accent-text"
+                >
+                  Edit
+                </Link>
+              </div>
               <div className="space-y-3">
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Niche</span>
-                  <span className="text-xs font-semibold text-gray-800 text-right">{prettify(workspace.content_theme)}</span>
+                  <span className="text-[10px] uppercase font-bold text-ed-text-faint tracking-wider shrink-0 pt-0.5">Niche</span>
+                  <span className="text-xs font-semibold text-ed-text text-right">{prettify(workspace.content_theme)}</span>
                 </div>
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Voice</span>
-                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
-                    <Mic size={11} className="text-gray-400" />
+                  <span className="text-[10px] uppercase font-bold text-ed-text-faint tracking-wider shrink-0 pt-0.5">Voice</span>
+                  <span className="text-xs font-semibold text-ed-text text-right flex items-center gap-1">
+                    <Mic size={11} className="text-ed-text-faint" />
                     {prettify(workspace.narration_voice_id)}
                   </span>
                 </div>
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Art Style</span>
-                  <span className="text-xs font-semibold text-gray-800 text-right">{prettify(workspace.visual_aesthetic)}</span>
+                  <span className="text-[10px] uppercase font-bold text-ed-text-faint tracking-wider shrink-0 pt-0.5">Art Style</span>
+                  <span className="text-xs font-semibold text-ed-text text-right">{prettify(workspace.visual_aesthetic)}</span>
                 </div>
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Aspect Ratio</span>
-                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
-                    <Ratio size={11} className="text-gray-400" />
+                  <span className="text-[10px] uppercase font-bold text-ed-text-faint tracking-wider shrink-0 pt-0.5">Aspect Ratio</span>
+                  <span className="text-xs font-semibold text-ed-text text-right flex items-center gap-1">
+                    <Ratio size={11} className="text-ed-text-faint" />
                     {prettify(workspace.aspect_ratio)}
                   </span>
                 </div>
                 <div className="flex justify-between items-start gap-2">
-                  <span className="text-[10px] uppercase font-bold text-gray-400 tracking-wider shrink-0 pt-0.5">Duration</span>
-                  <span className="text-xs font-semibold text-gray-800 text-right flex items-center gap-1">
-                    <Clock3 size={11} className="text-gray-400" />
+                  <span className="text-[10px] uppercase font-bold text-ed-text-faint tracking-wider shrink-0 pt-0.5">Duration</span>
+                  <span className="text-xs font-semibold text-ed-text text-right flex items-center gap-1">
+                    <Clock3 size={11} className="text-ed-text-faint" />
                     {prettify(workspace.duration_pref)}
                   </span>
                 </div>
@@ -297,13 +310,13 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
         <div className="lg:col-span-1 flex flex-col gap-6">
 
           {/* Dedicated Video Library */}
-          <div className="bg-white border border-gray-200 rounded-xl shadow-sm flex flex-col h-full min-h-[600px]">
-            <div className="p-3 border-b border-gray-100 flex items-center justify-between bg-gray-50 rounded-t-xl">
-              <h2 className="text-sm font-bold text-gray-900 flex items-center gap-1.5">
-                <MonitorPlay size={16} className="text-purple-600" />
+          <div className="bg-ed-surface border border-ed-border rounded-xl shadow-sm flex flex-col h-full min-h-[600px]">
+            <div className="p-3 border-b border-ed-border flex items-center justify-between bg-ed-well rounded-t-xl">
+              <h2 className="text-sm font-bold text-ed-text flex items-center gap-1.5">
+                <MonitorPlay size={16} className="text-ed-accent-text" />
                 Library
               </h2>
-              <span className="bg-purple-100 text-purple-700 text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+              <span className="bg-ed-accent-soft text-ed-accent-text text-[10px] font-bold px-1.5 py-0.5 rounded-md">
                 {videoProjects ? videoProjects.length : 0}
               </span>
             </div>
@@ -311,24 +324,24 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
             <div className="p-2 flex-1 overflow-y-auto space-y-2">
               {!videoProjects || videoProjects.length === 0 ? (
                 <div className="text-center flex flex-col items-center justify-center h-full opacity-60">
-                  <MonitorPlay size={24} className="text-gray-400 mb-2" />
-                  <p className="text-xs text-gray-500">No videos yet</p>
+                  <MonitorPlay size={24} className="text-ed-text-faint mb-2" />
+                  <p className="text-xs text-ed-text-dim">No videos yet</p>
                 </div>
               ) : (
                 videoProjects.map((video) => {
                   const view = statusView(video.status);
                   return (
-                    <Link key={video.id} href={`/workspaces/${workspace.id}/videos/${video.id}`} className="bg-white border border-gray-200 rounded-lg p-3 shadow-sm hover:border-purple-300 transition-all group flex flex-col gap-2 block relative overflow-hidden">
+                    <Link key={video.id} href={`/workspaces/${workspace.id}/videos/${video.id}`} className="bg-ed-surface border border-ed-border rounded-lg p-3 shadow-sm hover:border-ed-accent-border transition-all group flex flex-col gap-2 block relative overflow-hidden">
                       <div className={`absolute left-0 top-0 bottom-0 w-1 ${view.bar}`}></div>
                       <div className="pl-1">
-                        <h3 className="font-semibold text-gray-900 group-hover:text-purple-600 transition-colors line-clamp-2 text-xs leading-tight mb-2">
+                        <h3 className="font-semibold text-ed-text group-hover:text-ed-accent-text transition-colors line-clamp-2 text-xs leading-tight mb-2">
                           {video.topic || "Untitled"}
                         </h3>
                         <div className="flex items-center justify-between">
                           <span className={`text-[8px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-sm ${view.chip}`}>
                             {view.label}
                           </span>
-                          <span className="text-[9px] text-gray-400 font-medium">{new Date(video.created_at).toLocaleDateString()}</span>
+                          <span className="text-[9px] text-ed-text-faint font-medium">{new Date(video.created_at).toLocaleDateString()}</span>
                         </div>
                       </div>
                     </Link>

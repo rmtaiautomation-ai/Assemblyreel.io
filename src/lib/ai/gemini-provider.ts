@@ -26,8 +26,15 @@ export function gemini(modelId: string) {
   return cachedProvider(modelId);
 }
 
-/** Fast, cheap model used for every agent in the chain. */
-export const AGENT_MODEL = "gemini-2.5-flash";
+/**
+ * Fast, cheap model used for every agent in the chain.
+ *
+ * `gemini-2.5-flash` returns a 404 ("no longer available to new users") on any Google
+ * Cloud project created after Gemini 3.6 shipped — the error message itself names the
+ * replacement. Older projects can still call 2.5-flash, but newer models stay available
+ * to them too, so standardising on 3.6-flash here works for both.
+ */
+export const AGENT_MODEL = "gemini-3.6-flash";
 
 /** Structured-extraction agents need determinism far more than flair. */
 export const STRUCTURED_TEMPERATURE = 0.2;

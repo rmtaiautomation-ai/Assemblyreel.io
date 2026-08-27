@@ -1,4 +1,5 @@
-import { resolveNicheProfile, type SceneType } from "../generation-rules";
+import { type SceneType } from "../generation-rules";
+import { resolveFormatProfile, type FormatProfile } from "../format-profile";
 import { selectBlueprintsForScene, type CharacterBlueprints } from "./casting-director";
 import type { SceneVisuals } from "./visual-architect";
 
@@ -20,6 +21,8 @@ export interface AssemblePromptParams {
   blueprints: CharacterBlueprints;
   visualAesthetic: string;
   nicheTheme?: string;
+  /** Resolved format spec; falls back to `nicheTheme`. See generateScript. */
+  formatProfile?: FormatProfile;
 }
 
 /**
@@ -38,8 +41,9 @@ export function assembleVideoPrompt({
   blueprints,
   visualAesthetic,
   nicheTheme,
+  formatProfile,
 }: AssemblePromptParams): string {
-  const niche = resolveNicheProfile(nicheTheme);
+  const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
   const presentCharacters = selectBlueprintsForScene(sceneText, blueprints);
 
   const subjectSegment = presentCharacters
@@ -54,7 +58,7 @@ export function assembleVideoPrompt({
     subjectSegment,
     visuals.environment,
     visualAesthetic,
-    niche.promptStyleTag,
+    profile.visual.promptStyleTag,
     visuals.lighting,
     `${sceneType.toLowerCase()} shot`,
   ].filter((segment) => segment && segment.trim().length > 0);

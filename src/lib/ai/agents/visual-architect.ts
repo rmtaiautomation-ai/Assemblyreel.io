@@ -8,7 +8,8 @@ import {
   isGeminiConfigured,
 } from "../gemini-provider";
 import { SCENE_AGENT_CONCURRENCY, mapWithConcurrency } from "../concurrency";
-import { resolveNicheProfile, type SceneType } from "../generation-rules";
+import { type SceneType } from "../generation-rules";
+import { resolveFormatProfile, type FormatProfile } from "../format-profile";
 import { selectBlueprintsForScene, type CharacterBlueprints } from "./casting-director";
 
 /**
@@ -52,6 +53,8 @@ export interface DesignSceneVisualsParams {
   topic: string;
   visualAesthetic: string;
   nicheTheme?: string;
+  /** Resolved format spec; falls back to `nicheTheme`. See generateScript. */
+  formatProfile?: FormatProfile;
 }
 
 /** A scene that failed its visual pass still flows on, carrying the reason. */
@@ -66,12 +69,13 @@ export async function designSceneVisuals({
   topic,
   visualAesthetic,
   nicheTheme,
+  formatProfile,
 }: DesignSceneVisualsParams): Promise<SceneVisualsResult[]> {
   if (!isGeminiConfigured()) {
     return scenes.map(() => ({ visuals: null, error: MISSING_GEMINI_KEY_ERROR }));
   }
 
-  const niche = resolveNicheProfile(nicheTheme);
+  const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
 
   const systemInstruction = `You are the Visual Architect and Cinematic Director for a video pipeline.
 
@@ -82,7 +86,7 @@ RULES:
 2. Never describe the characters themselves — their appearance is already locked by the Casting Director and will be supplied separately. Describe the world around them.
 3. The camera direction must be a single concrete instruction, not a list of options.
 4. Match this visual aesthetic throughout: ${visualAesthetic}.
-5. Niche styling: ${niche.visualBias}
+5. Niche styling: ${profile.visual.visualBias}
 6. Honour the scene type you are given — it dictates shot scale. ESTABLISH means wide and sweeping; CLOSEUP and MACRO mean tight and intimate; DIVINE means overwhelming scale and god rays; ACTION means motion and energy.`;
 
   // Bounded parallelism — see `mapWithConcurrency` for why this is not Promise.all.

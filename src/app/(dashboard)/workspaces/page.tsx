@@ -22,9 +22,9 @@ export default async function DashboardHome() {
     <div className="max-w-7xl mx-auto">
       <div className="flex justify-between items-start mb-8">
         <div>
-          <h1 className="text-3xl font-bold text-gray-900">Workspaces</h1>
-          <p className="text-gray-500 mt-1 mb-4">Manage your niche video channels and sub-accounts.</p>
-          <Link href="/workspaces/new" className="bg-purple-600 text-white py-2 px-4 rounded-xl font-medium transition-all shadow-md hover:bg-purple-700 hover:-translate-y-[1px] inline-flex items-center justify-center">
+          <h1 className="text-3xl font-bold text-ed-text">Workspaces</h1>
+          <p className="text-ed-text-dim mt-1 mb-4">Manage your niche video channels and sub-accounts.</p>
+          <Link href="/workspaces/new" className="ed-cta">
             <Plus size={16} className="mr-2 shrink-0" />
             New Workspace
           </Link>
@@ -32,15 +32,15 @@ export default async function DashboardHome() {
       </div>
 
       {workspaceList.length === 0 ? (
-        <div className="flex flex-col items-center justify-center p-12 py-24 glass-panel border-dashed border-2 border-gray-200">
-          <div className="w-16 h-16 rounded-full bg-accent-glow flex items-center justify-center mb-4">
-            <FolderOpen size={32} className="text-accent-primary" />
+        <div className="flex flex-col items-center justify-center p-12 py-24 glass-panel border-dashed border-2 border-ed-border">
+          <div className="w-16 h-16 rounded-full bg-ed-accent-soft flex items-center justify-center mb-4">
+            <FolderOpen size={32} className="text-ed-accent" />
           </div>
-          <h2 className="text-xl font-semibold text-foreground mb-2">No workspaces yet</h2>
+          <h2 className="text-xl font-semibold text-ed-text mb-2">No workspaces yet</h2>
           <p className="text-muted text-center max-w-md mb-6">
             Create your first workspace to start generating automated video content, managing voice actors, and building your audience.
           </p>
-          <Link href="/workspaces/new" className="btn-primary flex items-center justify-center bg-purple-600 text-white py-2 px-4 rounded-xl hover:bg-purple-700 transition-all">
+          <Link href="/workspaces/new" className="btn-primary flex items-center justify-center">
             <Plus size={16} className="mr-2" />
             Create Workspace
           </Link>
@@ -61,34 +61,34 @@ export default async function DashboardHome() {
                     <LayoutGrid className="text-white opacity-90" size={24} />
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold text-foreground tracking-tight">{ws.name}</h3>
-                    <span className="text-xs inline-flex items-center gap-1 px-2 py-1 bg-gray-50 rounded-md mt-1 text-text-secondary border border-gray-200">
+                    <h3 className="text-lg font-semibold text-ed-text tracking-tight">{ws.name}</h3>
+                    <span className="text-xs inline-flex items-center gap-1 px-2 py-1 bg-ed-well rounded-md mt-1 text-ed-text-dim border border-ed-border">
                       {ws.aspect_ratio === '9:16' ? '📱 9:16 Shorts' : '🎬 16:9 Cinematic'}
                     </span>
                   </div>
                 </div>
               </div>
               
-              <div className="flex gap-3 mt-2 pt-4 border-t border-gray-100">
-                <div className="flex-1 bg-gray-50 rounded-lg p-3 border border-gray-100 transition-colors hover:border-gray-200">
+              <div className="flex gap-3 mt-2 pt-4 border-t border-ed-border">
+                <div className="flex-1 bg-ed-well rounded-lg p-3 border border-ed-border transition-colors hover:border-ed-border">
                   <div className="text-muted flex items-center gap-1.5 mb-1 text-xs uppercase tracking-wider font-medium">
-                    <FileVideo size={14} className="text-accent-primary" /> Videos
+                    <FileVideo size={14} className="text-ed-accent" /> Videos
                   </div>
-                  <div className="text-2xl font-semibold text-foreground">
+                  <div className="text-2xl font-semibold text-ed-text">
                     {ws.video_projects?.[0]?.count || 0}
                   </div>
                 </div>
-                <div className="flex-1 bg-gray-50 rounded-lg p-3 border border-gray-100 transition-colors hover:border-gray-200">
+                <div className="flex-1 bg-ed-well rounded-lg p-3 border border-ed-border transition-colors hover:border-ed-border">
                   <div className="text-muted flex items-center gap-1.5 mb-1 text-xs uppercase tracking-wider font-medium">
-                    <Users size={14} className="text-accent-primary" /> Theme
+                    <Users size={14} className="text-ed-accent" /> Theme
                   </div>
-                  <div className="text-sm font-semibold text-foreground truncate" title={ws.content_theme}>
+                  <div className="text-sm font-semibold text-ed-text truncate" title={ws.content_theme}>
                     {ws.content_theme}
                   </div>
                 </div>
               </div>
 
-              <Link href={`/workspaces/${ws.id}`} className="w-full mt-3 bg-gray-900 text-white py-2 px-4 rounded-lg text-center text-sm font-medium hover:bg-gray-800 transition-colors block">
+              <Link href={`/workspaces/${ws.id}`} className="w-full mt-3 bg-ed-surface text-white py-2 px-4 rounded-lg text-center text-sm font-medium hover:bg-ed-raised transition-colors block">
                 Enter Workspace
               </Link>
             </div>

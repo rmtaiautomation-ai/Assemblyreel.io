@@ -2,11 +2,13 @@
 
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { ScriptWriterSchema } from "./schemas";
+import { resolveDurationProfile } from "./generation-rules";
+import { resolveFormatProfile, type FormatProfile } from "./format-profile";
+import type { ActContinuityEntry, ChannelFact } from "./channel-facts";
 import {
-  WORDS_PER_NARRATION_LINE,
-  resolveDurationProfile,
-  resolveNicheProfile,
-} from "./generation-rules";
+  buildActStructureRules,
+  buildScriptWriterSystemInstruction,
+} from "./format-prompt";
 // These three functions call `@google/genai` directly rather than the Vercel AI SDK,
 // but they draw on the same provider quota as every other agent — so they share the
 // same throttle.
@@ -21,6 +23,35 @@ export async function generateScript(params: {
   nicheTheme?: string;
   targetDuration?: string;
   actOutline?: { actNumber: number; description: string };
+  /**
+   * The channel's resolved format spec.
+   *
+   * Optional so every existing caller keeps working: when it is absent the profile is
+   * derived from `nicheTheme` exactly as the old Niche/Tone Matrix was, producing the same
+   * prompt as before. Phase 4 passes the project's frozen snapshot here instead, so an Act
+   * generated after a blueprint edit still follows the rules the earlier Acts were written
+   * under.
+   */
+  formatProfile?: FormatProfile;
+  /** Deterministic pick from the rotation ledger. See buildScriptWriterSystemInstruction. */
+  selectedFramingDevice?: string | null;
+  /**
+   * The channel's VERIFIED fact ledger, frozen onto the project.
+   *
+   * The closed set of people, councils, manuscripts and dates this script may name. Absent
+   * or empty — a channel with no ledger, or a database that has not run
+   * db/add-channel-facts.sql — and the compiled instruction is unchanged from before the
+   * ledger existed, so every existing caller keeps working untouched.
+   */
+  facts?: readonly ChannelFact[];
+  /**
+   * What earlier Acts of this video already covered — see `continuityBlock`.
+   *
+   * Optional and additive: absent, the compiled instruction is exactly what it was before
+   * the ledger existed, so short/mid-form and any caller that hasn't wired it through keep
+   * working untouched.
+   */
+  continuity?: readonly ActContinuityEntry[];
 }) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
@@ -31,7 +62,8 @@ export async function generateScript(params: {
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-    const niche = resolveNicheProfile(params.nicheTheme);
+    const profile =
+      params.formatProfile ?? resolveFormatProfile({ nicheTheme: params.nicheTheme });
     const duration = resolveDurationProfile(params.targetDuration);
 
     // An Act request narrows the target to a single chapter, so the whole-video word
@@ -44,25 +76,31 @@ export async function generateScript(params: {
       ? `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines strictly for this single Act, totalling ${duration.wordsPerAct.min}-${duration.wordsPerAct.max} words. This word count is the hard target — if you are short, write RICHER, more detailed lines rather than more lines.`
       : `Exactly ${duration.targetLineCount.min} to ${duration.targetLineCount.max} lines (total ${duration.targetWordCount.min}-${duration.targetWordCount.max} words). Structure: ${duration.structureRule}`;
 
-    const toneMatrixRule = niche.scriptTone;
+    const systemInstruction = buildScriptWriterSystemInstruction(profile, {
+      lengthRule,
+      selectedFramingDevice: params.selectedFramingDevice,
+      facts: params.facts,
+      continuity: params.continuity,
+      // Only on the Act path: a single-pass script has no arc to distribute beats across,
+      // and passing actCount without an Act number would place every beat in no Act at all.
+      // `duration.actCount` rather than a new parameter, so the placement always matches the
+      // Act count the outliner was given for the same project.
+      ...(params.actOutline
+        ? { actNumber: params.actOutline.actNumber, actCount: duration.actCount }
+        : {}),
+    });
 
-    const systemInstruction = `
-You are an expert Script Writer for a highly visual, cinematic video channel.
-Your task is to write a master Voiceover (VO) script based on the provided parameters.
-
-### CRITICAL RULES:
-1. Tone: Plain English, 8th-grade reading level. ${toneMatrixRule}
-2. Structure: ${lengthRule}
-3. Camera-Ready Rule: EVERY SINGLE LINE MUST state WHO (physical subject), WHAT (physical action), and WHERE (visible location). Do not use abstract concepts or metaphors. Describe what is visibly happening on screen. Aim for roughly ${WORDS_PER_NARRATION_LINE} words per line — long enough to carry real visual detail, not a clipped fragment.
-4. Money Shot Rule: The final line must combine a visual summary and an explicit Call To Action (CTA).
-`;
-
+    // Blank for every Act after the first — see the caller in whiteboard-actions.ts
+    // for why. Omitting the line entirely rather than printing "Hook: " with nothing
+    // after it, matching the rest of this codebase's convention of never emitting a
+    // labelled section with no content behind it (format-prompt.ts's `block` helper
+    // does the same).
     let prompt = `
 Write a Voiceover Script based on this Topic and Story Outline.
 
 Topic: ${params.topic}
-Story Outline: ${params.narrativeArc}
-Hook: ${params.hook}
+Story Outline: ${params.narrativeArc}${params.hook ? `
+Hook: ${params.hook}` : ""}
 Visual Aesthetic: ${params.visualAesthetic}
 POV: ${params.pov}
 `;
@@ -80,7 +118,7 @@ Do NOT write the entire story. Only cover this specific act!
     await acquireCallSlot();
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       contents: prompt,
       config: {
         systemInstruction: systemInstruction,
@@ -141,7 +179,7 @@ The Script Hook should be 1-2 sentences designed to grab the viewer's attention 
     await acquireCallSlot();
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",
@@ -159,11 +197,19 @@ The Script Hook should be 1-2 sentences designed to grab the viewer's attention 
   }
 }
 
-export async function generateActOutlines(topic: string, narrativeArc: string, nicheTheme: string, targetDuration: string) {
+export async function generateActOutlines(
+  topic: string,
+  narrativeArc: string,
+  nicheTheme: string,
+  targetDuration: string,
+  /** Optional; falls back to keyword resolution from `nicheTheme`. See generateScript. */
+  formatProfile?: FormatProfile
+) {
   const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
   if (!GEMINI_API_KEY) return { success: false, error: "GEMINI_API_KEY is missing." };
 
   const { actCount } = resolveDurationProfile(targetDuration);
+  const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
 
   try {
     const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
@@ -177,10 +223,7 @@ Based on the psychology of high-retention YouTube videos for the "${nicheTheme}"
 Apply psychological pacing and value stacking tailored to this specific niche (e.g., True Crime relies on suspense/red herrings, History relies on contextual hooks/escalation, Motivation relies on emotional peaks).
 
 Structure Rules for a ${actCount}-Act Video:
-- Act 1: The "Curiosity Gap" / The Hook (Tell them what they will learn, withhold the answer).
-- Act 2: The Setup / Context (Introduce players/conflict without infodumping).
-- Acts 3 to ${actCount - 1}: The Escalation & Value Stacking (Introduce a NEW problem, contradiction, or plot twist in EVERY act. Do not just list events chronologically. Make the story evolve).
-- Act ${actCount}: The Payoff & Conclusion (Deliver the ultimate answer, moral lesson, and CTA).
+${buildActStructureRules(profile, actCount)}
 
 Return a JSON array of exactly ${actCount} objects. Each object should have:
 - "actNumber" (integer, 1 to ${actCount})
@@ -204,7 +247,7 @@ Return a JSON array of exactly ${actCount} objects. Each object should have:
     await acquireCallSlot();
 
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-3.6-flash",
       contents: prompt,
       config: {
         responseMimeType: "application/json",

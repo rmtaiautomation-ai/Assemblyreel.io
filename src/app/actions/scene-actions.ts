@@ -69,6 +69,37 @@ export async function updateScene(sceneId: string, fields: Record<string, any>) 
   return { success: true };
 }
 
+// Resets a scene's VISUAL only — the fields agents 4-7 write (environment/lighting/
+// camera_direction) plus whatever media got generated against them — while leaving
+// voice_over_beat, video_duration, and every other script/timing field untouched.
+// This is the non-destructive counterpart to `deleteScenes`: "redo this visual"
+// should never be able to lose the script line, the way a V1 delete previously did.
+export async function clearSceneVisuals(sceneIds: string[]) {
+  if (!sceneIds || sceneIds.length === 0) {
+    return { success: true };
+  }
+
+  const supabase = await createClient();
+  const { error } = await supabase
+    .from("scenes")
+    .update({
+      environment: null,
+      lighting: null,
+      camera_direction: null,
+      custom_media_url: null,
+      custom_media_type: null,
+      generation_status: null,
+    })
+    .in("id", sceneIds);
+
+  if (error) {
+    console.error("[clearSceneVisuals] Failed to clear visuals:", error);
+    return { success: false, error: error.message };
+  }
+
+  return { success: true };
+}
+
 export async function deleteScenes(sceneIds: string[]) {
   if (!sceneIds || sceneIds.length === 0) {
     return { success: true };

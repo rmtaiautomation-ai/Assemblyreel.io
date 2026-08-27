@@ -234,3 +234,34 @@ export async function updateProjectCaptionsEnabled(projectId: string, enabled: b
   return { success: true };
 }
 
+/**
+ * Renames a project's topic — the line every Act's Script Writer call, the Thumbnail
+ * Composer, and the Casting Director all read live from this same column (see
+ * `resolveWorkspaceNicheTheme`’s sibling reads in whiteboard-actions.ts and
+ * thumbnail-actions.ts). Deliberately NOT frozen into a per-project snapshot the way
+ * `format_blueprint_snapshot` and `channel_facts_snapshot` are: those exist because
+ * editing the channel's RULES mid-video must not retroactively change what an approved
+ * Act was written under. The topic isn't a rule, it's the subject line — a video
+ * mid-generation picking up a corrected topic on its next Act is the wanted behaviour,
+ * not a bug to guard against.
+ *
+ * `not null` at the schema level (database_setup.sql), so this rejects blank input
+ * before it reaches Postgres rather than letting every downstream prompt read
+ * `Topic: ` with nothing after the colon.
+ */
+export async function updateProjectTopic(projectId: string, topic: string) {
+  const trimmed = topic.trim();
+  if (!trimmed) return { success: false, error: "Topic cannot be empty." };
+
+  const supabase = await createClient();
+  const { error } = await supabase.from('video_projects')
+    .update({ topic: trimmed })
+    .eq('id', projectId);
+
+  if (error) {
+    console.error("Error updating project topic:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+

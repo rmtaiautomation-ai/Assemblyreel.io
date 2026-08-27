@@ -50,8 +50,8 @@ export default function IntegrationsPage() {
         icon: <YouTubeIcon />,
         status: "connected",
         accountName: "TechNewsDaily",
-        color: "bg-red-50",
-        borderColor: "border-red-100",
+        color: "bg-ed-danger-soft",
+        borderColor: "border-ed-danger-border",
       },
       {
         id: "tiktok",
@@ -59,8 +59,8 @@ export default function IntegrationsPage() {
         description: "Seamlessly push your series to TikTok with trending sound options.",
         icon: <TikTokIcon />,
         status: "disconnected",
-        color: "bg-gray-100",
-        borderColor: "border-gray-200",
+        color: "bg-ed-raised",
+        borderColor: "border-ed-border",
       },
       {
         id: "instagram",
@@ -68,8 +68,8 @@ export default function IntegrationsPage() {
         description: "Post high-quality reels to Instagram to grow your audience.",
         icon: <InstagramIcon />,
         status: "disconnected",
-        color: "bg-pink-50",
-        borderColor: "border-pink-100",
+        color: "bg-ed-ov-soft",
+        borderColor: "border-ed-ov-border",
       }
     ],
     ai: [
@@ -77,21 +77,21 @@ export default function IntegrationsPage() {
         id: "elevenlabs",
         name: "ElevenLabs",
         description: "Ultra-realistic voice cloning and text-to-speech for your videos.",
-        icon: <div className="w-7 h-7 bg-black rounded flex items-center justify-center"><span className="text-white font-bold text-xs">XI</span></div>,
+        icon: <div className="w-7 h-7 bg-ed-media rounded flex items-center justify-center"><span className="text-white font-bold text-xs">XI</span></div>,
         status: "connected",
         accountName: "Custom API Key",
-        color: "bg-gray-100",
-        borderColor: "border-gray-200",
+        color: "bg-ed-raised",
+        borderColor: "border-ed-border",
       },
       {
         id: "openai",
         name: "OpenAI",
         description: "Generate video scripts, metadata, and dynamic prompts automatically.",
-        icon: <div className="w-7 h-7 bg-emerald-500 rounded flex items-center justify-center"><Sparkles size={16} className="text-white" /></div>,
+        icon: <div className="w-7 h-7 bg-ed-ok rounded flex items-center justify-center"><Sparkles size={16} className="text-ed-base" /></div>,
         status: "connected",
         accountName: "Default (Managed)",
-        color: "bg-emerald-50",
-        borderColor: "border-emerald-100",
+        color: "bg-ed-ok-soft",
+        borderColor: "border-ed-ok-border",
       }
     ]
   };
@@ -115,19 +115,19 @@ export default function IntegrationsPage() {
       {/* Header */}
       <div className="mb-10 flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-extrabold text-foreground tracking-tight">Integrations</h1>
-          <p className="text-text-secondary mt-1">Connect your favorite platforms to automate your workflow.</p>
+          <h1 className="text-3xl font-extrabold text-ed-text tracking-tight">Integrations</h1>
+          <p className="text-ed-text-dim mt-1">Connect your favorite platforms to automate your workflow.</p>
         </div>
       </div>
 
       {/* Custom Tabs */}
-      <div className="flex space-x-1 bg-gray-100/50 p-1 rounded-xl w-full max-w-sm mb-8 border border-gray-200/60">
+      <div className="flex space-x-1 bg-ed-raised/50 p-1 rounded-xl w-full max-w-sm mb-8 border border-ed-border/60">
         <button
           onClick={() => setActiveTab('social')}
           className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-bold rounded-lg transition-all ${
             activeTab === 'social' 
-              ? 'bg-white text-foreground shadow-sm' 
-              : 'text-gray-500 hover:text-gray-700'
+              ? 'bg-ed-surface text-ed-text shadow-sm' 
+              : 'text-ed-text-dim hover:text-ed-text-dim'
           }`}
         >
           <Fingerprint size={16} /> Social Platforms
@@ -136,8 +136,8 @@ export default function IntegrationsPage() {
           onClick={() => setActiveTab('ai')}
           className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-bold rounded-lg transition-all ${
             activeTab === 'ai' 
-              ? 'bg-white text-foreground shadow-sm' 
-              : 'text-gray-500 hover:text-gray-700'
+              ? 'bg-ed-surface text-ed-text shadow-sm' 
+              : 'text-ed-text-dim hover:text-ed-text-dim'
           }`}
         >
           <Mic2 size={16} /> AI Providers
@@ -158,7 +158,7 @@ export default function IntegrationsPage() {
             <motion.div 
               key={integration.id}
               variants={item}
-              className="bg-white border border-gray-200 rounded-2xl p-6 shadow-sm hover:shadow-md transition-all group relative overflow-hidden flex flex-col h-full"
+              className="bg-ed-surface border border-ed-border rounded-2xl p-6 shadow-sm hover:shadow-md transition-all group relative overflow-hidden flex flex-col h-full"
             >
               {/* Top Section */}
               <div className="flex items-start justify-between mb-4">
@@ -167,11 +167,11 @@ export default function IntegrationsPage() {
                 </div>
                 
                 {integration.status === 'connected' ? (
-                  <span className="flex items-center gap-1.5 bg-green-50 text-green-700 px-3 py-1 rounded-full text-xs font-bold border border-green-100">
+                  <span className="flex items-center gap-1.5 bg-ed-ok-soft text-ed-ok px-3 py-1 rounded-full text-xs font-bold border border-ed-ok-border">
                     <Check size={12} /> Connected
                   </span>
                 ) : (
-                  <span className="flex items-center gap-1.5 bg-gray-100 text-gray-500 px-3 py-1 rounded-full text-xs font-bold">
+                  <span className="flex items-center gap-1.5 bg-ed-raised text-ed-text-dim px-3 py-1 rounded-full text-xs font-bold">
                     Not Connected
                   </span>
                 )}
@@ -179,21 +179,21 @@ export default function IntegrationsPage() {
 
               {/* Content */}
               <div className="flex-1">
-                <h3 className="text-lg font-bold text-foreground mb-1">{integration.name}</h3>
-                <p className="text-sm text-text-secondary leading-relaxed">
+                <h3 className="text-lg font-bold text-ed-text mb-1">{integration.name}</h3>
+                <p className="text-sm text-ed-text-dim leading-relaxed">
                   {integration.description}
                 </p>
               </div>
 
               {/* Action Area */}
-              <div className="mt-6 pt-5 border-t border-gray-100">
+              <div className="mt-6 pt-5 border-t border-ed-border">
                 {integration.status === 'connected' ? (
                   <div className="flex items-center justify-between">
                     <div className="flex flex-col">
-                      <span className="text-[10px] text-gray-400 font-bold uppercase tracking-wider">Account</span>
-                      <span className="text-sm font-semibold text-gray-900 truncate max-w-[140px]">{integration.accountName}</span>
+                      <span className="text-[10px] text-ed-text-faint font-bold uppercase tracking-wider">Account</span>
+                      <span className="text-sm font-semibold text-ed-text truncate max-w-[140px]">{integration.accountName}</span>
                     </div>
-                    <button className="text-gray-400 hover:text-foreground p-2 rounded-lg hover:bg-gray-100 transition-colors" title="Settings">
+                    <button className="text-ed-text-faint hover:text-ed-text p-2 rounded-lg hover:bg-ed-raised transition-colors" title="Settings">
                       <Settings2 size={18} />
                     </button>
                   </div>
@@ -201,7 +201,7 @@ export default function IntegrationsPage() {
                   <button 
                     onClick={() => handleConnect(integration.id)}
                     disabled={connecting === integration.id}
-                    className="w-full bg-foreground hover:bg-gray-800 text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 group-hover:shadow-lg disabled:opacity-70"
+                    className="w-full bg-foreground hover:bg-ed-raised text-white font-bold py-2.5 rounded-xl transition-all flex items-center justify-center gap-2 group-hover:shadow-lg disabled:opacity-70"
                   >
                     {connecting === integration.id ? (
                       <RefreshCw size={18} className="animate-spin" />
@@ -220,13 +220,13 @@ export default function IntegrationsPage() {
           {activeTab === 'social' && (
             <motion.div 
               variants={item}
-              className="bg-gray-50 border border-dashed border-gray-300 rounded-2xl p-6 flex flex-col items-center justify-center text-center h-full min-h-[240px]"
+              className="bg-ed-well border border-dashed border-ed-border-strong rounded-2xl p-6 flex flex-col items-center justify-center text-center h-full min-h-[240px]"
             >
-              <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mb-3">
-                <AlertCircle size={20} className="text-gray-400" />
+              <div className="w-12 h-12 bg-ed-raised rounded-full flex items-center justify-center mb-3">
+                <AlertCircle size={20} className="text-ed-text-faint" />
               </div>
-              <h3 className="text-sm font-bold text-gray-500 mb-1">More platforms coming</h3>
-              <p className="text-xs text-gray-400 max-w-[200px]">We're constantly adding new ways to distribute your content.</p>
+              <h3 className="text-sm font-bold text-ed-text-dim mb-1">More platforms coming</h3>
+              <p className="text-xs text-ed-text-faint max-w-[200px]">We're constantly adding new ways to distribute your content.</p>
             </motion.div>
           )}
 

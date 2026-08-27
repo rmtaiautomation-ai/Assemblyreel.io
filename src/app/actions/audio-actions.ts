@@ -3,6 +3,8 @@
 import { createClient } from "@/lib/supabase/server";
 import { generateSceneSpeech } from "@/lib/ai/elevenlabs";
 import { generateLocalSceneSpeech } from "@/lib/ai/local-tts";
+import type { DeliverySpec } from "@/lib/ai/format-profile";
+import { resolveProjectFormatProfile } from "./format-actions";
 
 /**
  * Separator inserted between two scenes' voiceover text before synthesis.
@@ -13,13 +15,100 @@ import { generateLocalSceneSpeech } from "@/lib/ai/local-tts";
  * includes the TTS engine's silent pause"). With a plain space there was no pause to
  * include, so every scene ran straight into the next one.
  *
- * A blank line is the minimal fix: it reads as a paragraph break to the TTS engine, so
- * it produces a real beat, and it adds no words for the aligner to trip over.
+ * A blank line, then a single newline, were both tried next, on the theory that fewer
+ * newlines would shrink the gap. Neither changed anything audible, because the theory
+ * was wrong for this engine: local-tts.ts talks to Kokoro, and Kokoro's own pipeline
+ * call (voice-studio/backend/core/engines/kokoro_engine.py) splits on `split_pattern
+ * = r"\n+"` — one newline or ten, it is the same split point, synthesized as a
+ * separate independent clip, then glued to its neighbours with a bare
+ * `np.concatenate` that adds no silence of its own. The gap a listener hears is two
+ * clips' own natural leading/trailing silence stacking on top of each other — a
+ * property of splitting into clips at all, not of how many newline characters sit at
+ * the split point.
+ *
+ * A plain space is the actual fix: no newline means Kokoro never splits, so the whole
+ * Act is one continuous synthesis pass and consecutive scenes get the pipeline's
+ * normal one-clip sentence pacing (a period followed by a capital letter) instead of
+ * two independently-rendered clips' silences stacking. This does NOT reintroduce the
+ * original space-only bug — that bug predates scenes reliably ending in terminal
+ * punctuation; every `voice_over_beat` here already ends with a period, which is what
+ * gives Kokoro something to pace a natural pause around within one continuous pass.
+ *
+ * The alignment below does not need a minimum gap size to keep working: it measures
+ * the real elapsed time to the next scene's first word from Deepgram's actual
+ * timestamps, whatever that gap turns out to be, rather than assuming any fixed
+ * separator produced it.
  */
-const SCENE_SEPARATOR = "\n\n";
+const SCENE_SEPARATOR = " ";
+
+/**
+ * The voice and delivery settings a narration request should actually use.
+ *
+ * Resolved HERE rather than at each call site, because the call sites were the bug: the
+ * channel's `narration_voice_id` has been collected at workspace creation and stored since
+ * the schema was written, and the Scene Board's "Generate audio" button called
+ * `regenerateActNarration({ projectId, actNumber })` with no voice and no delivery spec at
+ * all. Every act therefore fell through to `resolveValidVoice(undefined)` in local-tts.ts,
+ * which returns whichever voice the engine happens to list first — so a channel's saved
+ * voice was written, displayed on the workspace page, and never once used to synthesise
+ * anything. The delivery spec (`localTts.speed`, the ElevenLabs stability the forensic
+ * preset sets to 0.85) was dropped the same way.
+ *
+ * An explicitly supplied argument still wins, so a future per-act voice override needs no
+ * change here. Both lookups degrade to undefined rather than throwing: a workspace with no
+ * saved voice, or a database predating the column, must still be able to record audio.
+ */
+async function resolveNarrationSettings(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  projectId: string,
+  voiceId?: string,
+  delivery?: DeliverySpec
+): Promise<{ voiceId?: string; delivery?: DeliverySpec }> {
+  let resolvedVoiceId = voiceId;
+  let resolvedDelivery = delivery;
+
+  if (!resolvedVoiceId) {
+    try {
+      const { data: project } = await supabase
+        .from("video_projects")
+        .select("workspace_id")
+        .eq("id", projectId)
+        .single();
+
+      if (project?.workspace_id) {
+        const { data: workspace } = await supabase
+          .from("workspaces")
+          .select("narration_voice_id")
+          .eq("id", project.workspace_id)
+          .single();
+
+        resolvedVoiceId = workspace?.narration_voice_id || undefined;
+      }
+    } catch {
+      // Leave undefined — local-tts falls back to the engine's default voice.
+    }
+  }
+
+  if (!resolvedDelivery) {
+    try {
+      const profile = await resolveProjectFormatProfile(supabase, projectId);
+      resolvedDelivery = profile.delivery;
+    } catch {
+      // Leave undefined — synthesis keeps the hardcoded defaults it used before.
+    }
+  }
+
+  return { voiceId: resolvedVoiceId, delivery: resolvedDelivery };
+}
 
 // ─── Single-scene audio (kept for per-scene regeneration) ─────────────────────
-export async function generateSceneAudio(sceneId: string, text: string, voiceId?: string) {
+export async function generateSceneAudio(
+  sceneId: string,
+  text: string,
+  voiceId?: string,
+  /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
+  delivery?: DeliverySpec
+) {
   if (!sceneId || !text) {
     return { success: false, error: "Missing sceneId or text" };
   }
@@ -28,9 +117,9 @@ export async function generateSceneAudio(sceneId: string, text: string, voiceId?
   let result: { success: boolean; audioUrl?: string; error?: string };
 
   if (provider === "local") {
-    result = await generateLocalSceneSpeech(text, sceneId, voiceId);
+    result = await generateLocalSceneSpeech(text, sceneId, voiceId, delivery?.localTts);
   } else {
-    result = await generateSceneSpeech(text, sceneId, voiceId);
+    result = await generateSceneSpeech(text, sceneId, voiceId, delivery?.elevenlabs);
   }
 
   if (!result.success || !result.audioUrl) {
@@ -65,6 +154,12 @@ export interface NarrationAlignment {
   sceneDurations: Array<{ id: string; video_duration: number }>;
   /** Total length of the audio file in seconds. */
   totalDurationSeconds: number;
+  /**
+   * How many scenes never got a direct word match and had their duration
+   * approximated instead (see `alignAudioToScenes`). Zero means every scene was
+   * matched precisely.
+   */
+  unmatchedSceneCount: number;
 }
 
 type NarrationScene = { id: string; voice_over_beat: string };
@@ -75,6 +170,8 @@ interface SynthesisResult {
   alignment?: NarrationAlignment;
   error?: string;
   alignmentWarning?: string;
+  /** Set when the resolved voice differs from the one requested — see local-tts.ts. */
+  voiceWarning?: string;
 }
 
 /**
@@ -92,7 +189,8 @@ interface SynthesisResult {
 async function synthesizeAndAlign(
   scenes: NarrationScene[],
   fileId: string,
-  voiceId?: string
+  voiceId?: string,
+  delivery?: DeliverySpec
 ): Promise<SynthesisResult> {
   const script = scenes
     .map((s) => s.voice_over_beat?.trim())
@@ -106,24 +204,36 @@ async function synthesizeAndAlign(
   const provider = process.env.TTS_PROVIDER || "local";
   const result =
     provider === "local"
-      ? await generateLocalSceneSpeech(script, fileId, voiceId)
-      : await generateSceneSpeech(script, fileId, voiceId);
+      ? await generateLocalSceneSpeech(script, fileId, voiceId, delivery?.localTts)
+      : await generateSceneSpeech(script, fileId, voiceId, delivery?.elevenlabs);
 
   if (!result.success || !result.audioUrl) {
     return { success: false, error: result.error || "Failed to generate narration" };
   }
 
+  // Only `generateLocalSceneSpeech` produces this — the ElevenLabs path doesn't
+  // substitute voices, so `result` (a plain `{ success, audioUrl }` shape from
+  // `generateSceneSpeech`) simply has no such field and this stays undefined.
+  const voiceWarning = (result as { voiceWarning?: string }).voiceWarning;
+
   // Alignment is a best-effort enhancement: without it the audio is still usable, the
   // scenes just keep their estimated durations. Never fail the synthesis over it.
   try {
     const alignment = await alignAudioToScenes(result.audioUrl, scenes);
-    return { success: true, audioUrl: result.audioUrl, alignment };
+    const alignmentWarning =
+      alignment.unmatchedSceneCount > 0
+        ? `${alignment.unmatchedSceneCount} of ${scenes.length} scene(s) couldn't be precisely matched to the ` +
+          `narration (the transcript ran out of words for them, usually from an earlier mismatch cascading ` +
+          `forward) — their timing was approximated from the remaining audio length instead of measured directly.`
+        : undefined;
+    return { success: true, audioUrl: result.audioUrl, alignment, alignmentWarning, voiceWarning };
   } catch (err) {
     console.error("[Narration] Alignment failed:", err);
     return {
       success: true,
       audioUrl: result.audioUrl,
       alignmentWarning: (err as Error).message,
+      voiceWarning,
     };
   }
 }
@@ -223,7 +333,46 @@ async function alignAudioToScenes(
   const lastWord = words[words.length - 1];
   const totalDurationSeconds = lastWord ? Number((lastWord.end + 0.3).toFixed(2)) : 0;
 
-  return { captionWords, sceneDurations, totalDurationSeconds };
+  // A scene falls off `sceneWordMatches` when the transcript runs out of words
+  // before every scene got a turn — one mismatch early in the act (a dropped word,
+  // "1945" read as "nineteen forty five") shifts the cursor, and everything after
+  // it can cascade into never matching at all. Those scenes used to just keep
+  // their pre-narration ESTIMATED duration silently — which is exactly what put
+  // V1 blocks past the end of the real audio: the estimate has no relationship to
+  // how long this take actually ran.
+  //
+  // Instead, whatever real audio time is left over after the matched scenes
+  // (`totalDurationSeconds` minus their combined duration) gets split across the
+  // unmatched scenes proportionally to their word count. It is still an estimate,
+  // not a real per-scene match — but the Act's total V1 width can no longer run
+  // past where its own audio file actually ends, which is the failure the user is
+  // actually seeing.
+  const matchedIds = new Set(sceneWordMatches.map((m) => m.sceneId));
+  const unmatchedScenes = scenes.filter(
+    (s) => s.voice_over_beat?.trim() && !matchedIds.has(s.id)
+  );
+
+  if (unmatchedScenes.length > 0) {
+    const matchedTotal = sceneDurations.reduce((sum, d) => sum + d.video_duration, 0);
+    const remainingSeconds = Math.max(0, totalDurationSeconds - matchedTotal);
+
+    const wordCounts = unmatchedScenes.map(
+      (s) => s.voice_over_beat!.trim().split(/\s+/).filter(Boolean).length || 1
+    );
+    const totalUnmatchedWords = wordCounts.reduce((sum, n) => sum + n, 0) || unmatchedScenes.length;
+
+    unmatchedScenes.forEach((scene, i) => {
+      const share = remainingSeconds * (wordCounts[i] / totalUnmatchedWords);
+      sceneDurations.push({ id: scene.id, video_duration: Number(Math.max(0.5, share).toFixed(2)) });
+    });
+  }
+
+  return {
+    captionWords,
+    sceneDurations,
+    totalDurationSeconds,
+    unmatchedSceneCount: unmatchedScenes.length,
+  };
 }
 
 /** Writes aligned durations back to the scenes table. */
@@ -253,6 +402,15 @@ export interface ActNarration {
 export interface GenerateActNarrationResult {
   success: boolean;
   narration?: ActNarration;
+  /**
+   * Per-scene durations this call just wrote to the `scenes` table. Callers that
+   * hold their own client-side copy of `scenes` (the Timeline Editor) need this to
+   * patch it directly — `router.refresh()` alone re-fetches the server component's
+   * props, but a client component's `useState(initialScenes)` does not re-seed
+   * itself from new props, so the UI kept showing pre-alignment durations even
+   * after the database was already correct.
+   */
+  updatedScenes?: Array<{ id: string; video_duration: number }>;
   warnings: string[];
   error?: string;
 }
@@ -271,7 +429,9 @@ export interface GenerateActNarrationResult {
 export async function generateActNarration(
   projectId: string,
   actNumber: number,
-  voiceId?: string
+  voiceId?: string,
+  /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
+  delivery?: DeliverySpec
 ): Promise<GenerateActNarrationResult> {
   if (!projectId) return { success: false, warnings: [], error: "Missing projectId" };
 
@@ -301,16 +461,26 @@ export async function generateActNarration(
     return { success: false, warnings, error: `Act ${actNumber} has no scenes to narrate.` };
   }
 
+  const settings = await resolveNarrationSettings(supabase, projectId, voiceId, delivery);
+
   const fileId = `project-${projectId}-act-${actNumber}`;
-  const synth = await synthesizeAndAlign(scenes, fileId, voiceId);
+  const synth = await synthesizeAndAlign(scenes, fileId, settings.voiceId, settings.delivery);
 
   if (!synth.success || !synth.audioUrl) {
     return { success: false, warnings, error: synth.error || "Failed to generate narration" };
   }
 
+  if (synth.voiceWarning) warnings.push(`Act ${actNumber}: ${synth.voiceWarning}`);
+
   if (synth.alignmentWarning) {
+    // `synth.alignment` still being present here (checked below) means this is the
+    // partial case — some scenes were approximated, not that alignment failed
+    // outright. Only the fully-failed case (no `alignment` at all, caught in
+    // `synthesizeAndAlign`) actually leaves scenes on their pre-narration estimate.
     warnings.push(
-      `Act ${actNumber} narration was generated, but timing alignment failed (${synth.alignmentWarning}). Its scenes keep their estimated durations.`
+      synth.alignment
+        ? `Act ${actNumber}: ${synth.alignmentWarning}`
+        : `Act ${actNumber} narration was generated, but timing alignment failed (${synth.alignmentWarning}). Its scenes keep their estimated durations.`
     );
   }
 
@@ -343,6 +513,7 @@ export async function generateActNarration(
   return {
     success: true,
     narration: { actNumber, audioUrl: synth.audioUrl, durationSeconds, startSeconds: 0 },
+    updatedScenes: synth.alignment?.sceneDurations,
     warnings,
   };
 }
@@ -482,14 +653,21 @@ export async function getActNarrations(projectId: string): Promise<ActNarration[
 export async function generateFullNarration(
   projectId: string,
   scenes: Array<{ id: string; voice_over_beat: string }>,
-  voiceId?: string
+  voiceId?: string,
+  /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
+  delivery?: DeliverySpec
 ) {
   if (!projectId || !scenes.length) {
     return { success: false, error: "Missing projectId or scenes" };
   }
 
+  // Same resolution as the Act path above — short/mid-form must honour the channel's
+  // saved voice too, and its caller supplies neither argument either.
+  const settingsClient = await createClient();
+  const settings = await resolveNarrationSettings(settingsClient, projectId, voiceId, delivery);
+
   const fileId = `project-${projectId}-narration`;
-  const synth = await synthesizeAndAlign(scenes, fileId, voiceId);
+  const synth = await synthesizeAndAlign(scenes, fileId, settings.voiceId, settings.delivery);
 
   if (!synth.success || !synth.audioUrl) {
     return { success: false, error: synth.error || "Failed to generate narration" };

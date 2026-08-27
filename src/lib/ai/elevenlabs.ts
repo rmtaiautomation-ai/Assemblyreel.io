@@ -2,8 +2,26 @@
 
 import fs from "fs";
 import path from "path";
+import type { DeliverySpec } from "./format-profile";
 
-export async function generateSceneSpeech(text: string, sceneId: string, voiceId?: string) {
+/**
+ * Voice settings this call falls back to when the caller supplies none — the exact
+ * values this module hardcoded before the Channel Blueprint existed. Every migrated
+ * FormatProfile preset carries these same numbers (see `format-profile.ts`), so a
+ * caller that resolves a profile and passes its `delivery.elevenlabs` through gets
+ * identical synthesis to a caller that passes nothing at all.
+ */
+const DEFAULT_VOICE_SETTINGS: DeliverySpec["elevenlabs"] = {
+  stability: 0.5,
+  similarityBoost: 0.5,
+};
+
+export async function generateSceneSpeech(
+  text: string,
+  sceneId: string,
+  voiceId?: string,
+  voiceSettings?: DeliverySpec["elevenlabs"]
+) {
   const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 
   if (!ELEVENLABS_API_KEY) {
@@ -11,7 +29,8 @@ export async function generateSceneSpeech(text: string, sceneId: string, voiceId
   }
 
   // Use provided voiceId or default to Rachel
-  const VOICE_ID = voiceId || "21m00Tcm4TlvDq8ikWAM"; 
+  const VOICE_ID = voiceId || "21m00Tcm4TlvDq8ikWAM";
+  const settings = voiceSettings ?? DEFAULT_VOICE_SETTINGS;
 
   try {
     const response = await fetch(
@@ -27,8 +46,12 @@ export async function generateSceneSpeech(text: string, sceneId: string, voiceId
           text: text,
           model_id: "eleven_monolingual_v1",
           voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.5,
+            stability: settings.stability,
+            similarity_boost: settings.similarityBoost,
+            // Only sent when the profile declares one, so a caller with no opinion on
+            // exaggeration reaches the API in exactly the shape it did before this
+            // parameter existed.
+            ...(settings.style !== undefined ? { style: settings.style } : {}),
           },
         }),
       }

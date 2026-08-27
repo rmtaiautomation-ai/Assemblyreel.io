@@ -1,16 +1,17 @@
 "use client";
 
-import React, { useState, useRef, useEffect, useLayoutEffect, useMemo } from "react";
+import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallback } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
-import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { loadProjectForWhiteboard } from "@/app/actions/whiteboard-actions";
+import VideoTabs from "@/components/ui/VideoTabs";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
 import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices, getActNarrations, type ActNarration } from "@/app/actions/audio-actions";
 import { regenerateActNarration, approveAndGenerateVisuals, approveActVisuals, regenerateActVisuals, type ActOutline } from "@/app/actions/whiteboard-actions";
-import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes } from "@/app/actions/scene-actions";
+import { getProjectFormatProfile } from "@/app/actions/format-actions";
+import type { FormatProfile } from "@/lib/ai/format-profile";
+import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes, clearSceneVisuals } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
 import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
 import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
@@ -23,14 +24,6 @@ import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, Ove
 import { isEnvironmentalKind } from '@/remotion/types';
 import { layoutScenes, maxTransitionSeconds } from '@/remotion/timeline';
 import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
-
-/* Loaded on demand. The Scene Board is a modal most editing sessions never open,
-   and it drags in the whole whiteboard-actions surface with it — no reason for
-   any of that to sit in the editor's initial bundle. */
-const SceneBoard = dynamic(() => import("@/components/ui/Whiteboard"), { ssr: false });
-
-/** Payload `loadProjectForWhiteboard` hands the board, fetched when the modal opens. */
-type SceneBoardData = NonNullable<Awaited<ReturnType<typeof loadProjectForWhiteboard>>["data"]>;
 
 type TabState = 'media' | 'scene' | 'export';
 type AspectRatio = '16:9' | '9:16' | '1:1';
@@ -149,15 +142,15 @@ const OVERLAY_PRESET_OPTIONS: { value: OverlayPreset; label: string }[] = [
  * override.
  */
 const OVERLAY_KIND_ACCENT: Record<OverlayClipKind, { stripe: string; icon: string }> = {
-  'text': { stripe: 'bg-fuchsia-400', icon: 'text-fuchsia-300' },
-  'checklist-card': { stripe: 'bg-emerald-400', icon: 'text-emerald-300' },
-  'title-cutout-card': { stripe: 'bg-sky-400', icon: 'text-sky-300' },
-  'dim-scrim': { stripe: 'bg-gray-400', icon: 'text-gray-300' },
-  'particles': { stripe: 'bg-amber-400', icon: 'text-amber-300' },
-  'light-beam': { stripe: 'bg-yellow-400', icon: 'text-yellow-300' },
-  'light-sweep': { stripe: 'bg-orange-400', icon: 'text-orange-300' },
+  'text': { stripe: 'bg-ed-ov', icon: 'text-ed-ov' },
+  'checklist-card': { stripe: 'bg-ed-ok', icon: 'text-ed-ok' },
+  'title-cutout-card': { stripe: 'bg-ed-info', icon: 'text-ed-info' },
+  'dim-scrim': { stripe: 'bg-ed-text-faint', icon: 'text-ed-text-faint' },
+  'particles': { stripe: 'bg-ed-warn', icon: 'text-ed-warn' },
+  'light-beam': { stripe: 'bg-ed-warn', icon: 'text-ed-warn' },
+  'light-sweep': { stripe: 'bg-ed-warn', icon: 'text-ed-warn' },
   // Neutral rather than warm: this one is wear on the print, not a light source.
-  'film-damage': { stripe: 'bg-stone-400', icon: 'text-stone-300' },
+  'film-damage': { stripe: 'bg-ed-text-faint', icon: 'text-ed-text-faint' },
 };
 
 /**
@@ -282,18 +275,18 @@ function OverlayImagePicker({
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">{label}</label>
+        <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">{label}</label>
         {selectedUrl && (
           <button
             onClick={() => onSelect(undefined)}
-            className="text-[10px] font-bold text-gray-400 hover:text-red-600 transition-colors"
+            className="text-[10px] font-bold text-ed-text-faint hover:text-ed-danger transition-colors"
           >
             Clear
           </button>
         )}
       </div>
       {images.length === 0 ? (
-        <div className="text-[10px] text-gray-400 italic py-2">No project images yet.</div>
+        <div className="text-[10px] text-ed-text-faint italic py-2">No project images yet.</div>
       ) : (
         <div className="grid grid-cols-4 gap-1.5 max-h-32 overflow-y-auto pr-0.5">
           {images.map((image) => {
@@ -303,13 +296,13 @@ function OverlayImagePicker({
                 key={image.id}
                 onClick={() => onSelect(image.url)}
                 title={image.name}
-                className={`relative aspect-square rounded-md overflow-hidden border-2 transition-colors bg-gray-100 ${
-                  isSelected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-transparent hover:border-fuchsia-300'
+                className={`relative aspect-square rounded-md overflow-hidden border-2 transition-colors bg-ed-raised ${
+                  isSelected ? 'border-ed-ov-border ring-2 ring-ed-ov-border' : 'border-transparent hover:border-ed-ov-border'
                 }`}
               >
                 <img src={image.url} alt={image.name} className="w-full h-full object-cover" />
                 {isSelected && (
-                  <div className="absolute inset-0 bg-fuchsia-900/20 flex items-center justify-center">
+                  <div className="absolute inset-0 bg-ed-ov/20 flex items-center justify-center">
                     <Check size={14} className="text-white drop-shadow" />
                   </div>
                 )}
@@ -341,6 +334,16 @@ const TRANSITION_CARDS: { type: TransitionType; label: string; icon: typeof X; s
 ];
 
 /**
+ * Transition type -> the same icon its card in the Transition In accordion uses, so the
+ * badge sitting on a timeline seam and the card you dragged there read as the same thing.
+ * Derived from TRANSITION_CARDS rather than typed out again: adding a transition type in
+ * one place keeps the seam badge correct for free.
+ */
+const TRANSITION_ICONS = Object.fromEntries(
+  TRANSITION_CARDS.map(c => [c.type, c.icon])
+) as Record<string, typeof X>;
+
+/**
  * Turns the render route's raw stage string into something worth showing a user.
  *
  * Two sources feed this: stages this app sets itself ("caching media", "encoding",
@@ -349,6 +352,40 @@ const TRANSITION_CARDS: { type: TransitionType; label: string; icon: typeof X; s
  * unrecognised falls back to a generic label rather than leaking an internal token
  * into the UI.
  */
+/**
+ * Review checklist for the Act inspector panel.
+ * (implementation_plans/18-channel-blueprint.md, Phase 6)
+ *
+ * Renders the SAME `structure.actCycle` and `content.requiredBeats` strings the Script
+ * Writer's prompt was built from (see format-prompt.ts) — same data, second use. Purely
+ * a reference list for the human approving this act's visuals; nothing here reads the
+ * act's actual script or ticks anything automatically. An LLM self-check pass that
+ * pre-ticks these against the real generated text is a natural follow-up, not built here.
+ */
+function ActFormatChecklist({ profile }: { profile: FormatProfile }) {
+  const items = [...profile.structure.actCycle, ...profile.content.requiredBeats];
+  if (items.length === 0) return null;
+
+  return (
+    <div className="rounded-lg border border-ed-accent-border bg-ed-accent-soft/60 px-3 py-2.5">
+      <p className="text-[10px] font-bold text-ed-accent-text uppercase tracking-wider mb-1.5">
+        Format checklist — {profile.label}
+      </p>
+      <ul className="space-y-1">
+        {items.map((item, i) => (
+          <li key={i} className="flex items-start gap-1.5 text-[11px] text-ed-accent-text leading-snug">
+            <span className="mt-0.5 text-ed-accent-text shrink-0">□</span>
+            <span>{item}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="text-[10px] text-ed-accent-text mt-1.5 italic">
+        Reference only — check the act's narration above against these before approving.
+      </p>
+    </div>
+  );
+}
+
 const humanizeRenderStage = (stage: string | null): string => {
   switch (stage) {
     case 'starting': return 'Starting export…';
@@ -398,10 +435,16 @@ const FILMSTRIP_THUMB_WIDTH = 80;
 // where useLayoutEffect logs a warning. Effects never run there anyway.
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-/** Selected blocks are drawn slightly proud of the track. Applied through the same
- *  inline `transform` that positions them, because an inline transform overrides
- *  Tailwind's `scale-*` class entirely — the two cannot coexist on one element. */
-const SELECTED_BLOCK_SCALE = 1.02;
+/** Selected blocks are drawn proud of the track. Applied through the same inline
+ *  `transform` that positions them, because an inline transform overrides Tailwind's
+ *  `scale-*` class entirely — the two cannot coexist on one element.
+ *
+ *  This IS the selection signal now (the violet ring and wash are gone), so it has to
+ *  be big enough to read at a glance. 1.02 was too subtle to notice. Kept under ~1.08
+ *  because the block only has 10% headroom above and below inside an h-16 track, and a
+ *  wide block scales sideways into its neighbours — the point is "lifted", not
+ *  "overlapping the scene next door". */
+const SELECTED_BLOCK_SCALE = 1.07;
 
 function blockTransform(leftPx: number, scaled: boolean) {
   return `translate3d(${leftPx}px, 0, 0)${scaled ? ` scale(${SELECTED_BLOCK_SCALE})` : ''}`;
@@ -489,6 +532,7 @@ export default function TimelineEditor({
   initialMedia = [],
   initialTimelineItems = [],
   initialOverlayClips = [],
+  channelVoiceId = "",
 }: {
   workspaceId: string,
   initialProject: any,
@@ -496,6 +540,16 @@ export default function TimelineEditor({
   initialMedia?: any[],
   initialTimelineItems?: any[],
   initialOverlayClips?: any[],
+  /**
+   * The channel's saved `workspaces.narration_voice_id`, for a read-only display in the
+   * Voiceover panel — NOT used to drive synthesis. The Act-narration path resolves this
+   * itself, server-side, in `resolveNarrationSettings` (audio-actions.ts); this prop exists
+   * only so a user looking at a scene can see what voice their act recordings actually use
+   * without leaving the editor to check Settings. Empty string means "Auto" — Voice
+   * Studio's active-engine default, same convention as `settings.narrationVoiceId` on the
+   * Channel tab.
+   */
+  channelVoiceId?: string,
 }) {
   const [scenes, setScenes] = useState<any[]>(initialScenes);
   const [timelineClips, setTimelineClips] = useState<TimelineClip[]>(() => {
@@ -625,6 +679,21 @@ export default function TimelineEditor({
     return () => { cancelled = true; };
   }, [initialProject.id]);
 
+  // The project's FROZEN format snapshot — same one every Act's generation actually
+  // used (see resolveProjectFormatProfile) — fetched once per project rather than
+  // threaded down as a prop, same trade getActNarrations above already makes. Powers
+  // the review checklist in the Act inspector panel below: display-only, so the human
+  // approving an Act's visuals can see what the channel's format actually requires
+  // before clicking Approve, rather than trusting the model followed it unchecked.
+  const [formatProfile, setFormatProfile] = useState<FormatProfile | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getProjectFormatProfile(initialProject.id)
+      .then(profile => { if (!cancelled) setFormatProfile(profile); })
+      .catch(err => console.warn("[Timeline] Could not load format profile:", err));
+    return () => { cancelled = true; };
+  }, [initialProject.id]);
+
   const handleApproveActVisuals = async (actNumber: number) => {
     setApprovingActNumber(actNumber);
     try {
@@ -682,7 +751,12 @@ export default function TimelineEditor({
         return;
       }
 
-      setProjectStatus('approved');
+      // Deliberately conditional: the bulk action now skips acts that have no
+      // narration yet, so "it returned success" no longer means "every act is
+      // approved." The server derives the real answer from scene state, so trust
+      // that rather than assuming — otherwise the chip reads Approved over a
+      // half-finished project.
+      if (res.projectFullyApproved) setProjectStatus('approved');
       router.refresh();
 
       const summary = `Generated prompts for ${res.sceneCount} scenes with ${res.blueprintCount} character blueprints shared across every act.`;
@@ -701,6 +775,16 @@ export default function TimelineEditor({
         return;
       }
       if (res.acts) setActNarrations(res.acts);
+      // `scenes` is local state seeded once from `initialScenes` — router.refresh()
+      // re-fetches the server component's props, but a mounted client component does
+      // NOT re-seed its own useState from new props, so the freshly-aligned durations
+      // this call just wrote to the database were never reaching the UI. This is why
+      // V1 kept showing the old, overrun widths even after a successful re-record.
+      if (res.updatedScenes && res.updatedScenes.length > 0) {
+        const durationById = new Map(res.updatedScenes.map(s => [s.id, s.video_duration]));
+        setScenes(prev => prev.map(s => durationById.has(s.id) ? { ...s, video_duration: durationById.get(s.id) } : s));
+        setSelectedScene((prev: any) => (prev && durationById.has(prev.id) ? { ...prev, video_duration: durationById.get(prev.id) } : prev));
+      }
       // Scene durations for this act changed, so the ruler and every later act moved.
       router.refresh();
       if (res.warnings.length > 0) alert(res.warnings.join("\n\n"));
@@ -805,18 +889,11 @@ export default function TimelineEditor({
 
   const router = useRouter();
 
-  // ── Scene Board modal ──
-  // The board used to be a separate route reached from a header link. It now
-  // opens over the editor, so reviewing the script costs no navigation and no
-  // loss of timeline state. Its data is fetched lazily on first open rather than
-  // threaded through props, which would make every editor load pay for it.
-  const [isSceneBoardOpen, setIsSceneBoardOpen] = useState(false);
-  const [sceneBoardData, setSceneBoardData] = useState<SceneBoardData | null>(null);
-  const [isLoadingSceneBoard, setIsLoadingSceneBoard] = useState(false);
-  const [sceneBoardError, setSceneBoardError] = useState<string | null>(null);
-  // Same stale-closure reason as `contextMenuOpenRef` — read by the []-deps keydown effect.
-  const sceneBoardOpenRef = useRef(false);
-  sceneBoardOpenRef.current = isSceneBoardOpen;
+  // The Scene Board is its own route (`scene-board/`), not a layer over the editor —
+  // see implementation_plans/19-scene-board-workspace.md. Every entry point below is a
+  // link, so there is no open/loading/error state for it to hold here any more.
+  const sceneBoardHref = `/workspaces/${workspaceId}/videos/${initialProject.id}/scene-board`;
+
   // Mirrors `contextMenu` for the keydown effect below, which binds once with []
   // deps and would otherwise close over a stale null forever.
   const contextMenuOpenRef = useRef(false);
@@ -2010,6 +2087,19 @@ export default function TimelineEditor({
   }, [selectedScene?.id]);
 
   /**
+   * Scopes a "bulk" scene action to the source scene's own Act for long-form
+   * projects, instead of every scene in the entire project. Long-form generation is
+   * deliberately per-Act (narration must exist before an Act's visuals do) — a bulk
+   * action that reached into every other Act would silently touch scenes nobody has
+   * narrated yet, and for stock/AI modes that means real provider calls for Acts the
+   * user hasn't even started. Short-form has no Act concept, so it stays project-wide.
+   */
+  const scenesInSameActAs = (sourceScene: any) =>
+    isLongForm
+      ? scenes.filter(s => Number(s.act_number ?? 1) === Number(sourceScene.act_number ?? 1))
+      : scenes;
+
+  /**
    * Copies one scene's visual-generation setup onto every scene in the project.
    *
    * This is what the "Apply this setup to all scenes" toggle actually does. Before,
@@ -2033,15 +2123,17 @@ export default function TimelineEditor({
     const mode = sourceScene.generation_mode || globalGenerationMode || 'ai_video';
     const model = sourceScene.ai_model || selectedAiModel;
     const mediaType = sourceScene.custom_media_type;
+    const targetIds = new Set(scenesInSameActAs(sourceScene).map(s => s.id));
 
     setScenes(prev => prev.map(s => {
+      if (!targetIds.has(s.id)) return s;
       const fields: Record<string, any> = { generation_mode: mode, ai_model: model };
       if (mediaType && !s.custom_media_url) fields.custom_media_type = mediaType;
       return { ...s, ...fields };
     }));
     setSelectedScene((prev: any) => prev ? { ...prev, generation_mode: mode, ai_model: model } : prev);
 
-    scenes.forEach(s => {
+    scenes.filter(s => targetIds.has(s.id)).forEach(s => {
       const fields: Record<string, any> = { generation_mode: mode, ai_model: model };
       if (mediaType && !s.custom_media_url) fields.custom_media_type = mediaType;
       persistSceneFields(s.id, fields);
@@ -2704,7 +2796,24 @@ export default function TimelineEditor({
 
   // Removing a scene both deletes its row and renumbers the survivors — persisting
   // only one of those leaves the timeline inconsistent after a reload.
+  //
+  // The confirm lives HERE rather than at each call site because all three paths that
+  // delete scenes (the Delete key, the selection handler, the block context menu)
+  // funnel through this one function — and this is a permanent, un-undoable delete of
+  // the scene ROW, which takes the script/voice-over text with it, not just the
+  // visual. Select-all + Delete previously wiped an entire project's script with no
+  // prompt at all. Anyone who only wants the picture gone wants `clearSceneVisuals`.
   const removeScenesAndPersist = (idsToDelete: string[]) => {
+    if (idsToDelete.length === 0) return;
+
+    const count = idsToDelete.length;
+    const confirmed = window.confirm(
+      `Permanently delete ${count} scene${count === 1 ? '' : 's'}?\n\n` +
+      `This removes the script/voice-over text too, and cannot be undone.\n\n` +
+      `If you only want to redo the visual, cancel and use "Clear visual" instead — that keeps the script.`
+    );
+    if (!confirmed) return;
+
     const renumbered = scenes
       .filter(s => !idsToDelete.includes(s.id))
       .map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
@@ -2724,6 +2833,32 @@ export default function TimelineEditor({
           .map(s => ({ id: s.id, sequence_number: s.sequence_number }))
           .filter(u => isPersistedScene(u.id))
       );
+    });
+  };
+
+  /**
+   * Resets a scene's generated visual while keeping its script line and timing.
+   *
+   * The non-destructive counterpart to deleting a V1 block: "I don't like this
+   * picture, redo it" must never cost the voice-over text, which is what a delete
+   * does. Clearing `environment` also returns the scene to the "Awaiting visuals"
+   * state that `approveActVisuals` looks for, so re-approving that act picks it up
+   * again without any extra bookkeeping.
+   */
+  const handleClearSceneVisuals = (sceneIds: string[]) => {
+    if (sceneIds.length === 0) return;
+
+    setScenes(prev => prev.map(s => sceneIds.includes(s.id)
+      ? { ...s, environment: null, lighting: null, camera_direction: null, custom_media_url: undefined, custom_media_type: undefined, generation_status: undefined }
+      : s));
+
+    const persisted = sceneIds.filter(isPersistedScene);
+    if (persisted.length === 0) return;
+
+    clearSceneVisuals(persisted).then(res => {
+      if (!res.success) {
+        setPersistenceWarning(`Couldn't clear the visual: ${res.error}`);
+      }
     });
   };
 
@@ -2967,23 +3102,29 @@ export default function TimelineEditor({
   };
 
   const handleGenerateAllVisuals = async () => {
+    // Scoped to the selected scene's own Act on long-form — this used to loop over
+    // every scene in the whole project, which for a long-form video meant it would
+    // reach into Acts that haven't even been narrated yet and burn real provider
+    // calls generating visuals nobody asked for on content that isn't ready.
+    const targetScenes = scenesInSameActAs(selectedScene ?? scenes[0]);
+
     // Scenes that already have a visual used to be skipped unconditionally, which
     // made "Generate All" useless for restyling a project — the very scene you just
     // configured was the first one passed over. Now it asks, so re-running after a
     // partial pass is still safe by default but a deliberate restyle is possible.
-    const alreadyFilled = scenes.filter(s => s.custom_media_url);
+    const alreadyFilled = targetScenes.filter(s => s.custom_media_url);
     let overwriteFilled = false;
     if (alreadyFilled.length > 0) {
       overwriteFilled = window.confirm(
-        `${alreadyFilled.length} of ${scenes.length} scenes already have a visual.\n\n` +
+        `${alreadyFilled.length} of ${targetScenes.length} scenes already have a visual.\n\n` +
         `OK — regenerate those too, replacing what's there (costs a provider call each).\n` +
-        `Cancel — leave them alone and only fill the ${scenes.length - alreadyFilled.length} empty scene(s).`
+        `Cancel — leave them alone and only fill the ${targetScenes.length - alreadyFilled.length} empty scene(s).`
       );
     }
 
     setIsGeneratingAllVisuals(true);
     try {
-      for (const scene of scenes) {
+      for (const scene of targetScenes) {
         if (scene.custom_media_url && !overwriteFilled) continue;
 
         const mode = scene.generation_mode || globalGenerationMode;
@@ -3283,12 +3424,6 @@ export default function TimelineEditor({
           setActiveVolumePopup(null);
           return;
         }
-        // Then the Scene Board modal — dismiss the topmost layer first, and only
-        // touch the selection underneath once nothing is covering it.
-        if (sceneBoardOpenRef.current) {
-          setIsSceneBoardOpen(false);
-          return;
-        }
         setSelectedScene(null);
         setSelectedSceneTrack(null);
         setSelectedSceneKeys([]);
@@ -3311,29 +3446,10 @@ export default function TimelineEditor({
     };
   }, []);
 
-  /**
-   * Opens the Scene Board modal, fetching its data on first open only.
-   *
-   * The fetch is cached in `sceneBoardData` for the rest of the session: the board
-   * is a review surface people reopen repeatedly, and re-running the full project
-   * + acts + scenes query on every open would be pure waste. Approving inside the
-   * modal clears the cache (see the modal's `onFinalized`), since that is the one
-   * action which invalidates it.
-   */
-  const openSceneBoard = async () => {
-    setIsSceneBoardOpen(true);
+  /** Leaves the editor for the Scene Board route. */
+  const openSceneBoard = () => {
     setContextMenu(null);
-    if (sceneBoardData || isLoadingSceneBoard) return;
-
-    setIsLoadingSceneBoard(true);
-    setSceneBoardError(null);
-    const result = await loadProjectForWhiteboard(initialProject.id);
-    if (result.success && result.data) {
-      setSceneBoardData(result.data);
-    } else {
-      setSceneBoardError(result.error || "Couldn't load the Scene Board.");
-    }
-    setIsLoadingSceneBoard(false);
+    router.push(sceneBoardHref);
   };
 
   const handleDeleteItem = () => {
@@ -3366,6 +3482,15 @@ export default function TimelineEditor({
     setContextMenu(null);
   };
 
+  // "917s" takes real mental math to place on a 20-minute timeline; "15:17" doesn't.
+  // Kept as raw seconds under a minute, where the two read about equally fast anyway.
+  const formatRulerTimestamp = (totalSeconds: number) => {
+    if (totalSeconds < 60) return `${totalSeconds}s`;
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+  };
+
   const contentDuration = scenes.reduce((acc, scene) => acc + getSceneDuration(scene), 0);
   const clipsMaxTime = timelineClips.length > 0 ? Math.max(...timelineClips.map(c => c.startTime + c.duration)) : 0;
 
@@ -3386,6 +3511,21 @@ export default function TimelineEditor({
     cursorPositionRef.current = cursorPosition;
   }, [cursorPosition]);
 
+  // Identifies whichever narration audio element is the authoritative clock for a
+  // given moment — the per-Act narration overlapping `time` for long-form, or the
+  // single master-narration file otherwise. Returns null when nothing should drive
+  // playback (e.g. an un-narrated act, or before any narration exists) — the caller
+  // falls back to a synthetic clock in that case.
+  const getMasterAudioKey = useCallback((time: number): string | null => {
+    if (isLongForm) {
+      const act = actNarrations.find(
+        a => a.audioUrl && time >= a.startSeconds && time < a.startSeconds + (a.durationSeconds || 0)
+      );
+      return act ? `act-narration-${act.actNumber}` : null;
+    }
+    return masterAudioUrl ? "master-narration" : null;
+  }, [isLongForm, actNarrations, masterAudioUrl]);
+
   useEffect(() => {
     if (!isPlaying) {
       if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
@@ -3398,7 +3538,24 @@ export default function TimelineEditor({
     const animate = (time: number) => {
       const delta = (time - lastTimeRef.current) / 1000;
       lastTimeRef.current = time;
-      const newPos = cursorPositionRef.current + delta * scale;
+
+      // The narration audio's own hardware-clocked playback is a far steadier clock
+      // than requestAnimationFrame deltas — reading it directly here (rather than
+      // independently accumulating time and later force-correcting the audio to
+      // match) is what stops the cursor and the narration from fighting each other.
+      // Previously both ticked forward on their own, and every time they drifted
+      // past 0.3s the sync effect below would snap the audio backward to match —
+      // audible as the narration "getting back," i.e. periodically jumping backward.
+      const masterKey = getMasterAudioKey(cursorPositionRef.current / scale);
+      const masterEl = masterKey ? mediaRefs.current[masterKey] : null;
+      let newPos: number;
+      if (masterEl && !masterEl.paused && !masterEl.seeking && masterEl.readyState >= 1) {
+        const masterStart = parseFloat(masterEl.dataset.start || "0");
+        const masterTrimStart = parseFloat(masterEl.dataset.trimStart || "0");
+        newPos = (masterStart + (masterEl.currentTime - masterTrimStart)) * scale;
+      } else {
+        newPos = cursorPositionRef.current + delta * scale;
+      }
 
       if (newPos >= maxPos) {
         // Stop exactly at the end of the timeline width, and — critically — do not
@@ -3422,7 +3579,7 @@ export default function TimelineEditor({
     return () => {
       if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
     };
-  }, [isPlaying, scale, playbackEndDuration]);
+  }, [isPlaying, scale, playbackEndDuration, getMasterAudioKey]);
 
   // Synchronized Playback Logic
   const currentTime = cursorPosition / scale;
@@ -3468,8 +3625,23 @@ export default function TimelineEditor({
     }
 
     // 2. Sync Native DOM Media Elements
-    Object.values(mediaRefs.current).forEach(media => {
+    const masterAudioKey = getMasterAudioKey(currentTime);
+    Object.entries(mediaRefs.current).forEach(([mediaKey, media]) => {
       if (!media) return;
+      // While playing, the master narration element IS the clock cursorPosition was
+      // just derived from above, so it never needs the tight 0.3s correction every
+      // other element gets — that fine-grained chasing is exactly what caused the
+      // original backward-snap stutter. But it still needs a LARGE correction: the
+      // moment a new element takes over as master (crossing into a new Act, or
+      // pressing Play with the cursor already sitting inside one), that element's
+      // currentTime is whatever it was last left at — 0 for a never-played element,
+      // or a stale leftover from earlier scrubbing — not wherever the cursor
+      // actually is. Skipping correction entirely made playback jump straight to
+      // that stale position instead of the clicked one. `masterDriftThreshold`
+      // lets small natural jitter free-run (no stutter) while still fixing a
+      // genuinely wrong starting position (a real jump, not jitter).
+      const isMaster = isPlaying && mediaKey === masterAudioKey;
+      const driftThreshold = isMaster ? 2 : 0.3;
 
       const track = media.dataset.track as 'V1' | 'A1' | 'A2';
       if (track && trackStates[track]) {
@@ -3497,7 +3669,7 @@ export default function TimelineEditor({
          // update currentTime right away, so without this guard the next frame reads the stale
          // value, seeks again, and repeats ~60x/sec — a seek storm that sounds like static.
          if (media.readyState >= 1 && !isNaN(targetTime) && !media.seeking) {
-            if (Math.abs(media.currentTime - targetTime) > 0.3) {
+            if (Math.abs(media.currentTime - targetTime) > driftThreshold) {
                media.currentTime = targetTime;
             }
          }
@@ -3530,14 +3702,14 @@ export default function TimelineEditor({
          }
       }
     });
-  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality, isolatedSceneId]);
+  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality, isolatedSceneId, getMasterAudioKey]);
 
   const getSceneColor = (status: string) => {
-    if (status === 'Completed') return 'border-gray-800 bg-emerald-50 text-emerald-700';
-    if (status === 'Simulated') return 'border-gray-800 bg-amber-50 text-amber-700';
-    if (status === 'Rendering') return 'border-gray-800 bg-blue-50 text-blue-700';
-    if (status === 'Failed') return 'border-red-400 bg-red-50 text-red-700';
-    return 'border-gray-800 bg-gray-100 text-gray-700'; // Pending
+    if (status === 'Completed') return 'border-ed-border-strong bg-ed-ok-soft text-ed-ok';
+    if (status === 'Simulated') return 'border-ed-border-strong bg-ed-warn-soft text-ed-warn';
+    if (status === 'Rendering') return 'border-ed-border-strong bg-ed-info-soft text-ed-info';
+    if (status === 'Failed') return 'border-ed-danger-border bg-ed-danger-soft text-ed-danger';
+    return 'border-ed-border-strong bg-ed-raised text-ed-text-dim'; // Pending
   };
 
   const getAspectRatioStyle = () => {
@@ -3883,3570 +4055,149 @@ export default function TimelineEditor({
   }, [isolatedSceneId, scenes]);
 
   const statusChip = {
-    exported: { label: 'Exported', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <CheckCircle2 size={11} /> },
-    rendering: { label: 'Rendering', cls: 'bg-blue-50 text-blue-700 border-blue-200', icon: <Loader2 size={11} className="animate-spin" /> },
-    failed: { label: 'Render failed', cls: 'bg-red-50 text-red-700 border-red-200', icon: <AlertTriangle size={11} /> },
-    pending: { label: 'Pending', cls: 'bg-gray-100 text-gray-600 border-gray-200', icon: <Clock size={11} /> },
-    drafting: { label: 'Draft', cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Film size={11} /> },
+    exported: { label: 'Exported', cls: 'bg-ed-ok-soft text-ed-ok border-ed-ok-border', icon: <CheckCircle2 size={11} /> },
+    rendering: { label: 'Rendering', cls: 'bg-ed-info-soft text-ed-info border-ed-info-border', icon: <Loader2 size={11} className="animate-spin" /> },
+    failed: { label: 'Render failed', cls: 'bg-ed-danger-soft text-ed-danger border-ed-danger-border', icon: <AlertTriangle size={11} /> },
+    pending: { label: 'Pending', cls: 'bg-ed-raised text-ed-text-dim border-ed-border', icon: <Clock size={11} /> },
+    drafting: { label: 'Draft', cls: 'bg-ed-warn-soft text-ed-warn border-ed-warn-border', icon: <Film size={11} /> },
     // Long-form audio-first phases. `scripted` means every Act's script exists and
     // the project's ONE shared cast is locked, but no Act has audio or visuals yet —
     // audio and visual approval happen per-Act from here, in whatever order.
     // `narrated` is short/mid-form only now (see timeline-types.ts); long-form goes
     // straight from `scripted` to `approved` once every Act is individually done.
-    scripted: { label: 'Ready to narrate', cls: 'bg-purple-50 text-purple-700 border-purple-200', icon: <Mic size={11} /> },
-    narrated: { label: 'Review audio', cls: 'bg-purple-50 text-purple-700 border-purple-200', icon: <Mic size={11} /> },
-    approved: { label: 'Approved', cls: 'bg-emerald-50 text-emerald-700 border-emerald-200', icon: <CheckCircle2 size={11} /> },
-  }[projectStatus] ?? { label: 'Draft', cls: 'bg-amber-50 text-amber-700 border-amber-200', icon: <Film size={11} /> };
-
-  return (
-    <div className="flex flex-col h-full bg-gray-50 text-gray-900">
-      {/* Editor header. Lives here rather than in the server page so its actions can
-          reach real editor state — that separation is why the old buttons were dead. */}
-      <header className="flex items-center justify-between px-3 h-12 flex-none bg-white border-b border-gray-200 shadow-sm z-30">
-        <div className="flex items-center gap-3 min-w-0">
-          {/* Rendered as a non-interactive span mid-render rather than relying on the
-              modal's coverage alone — defense in depth, so the header stays honest
-              even if the overlay's stacking were ever imperfect. */}
-          {isRendering ? (
-            <span
-              className="p-1.5 rounded-md text-gray-300 cursor-not-allowed shrink-0"
-              title="Can't leave while exporting"
-            >
-              <ArrowLeft size={16} />
-            </span>
-          ) : (
-            <Link
-              href={`/workspaces/${workspaceId}`}
-              className="p-1.5 rounded-md text-gray-500 hover:text-gray-900 hover:bg-gray-100 transition-colors shrink-0"
-              title="Back to workspace"
-            >
-              <ArrowLeft size={16} />
-            </Link>
-          )}
-          <div className="h-5 w-px bg-gray-200 shrink-0" />
-          <h1 className="text-[13px] font-bold text-gray-900 truncate" title={initialProject.topic || 'Untitled Video'}>
-            {initialProject.topic || 'Untitled Video'}
-          </h1>
-          <span className={`shrink-0 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${statusChip.cls}`}>
-            {statusChip.icon}
-            {statusChip.label}
-          </span>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0">
-          {/* The Whiteboard nav link that used to sit here is gone — the Scene Board
-              now opens as a modal over the editor, summoned from the A1 right-click
-              menu, so reviewing the script no longer costs a page navigation. */}
-          <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-gray-400 mr-1">
-            <Clock size={12} />
-            {formatDuration(contentDuration)}
-          </span>
-          <button
-            onClick={handleRenderVideo}
-            disabled={isRendering || scenes.length === 0}
-            className="bg-purple-600 hover:bg-purple-700 disabled:bg-gray-300 disabled:cursor-not-allowed text-white px-4 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
-            title={scenes.length === 0 ? 'Add at least one scene to export' : 'Render this project to an .mp4'}
-          >
-            {isRendering ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {isRendering ? 'Rendering…' : 'Export'}
-          </button>
-        </div>
-      </header>
-
-      {/* Phase banner. Shown for the whole per-Act audio+visual phase — from right
-          after the Whiteboard hands off (zero Acts narrated yet, all placeholders on
-          A1) through to every Act individually approved. V1 blocks for an unapproved
-          Act carry no generated visual yet — that pass is withheld per-Act until the
-          user approves it — so this explains why parts of the video track look empty
-          instead of leaving the user to wonder. */}
-      {isLongForm && projectStatus !== 'approved' && projectStatus !== 'rendering' && projectStatus !== 'exported' && (
-        <div className="flex items-center gap-2 px-3 py-2 flex-none bg-purple-50 border-b border-purple-200">
-          <Mic size={13} className="text-purple-600 flex-none" />
-          <span className="text-[11px] font-bold text-purple-800">Audio &amp; visual review</span>
-          <span className="text-[11px] text-purple-700/90">
-            {actNarrations.length} of {actOutlines.length || '?'} acts narrated · click an act on A1 to record, re-record, or approve its visuals — in any order.
-          </span>
-        </div>
-      )}
-
-      {/* Background-persistence failures. Floating rather than inline so it never
-          shifts the timeline layout, and dismissible so it can't trap the user. */}
-      {persistenceWarning && (
-        <div className="fixed bottom-4 right-4 z-[200] max-w-sm bg-amber-50 border border-amber-300 rounded-lg shadow-lg p-3 flex items-start gap-2.5">
-          <Info size={15} className="text-amber-600 shrink-0 mt-0.5" />
-          <div className="flex-1">
-            <p className="text-[11px] font-bold text-amber-900 mb-0.5">Changes may not be saved</p>
-            <p className="text-[10px] text-amber-800 leading-relaxed">{persistenceWarning}</p>
-          </div>
-          <button
-            onClick={() => setPersistenceWarning(null)}
-            className="text-amber-600 hover:text-amber-900 text-xs font-bold leading-none shrink-0"
-            title="Dismiss"
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Hidden Media Elements for Audio Sync */}
-      <div className="hidden">
-         {/* Master narration audio (single file, audio-first) */}
-         {masterAudioUrl && (
-           <audio
-             key="master-narration"
-             src={masterAudioUrl}
-             // The element lives in a display:none wrapper, where browsers are free to
-             // resolve preload to "none" — without this the duration is never learned,
-             // which leaves the A1 block spanning the whole ruler and makes the sync
-             // effect chase seek targets past the end of the file.
-             preload="auto"
-             ref={el => {
-               masterAudioRef.current = el;
-               mediaRefs.current["master-narration"] = el;
-               if (el && el.readyState >= 1) {
-                 const d = el.duration;
-                 if (Number.isFinite(d) && d > 0) {
-                    setMasterAudioDuration(d);
-                 }
-               }
-             }}
-             data-start="0"
-             data-duration={masterAudioDuration || 9999}
-             data-track="A1"
-             muted={trackStates.A1.muted}
-             onLoadedMetadata={(e) => {
-               const d = (e.target as HTMLAudioElement).duration;
-               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
-             }}
-             onCanPlay={(e) => {
-               const d = (e.target as HTMLAudioElement).duration;
-               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
-             }}
-             onDurationChange={(e) => {
-               const d = (e.target as HTMLAudioElement).duration;
-               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
-             }}
-           />
-         )}
-         {/* Per-Act narration (long-form). One element per act, positioned by the same
-             data-start/data-duration contract the sync effect already drives every
-             other native element with — no new playback plumbing needed. */}
-         {actNarrations.map(act => (
-           <audio
-             key={`act-narration-${act.actNumber}`}
-             src={act.audioUrl}
-             preload="auto"
-             ref={el => { mediaRefs.current[`act-narration-${act.actNumber}`] = el; }}
-             data-start={act.startSeconds}
-             data-duration={act.durationSeconds || 9999}
-             data-track="A1"
-             muted={trackStates.A1.muted}
-           />
-         ))}
-         {/* Per-scene audio clips — used only when no master narration exists.
-             Gated on `!isLongForm` rather than `!hasActNarration`: a long-form scene
-             can end up with a stray `audio_url` from the legacy single-scene
-             regenerate action even before any Act has been narrated, and that must
-             never play alongside — or instead of — this project's Act blocks. */}
-         {!masterAudioUrl && !isLongForm && scenes.map((scene, idx) => scene.audio_url && (
-            <audio
-              key={`audio-scene-${scene.id}`}
-              src={scene.audio_url}
-              ref={el => { mediaRefs.current[`scene-${scene.id}`] = el; }}
-              data-start={scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
-              data-duration={scene.video_duration || 5}
-              data-track="A1"
-              muted={trackStates.A1.muted}
-            />
-         ))}
-         {/* Timeline Audio Clips (A1 & A2) */}
-         {timelineClips.filter(c => c.asset.type === 'audio').map(clip => (
-            <audio
-              key={`clip-${clip.id}`}
-              src={clip.asset.url}
-              ref={el => { mediaRefs.current[`clip-${clip.id}`] = el; }}
-              data-start={clip.startTime}
-              data-duration={clip.duration}
-              // The playback sync effect reads data-trim-start; without it a trimmed
-              // clip previewed from its head while the export honoured the trim, so
-              // editor and .mp4 disagreed.
-              data-trim-start={clip.trimStart || 0}
-              data-track={clip.trackId}
-              muted={trackStates[clip.trackId as 'A1' | 'A2']?.muted || false}
-            />
-         ))}
-      </div>
-
-      {/* Top Section: Split View */}
-      <div className="flex-1 flex overflow-hidden">
-        
-        {/* Left Panel (Tabbed Interface) */}
-        <div className="w-[380px] lg:w-[420px] bg-white border-r border-gray-200 flex flex-col flex-none shadow-[2px_0_10px_rgba(0,0,0,0.05)] z-10">
-          
-          {/* Tab Headers */}
-          <div className="flex items-center border-b border-gray-100 p-2 gap-1 bg-gray-50/50">
-            <button 
-              onClick={() => setActiveTab('media')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'media' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100/50'}`}
-            >
-              <FolderOpen size={14} /> Media
-            </button>
-            <button 
-              onClick={() => setActiveTab('scene')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'scene' ? 'bg-white text-gray-900 shadow-sm border border-gray-200' : 'text-gray-500 hover:text-gray-800 hover:bg-gray-100/50'}`}
-            >
-              <Layers size={14} /> Scene Info
-            </button>
-            <button 
-              onClick={() => setActiveTab('export')}
-              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'export' ? 'bg-purple-50 text-purple-700 shadow-sm border border-purple-200' : 'text-gray-500 hover:text-purple-600 hover:bg-purple-50'}`}
-            >
-              <Wand2 size={14} /> Export
-            </button>
-          </div>
-
-          {/* Auto-Captions — a whole-video setting, so it sits outside the tabs rather
-              than inside Scene Info, which only renders when a scene is selected.
-              Disabled until narration exists: the word timings come from the Deepgram
-              pass inside generateFullNarration, and a toggle that flips but changes
-              nothing would be worse than one that explains itself. */}
-          <div className="px-3 py-2.5 border-b border-gray-200 bg-white">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2.5 min-w-0">
-                <div className={`p-1.5 rounded-md shrink-0 ${captionWords.length > 0 ? 'bg-purple-50' : 'bg-gray-100'}`}>
-                  <Type size={14} className={captionWords.length > 0 ? 'text-purple-600' : 'text-gray-400'} />
-                </div>
-                <div className="min-w-0">
-                  <p className="text-xs font-bold text-gray-800 leading-tight">Auto-Captions</p>
-                  <p className="text-[10px] text-gray-500 leading-tight truncate">
-                    {captionWords.length > 0
-                      ? `${captionWords.length} words timed to narration`
-                      : 'Generate narration to enable'}
-                  </p>
-                </div>
-              </div>
-
-              <button
-                type="button"
-                role="switch"
-                aria-checked={captionsEnabled}
-                disabled={captionWords.length === 0}
-                onClick={async () => {
-                  const next = !captionsEnabled;
-                  setCaptionsEnabled(next);
-                  const res = await updateProjectCaptionsEnabled(initialProject.id, next);
-                  if (!res.success) {
-                    // Revert rather than leave the editor showing captions that the
-                    // next render would not include.
-                    setCaptionsEnabled(!next);
-                    setPersistenceWarning(
-                      `Couldn't save the captions setting (${res.error}). Run db/add-caption-columns.sql if you haven't yet.`
-                    );
-                  }
-                }}
-                className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
-                  captionsEnabled ? 'bg-purple-600' : 'bg-gray-300'
-                }`}
-              >
-                <span
-                  className={`absolute top-[3px] w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                    captionsEnabled ? 'translate-x-[21px]' : 'translate-x-[3px]'
-                  }`}
-                />
-              </button>
-            </div>
-          </div>
-
-          {/* Tab Content Area */}
-          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-white">
-            
-            {/* MEDIA TAB */}
-            {activeTab === 'media' && (
-              <div className="space-y-4 animate-in fade-in duration-200">
-                <h3 className="text-sm font-bold text-gray-800 mb-4">Project Assets</h3>
-                <div 
-                  className="border-2 border-dashed border-gray-300 hover:border-purple-400 bg-gray-50 hover:bg-purple-50/30 rounded-xl p-8 flex flex-col items-center justify-center gap-3 transition-colors cursor-pointer group"
-                  onClick={() => fileInputRef.current?.click()}
-                >
-                  <input 
-                    type="file" 
-                    className="hidden" 
-                    ref={fileInputRef} 
-                    accept="audio/*,video/*,image/*" 
-                    multiple 
-                    onChange={handleFileUpload}
-                  />
-                  <div className="bg-white p-3 rounded-full border border-gray-100 shadow-sm group-hover:border-purple-200 transition-colors">
-                    <Upload size={20} className="text-gray-400 group-hover:text-purple-500" />
-                  </div>
-                  <div className="text-center">
-                    <p className="text-sm font-semibold text-gray-700 group-hover:text-purple-700">Import Media</p>
-                    <p className="text-xs text-gray-400 mt-1">Drag & drop or click to browse</p>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-3 gap-3 mt-4">
-                   {mediaAssets.map((asset) => (
-                     <div 
-                       key={asset.id} 
-                       onClick={() => {
-                         setSelectedAsset(asset);
-                         setSelectedScene(null);
-                       }}
-                       draggable
-                       onDragStart={(e) => {
-                         setDraggingAsset(asset);
-                         e.dataTransfer.setData('text/plain', JSON.stringify(asset));
-                         e.dataTransfer.effectAllowed = 'copy';
-                         
-                         const duration = asset.duration || 5;
-                         const width = duration * scale;
-                         
-                         const dragGhost = document.createElement('div');
-                         dragGhost.style.width = `${width}px`;
-                         dragGhost.style.height = '50px';
-                         dragGhost.style.borderRadius = '6px';
-                         dragGhost.style.border = '2px solid #10b981'; // emerald-500 to match the screenshot
-                         dragGhost.style.overflow = 'hidden';
-                         dragGhost.style.position = 'absolute';
-                         dragGhost.style.top = '-1000px';
-                         dragGhost.style.backgroundColor = '#ecfdf5';
-                         dragGhost.style.display = 'flex';
-                         
-                         if (asset.type === 'image' || asset.type === 'video') {
-                             if (asset.type === 'image') {
-                                dragGhost.style.backgroundImage = `url(${asset.url})`;
-                                dragGhost.style.backgroundSize = 'cover';
-                                dragGhost.style.backgroundPosition = 'center';
-                             } else {
-                                const numFrames = Math.max(1, Math.ceil(width / 80));
-                                for(let i=0; i<numFrames; i++) {
-                                   const vid = document.createElement('video');
-                                   vid.src = `${asset.url}#t=${(duration / numFrames) * i + 0.1}`;
-                                   vid.style.height = '100%';
-                                   vid.style.width = `${100 / numFrames}%`;
-                                   vid.style.objectFit = 'cover';
-                                   vid.style.borderRight = '1px solid rgba(0,0,0,0.2)';
-                                   dragGhost.appendChild(vid);
-                                }
-                             }
-                         } else {
-                             const icon = document.createElement('div');
-                             icon.style.padding = '10px';
-                             icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-blue-500"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
-                             dragGhost.appendChild(icon);
-                         }
-
-                         const label = document.createElement('div');
-                         label.style.position = 'absolute';
-                         label.style.left = '6px';
-                         label.style.top = '6px';
-                         label.style.backgroundColor = 'rgba(0,0,0,0.5)';
-                         label.style.color = 'white';
-                         label.style.padding = '2px 6px';
-                         label.style.borderRadius = '4px';
-                         label.style.fontSize = '10px';
-                         label.style.fontWeight = 'bold';
-                         label.style.zIndex = '10';
-                         label.style.whiteSpace = 'nowrap';
-                         label.innerText = asset.name;
-                         dragGhost.appendChild(label);
-                         
-                         document.body.appendChild(dragGhost);
-                         e.dataTransfer.setDragImage(dragGhost, 10, 10);
-                         setTimeout(() => { document.body.removeChild(dragGhost); }, 0);
-                       }}
-                       onDragEnd={() => {
-                         setDraggingAsset(null);
-                         setV1DragInsertIndex(null);
-                         setA1DragInsertIndex(null);
-                       }}
-                       className="flex flex-col items-center gap-1.5 cursor-grab active:cursor-grabbing group/asset w-full"
-                     >
-                       {/* Preview Box */}
-                       <div className={`w-full aspect-square bg-gray-100 rounded-lg relative overflow-hidden flex items-center justify-center border transition-colors ${selectedAsset?.id === asset.id ? 'border-purple-500 ring-2 ring-purple-200' : 'border-gray-200 group-hover/asset:border-purple-300 shadow-sm'}`}>
-                         
-                         {asset.type === 'image' ? (
-                           <div className="absolute inset-0 bg-cover bg-center opacity-90 group-hover/asset:opacity-100 transition-opacity" style={{ backgroundImage: `url(${asset.url})` }}></div>
-                         ) : asset.type === 'video' ? (
-                           <video 
-                             src={asset.url} 
-                             className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/asset:opacity-100 transition-opacity" 
-                             muted 
-                             preload="metadata"
-                             onLoadedMetadata={(e) => {
-                               if(!asset.duration) {
-                                  const d = e.currentTarget.duration;
-                                  if (d && !isNaN(d) && d !== Infinity) {
-                                      setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
-                                  }
-                               }
-                             }}
-                           />
-                         ) : (
-                           <div className="absolute inset-0 flex items-center justify-center bg-gray-50">
-                             <Music size={24} className="text-purple-400 group-hover/asset:text-purple-600 transition-colors" />
-                             <audio 
-                               src={asset.url} 
-                               className="hidden" 
-                               preload="metadata"
-                               onLoadedMetadata={(e) => {
-                                 if(!asset.duration) {
-                                    const d = e.currentTarget.duration;
-                                    if (d && !isNaN(d) && d !== Infinity) {
-                                        setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
-                                    }
-                                 }
-                               }}
-                             />
-                           </div>
-                         )}
-
-                         {/* Duration Badge */}
-                         {(asset.type === 'video' || asset.type === 'audio') && (
-                            <div className="absolute top-1 right-1 px-1.5 py-0.5 bg-black/60 rounded text-[9px] text-white font-mono font-medium drop-shadow-md z-10">
-                              {asset.duration ? formatDuration(asset.duration) : '00:00'}
-                            </div>
-                         )}
-                         {/* Upload state — a failed upload means this asset won't survive a reload */}
-                         {asset.uploadStatus === 'uploading' && (
-                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-black/60 rounded text-[9px] text-white font-bold flex items-center gap-1 z-10">
-                              <Loader2 size={9} className="animate-spin" /> Saving
-                            </div>
-                         )}
-                         {asset.uploadStatus === 'failed' && (
-                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-red-600 rounded text-[9px] text-white font-bold z-10" title="Upload failed — this file won't persist after a reload">
-                              Not saved
-                            </div>
-                         )}
-                         {/* Audio Quick Add Buttons */}
-                         {asset.type === 'audio' && (
-                           <div className="absolute bottom-1 right-1 flex items-center gap-1 z-20">
-                             <button
-                               onClick={(e) => {
-                                 e.stopPropagation();
-                                 addTimelineClip(asset, 'A1', 0, Math.min(asset.duration || 5, 5));
-                               }}
-                               className="px-1.5 py-0.5 bg-purple-600 hover:bg-purple-700 text-white rounded text-[9px] font-bold transition-colors shadow-sm"
-                               title="Add to Track A1 at 0s"
-                             >
-                               + A1
-                             </button>
-                             <button
-                               onClick={(e) => {
-                                 e.stopPropagation();
-                                 addTimelineClip(asset, 'A2', 0, Math.min(asset.duration || 5, 5));
-                               }}
-                               className="px-1.5 py-0.5 bg-blue-600 hover:bg-blue-700 text-white rounded text-[9px] font-bold transition-colors shadow-sm"
-                               title="Add to Track A2 at 0s"
-                             >
-                               + A2
-                             </button>
-                           </div>
-                         )}
-                       </div>
-                       
-                       {/* Filename Below */}
-                       <span className="text-[10px] text-gray-600 group-hover/asset:text-purple-600 font-medium truncate w-full text-center px-0.5 transition-colors" title={asset.name}>
-                         {asset.name}
-                       </span>
-                     </div>
-                   ))}
-                   {mediaAssets.length === 0 && (
-                      <div className="col-span-3 text-center text-xs text-gray-400 italic py-4">No media imported yet.</div>
-                   )}
-                </div>
-              </div>
-            )}
-
-            {/* SCENE DETAILS TAB */}
-            {activeTab === 'scene' && (
-              <div className="animate-in fade-in duration-200 h-full flex flex-col">
-                {selectedOverlayClip ? (
-                  /* ── Overlay clip properties ──
-                     Takes priority over the scene/audio-clip panels below: an
-                     overlay clip is its own thing on its own track, so while one
-                     is selected this panel is what the right-hand column shows. */
-                  <div className="space-y-4">
-                    <div className="flex items-center justify-between gap-3 pb-4 border-b border-gray-100">
-                      <div className="flex items-center gap-3 min-w-0">
-                        <div className="bg-fuchsia-100 text-fuchsia-700 w-8 h-8 rounded-lg flex items-center justify-center shadow-sm shrink-0">
-                          {selectedOverlayClip.kind === 'checklist-card' ? (
-                            <CheckCircle2 size={18} />
-                          ) : selectedOverlayClip.kind === 'title-cutout-card' ? (
-                            <ImageIcon size={18} />
-                          ) : selectedOverlayClip.kind === 'dim-scrim' ? (
-                            <Contrast size={18} />
-                          ) : selectedOverlayClip.kind === 'particles' ? (
-                            <Sparkles size={18} />
-                          ) : selectedOverlayClip.kind === 'light-beam' ? (
-                            <Sunrise size={18} />
-                          ) : selectedOverlayClip.kind === 'light-sweep' ? (
-                            <ArrowRightLeft size={18} />
-                          ) : selectedOverlayClip.kind === 'film-damage' ? (
-                            <Film size={18} />
-                          ) : (
-                            <Type size={18} />
-                          )}
-                        </div>
-                        <div className="min-w-0">
-                          <h3 className="font-bold text-gray-900 text-sm">
-                            {selectedOverlayClip.kind === 'checklist-card'
-                              ? 'Checklist Card'
-                              : selectedOverlayClip.kind === 'title-cutout-card'
-                              ? 'Title + Cutout Card'
-                              : selectedOverlayClip.kind === 'dim-scrim'
-                              ? 'Dim Scrim'
-                              : selectedOverlayClip.kind === 'particles'
-                              ? 'Floating Particles'
-                              : selectedOverlayClip.kind === 'light-beam'
-                              ? 'Light Beam'
-                              : selectedOverlayClip.kind === 'light-sweep'
-                              ? 'Light Sweep'
-                              : selectedOverlayClip.kind === 'film-damage'
-                              ? 'Old Film'
-                              : 'Text Overlay'}
-                          </h3>
-                          <span className="text-[10px] text-gray-400 font-mono">
-                            {selectedOverlayClip.startTime.toFixed(1)}s · {selectedOverlayClip.duration.toFixed(1)}s long
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => handleDeleteOverlayClip(selectedOverlayClip.id)}
-                        className="text-gray-400 hover:text-red-600 transition-colors shrink-0"
-                        title="Delete this overlay"
-                      >
-                        <Trash2 size={15} />
-                      </button>
-                    </div>
-
-                    {selectedOverlayClip.kind === 'checklist-card' ? (
-                      <>
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Title</label>
-                          <input
-                            type="text"
-                            className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
-                            value={selectedOverlayClip.text}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
-                            placeholder="e.g. 3 Reasons to Switch"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Accent Color</label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedOverlayClip.color}
-                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                                className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                              />
-                              <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                            </div>
-                            <p className="text-[9px] text-gray-400 mt-0.5">Header bar &amp; checkmarks</p>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Text Color</label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedChecklistTextColor}
-                                onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { textColor: e.target.value })}
-                                className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                              />
-                              <span className="text-[10px] text-gray-500 font-mono">{selectedChecklistTextColor}</span>
-                            </div>
-                            <p className="text-[9px] text-gray-400 mt-0.5">Title wording</p>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Title Font Size</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{selectedOverlayClip.fontSize ?? 28}px</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_FONT_SIZE}
-                            max={MAX_OVERLAY_FONT_SIZE}
-                            step={2}
-                            value={selectedOverlayClip.fontSize ?? 28}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Sizes the title wording only.</p>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Card Size</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedChecklistScale * 100)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_CARD_SCALE}
-                            max={MAX_OVERLAY_CARD_SCALE}
-                            step={0.05}
-                            value={selectedChecklistScale}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Scales the whole card. You can also drag the handle on it in the preview above.</p>
-                        </div>
-
-                        <div>
-                          <div className="flex items-center justify-between mb-1.5">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Bullets</label>
-                            <button
-                              onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets: [...selectedChecklistBullets, 'New point'] })}
-                              className="text-[10px] font-bold text-fuchsia-600 hover:text-fuchsia-700 transition-colors"
-                            >
-                              + Add bullet
-                            </button>
-                          </div>
-                          <div className="space-y-1.5">
-                            {selectedChecklistBullets.map((bullet, index) => (
-                              <div key={index} className="flex items-center gap-1.5">
-                                <input
-                                  type="text"
-                                  value={bullet}
-                                  onChange={(e) => {
-                                    const bullets = [...selectedChecklistBullets];
-                                    bullets[index] = e.target.value;
-                                    updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets });
-                                  }}
-                                  className="flex-1 bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-1.5 text-xs text-gray-800 transition-all shadow-sm"
-                                  placeholder="Bullet text"
-                                />
-                                <button
-                                  onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets: selectedChecklistBullets.filter((_, i) => i !== index) })}
-                                  className="text-gray-300 hover:text-red-600 transition-colors shrink-0"
-                                  title="Remove bullet"
-                                >
-                                  <X size={14} />
-                                </button>
-                              </div>
-                            ))}
-                            {selectedChecklistBullets.length === 0 && (
-                              <p className="text-[10px] text-gray-400 italic">No bullets yet — add one above.</p>
-                            )}
-                          </div>
-                        </div>
-                      </>
-                    ) : selectedOverlayClip.kind === 'title-cutout-card' ? (
-                      <>
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Headline</label>
-                          <input
-                            type="text"
-                            className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
-                            value={selectedOverlayClip.text}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
-                            placeholder="e.g. The Discovery"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Animation</label>
-                            <select
-                              value={selectedOverlayClip.preset}
-                              onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
-                              className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                            >
-                              {OVERLAY_PRESET_OPTIONS.map(option => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Text Color</label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedTitleCutoutData.textColor ?? '#FFFFFF'}
-                                onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { textColor: e.target.value })}
-                                className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                              />
-                              <span className="text-[10px] text-gray-500 font-mono">{selectedTitleCutoutData.textColor ?? '#FFFFFF'}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Fallback Background Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                          <p className="text-[9px] text-gray-400 mt-0.5">Used only when no background image is set below.</p>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Headline Font Size</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{selectedOverlayClip.fontSize ?? 64}px</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_FONT_SIZE}
-                            max={MAX_OVERLAY_FONT_SIZE}
-                            step={2}
-                            value={selectedOverlayClip.fontSize ?? 64}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Sizes the headline wording only.</p>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Card Size</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedTitleCutoutData.scale ?? 1) * 100)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_CARD_SCALE}
-                            max={MAX_OVERLAY_CARD_SCALE}
-                            step={0.05}
-                            value={selectedTitleCutoutData.scale ?? 1}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Scales the whole card, images included. You can also drag the handle on it in the preview above.</p>
-                        </div>
-
-                        <OverlayImagePicker
-                          label="Background Image"
-                          images={projectImageAssets}
-                          selectedUrl={selectedTitleCutoutData.backgroundImageUrl}
-                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { backgroundImageUrl: url })}
-                        />
-                        <OverlayImagePicker
-                          label="Foreground Cutout"
-                          images={projectImageAssets}
-                          selectedUrl={selectedTitleCutoutData.foregroundImageUrl}
-                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { foregroundImageUrl: url })}
-                        />
-                      </>
-                    ) : selectedOverlayClip.kind === 'dim-scrim' ? (
-                      <>
-                        <p className="text-[10px] text-gray-400 -mt-1">
-                          A full-frame dim layer with its own timing — start it before your
-                          text arrives, let it linger after, or fade it independently.
-                        </p>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Scrim Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Opacity</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedDimScrimData.opacity ?? 0.45) * 100)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0.05}
-                            max={1}
-                            step={0.05}
-                            value={selectedDimScrimData.opacity ?? 0.45}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { opacity: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade In</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedDimScrimData.fadeInSeconds ?? 0.3).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedDimScrimData.fadeInSeconds ?? 0.3}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade Out</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedDimScrimData.fadeOutSeconds ?? 0.3).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedDimScrimData.fadeOutSeconds ?? 0.3}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-
-                        <p className="text-[10px] text-gray-400">
-                          Drag this clip on the OV track (or trim its edges) to control exactly when it starts and ends relative to your text.
-                        </p>
-                      </>
-                    ) : selectedOverlayClip.kind === 'particles' ? (
-                      <>
-                        <p className="text-[10px] text-gray-400 -mt-1">
-                          Drifting motes floating over the footage. Runs across scene cuts,
-                          so let one clip span several scenes rather than adding one per scene.
-                        </p>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Particle Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Count</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{selectedParticleData.count ?? 45}</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={5}
-                            max={200}
-                            step={5}
-                            value={selectedParticleData.count ?? 45}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { count: parseInt(e.target.value, 10) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Speed</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedParticleData.speed ?? 1).toFixed(1)}x</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0.2}
-                              max={3}
-                              step={0.1}
-                              value={selectedParticleData.speed ?? 1}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { speed: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Size</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedParticleData.sizeScale ?? 1) * 100)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0.3}
-                              max={2.5}
-                              step={0.1}
-                              value={selectedParticleData.sizeScale ?? 1}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { sizeScale: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Cluster</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">
-                              {selectedParticleData.xBias === undefined ? 'Even' : `${Math.round(selectedParticleData.xBias)}%`}
-                            </span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={selectedParticleData.xBias ?? 50}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { xBias: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <button
-                            type="button"
-                            onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { xBias: undefined })}
-                            className="text-[9px] text-gray-400 hover:text-fuchsia-600 mt-0.5 transition-colors"
-                          >
-                            Spread evenly across the frame
-                          </button>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade In</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedParticleData.fadeInSeconds ?? 0.8).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedParticleData.fadeInSeconds ?? 0.8}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade Out</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedParticleData.fadeOutSeconds ?? 0.8).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedParticleData.fadeOutSeconds ?? 0.8}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    ) : selectedOverlayClip.kind === 'light-beam' ? (
-                      <>
-                        <p className="text-[10px] text-gray-400 -mt-1">
-                          A soft shaft of light. It only ever adds light — pair it with a Dim
-                          Scrim clip underneath when the rest of the frame should fall off too.
-                        </p>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Beam Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Position</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedLightBeamData.xPercent ?? 50)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={100}
-                            step={1}
-                            value={selectedLightBeamData.xPercent ?? 50}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { xPercent: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">
-                            The beam can&apos;t be blocked by anything in the footage, so it looks best
-                            placed away from your subject rather than across them.
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Width</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedLightBeamData.width ?? 14)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={2}
-                              max={40}
-                              step={1}
-                              value={selectedLightBeamData.width ?? 14}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { width: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Intensity</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedLightBeamData.intensity ?? 0.75) * 100)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0.05}
-                              max={1}
-                              step={0.05}
-                              value={selectedLightBeamData.intensity ?? 0.75}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { intensity: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade In</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedLightBeamData.fadeInSeconds ?? 0.6).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedLightBeamData.fadeInSeconds ?? 0.6}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade Out</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedLightBeamData.fadeOutSeconds ?? 0.6).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedLightBeamData.fadeOutSeconds ?? 0.6}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    ) : selectedOverlayClip.kind === 'light-sweep' ? (
-                      <>
-                        <p className="text-[10px] text-gray-400 -mt-1">
-                          A band of light raking across the frame, repeating on its own
-                          cycle. Unlike a Light Beam it doesn&apos;t stay in one place — it
-                          crosses edge to edge.
-                        </p>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Sweep Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Pass Every</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedLightSweepData.cycleSeconds ?? 4).toFixed(1)}s</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={1}
-                            max={12}
-                            step={0.5}
-                            value={selectedLightSweepData.cycleSeconds ?? 4}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { cycleSeconds: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">
-                            Set this to the clip&apos;s own length for a single pass instead of a repeat.
-                          </p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Width</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedLightSweepData.width ?? 12)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={1}
-                              max={25}
-                              step={0.5}
-                              value={selectedLightSweepData.width ?? 5}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { width: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Intensity</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedLightSweepData.intensity ?? 0.6) * 100)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0.05}
-                              max={1}
-                              step={0.05}
-                              value={selectedLightSweepData.intensity ?? 0.6}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { intensity: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Lean</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedLightSweepData.angle ?? 100)}&deg;</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={70}
-                            max={110}
-                            step={1}
-                            value={selectedLightSweepData.angle ?? 100}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { angle: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">90&deg; is perfectly upright; either side of it tilts the band.</p>
-                        </div>
-
-                        <label className="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-lg shadow-sm cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(selectedLightSweepData.reverse)}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { reverse: e.target.checked })}
-                            className="accent-purple-600"
-                          />
-                          <span className="text-xs font-bold text-gray-700">Sweep right to left</span>
-                        </label>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade In</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedLightSweepData.fadeInSeconds ?? 0.5).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedLightSweepData.fadeInSeconds ?? 0.5}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade Out</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedLightSweepData.fadeOutSeconds ?? 0.5).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedLightSweepData.fadeOutSeconds ?? 0.5}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    ) : selectedOverlayClip.kind === 'film-damage' ? (
-                      <>
-                        <p className="text-[10px] text-gray-400 -mt-1">
-                          Old-film print wear: drifting scratch lines and emulsion grain.
-                          This is the one overlay that sits <em>above</em> your text — damage
-                          is on the film, so captions get scratched too.
-                        </p>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Grain</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedFilmDamageData.grainAmount ?? 0.35) * 100)}%</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0}
-                            max={1}
-                            step={0.05}
-                            value={selectedFilmDamageData.grainAmount ?? 0.35}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { grainAmount: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Drop to 0 for scratches with no grain.</p>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Grain Fineness</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedFilmDamageData.grainScale ?? 0.8).toFixed(2)}</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={0.2}
-                            max={1.6}
-                            step={0.05}
-                            value={selectedFilmDamageData.grainScale ?? 0.8}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { grainScale: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[9px] text-gray-400 mt-0.5">Lower is coarser, older stock. Higher is finer, more modern.</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Scratches</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round(selectedFilmDamageData.scratchCount ?? 4)}</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={16}
-                              step={1}
-                              value={selectedFilmDamageData.scratchCount ?? 4}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scratchCount: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Brightness</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{Math.round((selectedFilmDamageData.scratchIntensity ?? 0.5) * 100)}%</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={1}
-                              step={0.05}
-                              value={selectedFilmDamageData.scratchIntensity ?? 0.5}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scratchIntensity: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 mb-1">Scratch Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                            />
-                            <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                          </div>
-                          <p className="text-[9px] text-gray-400 mt-0.5">Grain stays neutral — this only tints the scratches.</p>
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade In</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedFilmDamageData.fadeInSeconds ?? 0.4).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedFilmDamageData.fadeInSeconds ?? 0.4}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                          <div>
-                            <div className="flex justify-between items-center mb-1">
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Fade Out</label>
-                              <span className="text-[10px] font-bold text-gray-500 font-mono">{(selectedFilmDamageData.fadeOutSeconds ?? 0.4).toFixed(1)}s</span>
-                            </div>
-                            <input
-                              type="range"
-                              min={0}
-                              max={3}
-                              step={0.1}
-                              value={selectedFilmDamageData.fadeOutSeconds ?? 0.4}
-                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
-                              className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                            />
-                          </div>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Text</label>
-                          <input
-                            type="text"
-                            className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
-                            value={selectedOverlayClip.text}
-                            // Debounced: this fires on every keystroke, and an
-                            // un-debounced write per character would hammer the DB.
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
-                            placeholder="e.g. The Discovery"
-                          />
-                        </div>
-
-                        {selectedOverlayClip.preset === 'chapter-card' && (
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Kicker</label>
-                            <input
-                              type="text"
-                              className="w-full bg-white border border-gray-200 focus:border-fuchsia-400 focus:ring-4 focus:ring-fuchsia-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
-                              value={selectedOverlayClip.kickerText || ''}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'kickerText', e.target.value, 'kicker_text', true)}
-                              placeholder="e.g. CHAPTER 02"
-                            />
-                            <p className="text-[10px] text-gray-400 mt-1">Small label that animates in above the headline.</p>
-                          </div>
-                        )}
-
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Animation</label>
-                            <select
-                              value={selectedOverlayClip.preset}
-                              onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
-                              className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                            >
-                              {OVERLAY_PRESET_OPTIONS.map(option => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
-                          </div>
-                          <div>
-                            <label className="block text-[10px] font-bold text-gray-500 mb-1">Color</label>
-                            <div className="flex items-center gap-2">
-                              <input
-                                type="color"
-                                value={selectedOverlayClip.color}
-                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                                className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                              />
-                              <span className="text-[10px] text-gray-500 font-mono">{selectedOverlayClip.color}</span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">Font Size</label>
-                            <span className="text-[10px] font-bold text-gray-500 font-mono">{selectedOverlayClip.fontSize ?? 64}px</span>
-                          </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_FONT_SIZE}
-                            max={MAX_OVERLAY_FONT_SIZE}
-                            step={2}
-                            value={selectedOverlayClip.fontSize ?? 64}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
-                            className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-fuchsia-600"
-                          />
-                          <p className="text-[10px] text-fuchsia-600 font-medium mt-1.5">
-                            ✨ You can also drag the small handle on the text in the preview above to resize it.
-                          </p>
-                        </div>
-                      </>
-                    )}
-
-                    {/* Neither applies to an environmental clip: they all cover the
-                        whole frame rather than sitting at a "position", and dimming
-                        the footage behind one is either redundant (the scrim IS the
-                        dim) or self-defeating (particles and a beam add light; a dim
-                        under them cancels out what they just added). The light
-                        beam's own position lives in its template_data slider, since
-                        it's a gradient-mask offset rather than a placed element. */}
-                    {!isEnvironmentalKind(selectedOverlayClip.kind) && (
-                      <>
-                        <label className="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-lg shadow-sm cursor-pointer bg-gray-50 hover:bg-gray-100 transition-colors">
-                          <input
-                            type="checkbox"
-                            checked={selectedOverlayClip.dimBackground}
-                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'dimBackground', e.target.checked, 'dim_background')}
-                            className="accent-fuchsia-600"
-                          />
-                          <span className="text-xs font-bold text-gray-700">Dim background</span>
-                        </label>
-
-                        {/* Position — quick presets alongside the drag-on-preview
-                            interaction, since "put it at the bottom" is faster to
-                            click than to aim. */}
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                            Position — {Math.round(selectedOverlayClip.xPercent)}% / {Math.round(selectedOverlayClip.yPercent)}%
-                          </label>
-                          <div className="grid grid-cols-5 gap-1">
-                            {POSITION_PRESETS.map(preset => (
-                              <button
-                                key={preset.label}
-                                onClick={() => setOverlayClipPosition(selectedOverlayClip.id, preset.xPercent, preset.yPercent)}
-                                className="px-1 py-1.5 rounded-md border border-gray-200 bg-white text-[9px] font-bold text-gray-600 hover:border-fuchsia-300 hover:bg-fuchsia-50/50 transition-colors"
-                              >
-                                {preset.label}
-                              </button>
-                            ))}
-                          </div>
-                          <p className="text-[10px] text-fuchsia-600 font-medium bg-fuchsia-50 border border-fuchsia-200 rounded-md px-2 py-1 mt-2">
-                            ✨ Drag the text directly on the preview above to place it anywhere.
-                          </p>
-                        </div>
-                      </>
-                    )}
-                  </div>
-                ) : selectedActNumber !== null && actNarrations.some(a => a.actNumber === selectedActNumber) ? (
-                  /* Act inspector. An Act is a first-class selectable object here
-                     precisely because it is the unit the user edits: re-record it and
-                     nothing outside it is re-synthesised, re-transcribed or re-timed. */
-                  (() => {
-                    const act = actNarrations.find(a => a.actNumber === selectedActNumber)!;
-                    const summary = actSummaries.find(s => s.outline.actNumber === selectedActNumber);
-                    const sceneCount = summary?.sceneTotal ?? scenes.filter(sc => Number(sc.act_number ?? 1) === act.actNumber).length;
-                    const isBusy = regeneratingActNumber === act.actNumber;
-                    const isApprovingThis = approvingActNumber === act.actNumber;
-                    const visualsApproved = summary?.visualsApproved ?? false;
-                    const sceneApproved = summary?.sceneApproved ?? 0;
-                    return (
-                      <div className="space-y-6">
-                        <div className="flex items-center gap-3 pb-4 border-b border-gray-100">
-                          <div className="bg-purple-100 text-purple-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
-                            <Mic size={18} />
-                          </div>
-                          <div className="min-w-0">
-                            <h3 className="font-bold text-gray-900 text-sm">Act {act.actNumber}</h3>
-                            <p className="text-[11px] text-gray-500">
-                              {act.durationSeconds.toFixed(1)}s · {sceneCount} scene{sceneCount === 1 ? '' : 's'} · starts at {act.startSeconds.toFixed(1)}s
-                            </p>
-                          </div>
-                        </div>
-
-                        <button
-                          onClick={() => setCursorPosition(act.startSeconds * scale)}
-                          className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-bold text-gray-700 hover:border-purple-300 hover:bg-purple-50/50 transition-colors flex items-center justify-center gap-2"
-                        >
-                          <SkipBack size={13} /> Jump to this act
-                        </button>
-
-                        {/* ── Audio ── */}
-                        <div>
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                            Audio
-                          </label>
-                          <button
-                            onClick={() => handleRegenerateAct(act.actNumber)}
-                            disabled={isBusy}
-                            className="w-full px-3 py-2.5 rounded-lg bg-purple-600 text-white text-xs font-bold hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                          >
-                            {isBusy
-                              ? <><Loader2 size={13} className="animate-spin" /> Re-recording Act {act.actNumber}…</>
-                              : <><Repeat size={13} /> Re-record this act</>}
-                          </button>
-                          <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
-                            Re-records <strong>only Act {act.actNumber}</strong> from its current wording. Every other act keeps its exact audio and scene timings — if this act changes length, the later ones simply shift.
-                          </p>
-                        </div>
-
-                        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2">
-                          <p className="text-[10px] text-amber-800 leading-relaxed">
-                            Edit the wording first in the <strong>Whiteboard</strong>, then come back and re-record. Re-recording reads whatever text is currently saved.
-                          </p>
-                        </div>
-
-                        {/* ── Visuals ──
-                            Deliberately per-Act: approving Act 3 does not touch Acts
-                            1-9. Casting still only ever runs once for the whole
-                            project — whichever act is approved first computes it,
-                            every later approval (in any order) reuses that same cast. */}
-                        <div className="pt-2 border-t border-gray-100">
-                          <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                            Visuals
-                          </label>
-                          {visualsApproved ? (
-                            <>
-                              <div className="flex items-center gap-2 mb-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg">
-                                <CheckCircle2 size={13} className="text-emerald-600 flex-none" />
-                                <span className="text-[11px] font-bold text-emerald-700">
-                                  Visuals approved · {sceneCount} scene{sceneCount === 1 ? '' : 's'}
-                                </span>
-                              </div>
-                              <button
-                                onClick={() => handleRegenerateActVisuals(act.actNumber)}
-                                disabled={isApprovingThis}
-                                className="w-full px-3 py-2 rounded-lg border border-gray-200 bg-white text-xs font-bold text-gray-700 hover:border-purple-300 hover:bg-purple-50/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                              >
-                                {isApprovingThis
-                                  ? <><Loader2 size={13} className="animate-spin" /> Regenerating…</>
-                                  : <><RefreshCw size={13} /> Regenerate this act's visuals</>}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                onClick={() => handleApproveActVisuals(act.actNumber)}
-                                disabled={isApprovingThis}
-                                className="w-full px-3 py-2.5 rounded-lg bg-emerald-600 text-white text-xs font-bold hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
-                              >
-                                {isApprovingThis
-                                  ? <><Loader2 size={13} className="animate-spin" /> Approving Act {act.actNumber}…</>
-                                  : <><CheckCircle2 size={13} /> Approve this act's visuals</>}
-                              </button>
-                              <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
-                                {sceneApproved > 0
-                                  ? `${sceneApproved} of ${sceneCount} scenes already have visuals from a previous attempt — this fills in the rest.`
-                                  : `Builds a visual prompt for this act's ${sceneCount} scenes. Fine to do before other acts have audio — casting only runs once, whichever act approves first.`}
-                              </p>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })()
-                ) : selectedTimelineClip && (selectedSceneTrack === 'A1' || selectedSceneTrack === 'A2') ? (
-                  <div className="space-y-6">
-                    <div className="flex items-center gap-3 pb-4 border-b border-gray-100">
-                      <div className="bg-blue-100 text-blue-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
-                        <Music size={18} />
-                      </div>
-                      <div>
-                        <h3 className="font-bold text-gray-900 text-sm">{selectedSceneTrack === 'A1' ? 'A1 Audio Clip' : 'A2 Custom Audio'}</h3>
-                        <span className="text-[10px] text-gray-400 font-mono">FILE: {selectedTimelineClip.asset.name}</span>
-                      </div>
-                    </div>
-
-                    <div className="bg-blue-50/50 rounded-lg p-3 border border-blue-100">
-                      <p className="text-xs font-semibold text-blue-900 mb-2">Audio Preview</p>
-                      <audio src={selectedTimelineClip.asset.url} controls className="w-full h-8" />
-                    </div>
-
-                    {/* Left to Right Trimming & Duration Controls */}
-                    <div className="space-y-4 pt-2">
-                      <h4 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Trim & Duration (Left to Right)</h4>
-                      
-                      {/* Duration Control (Decrease from left to right) */}
-                      <div className="space-y-1.5">
-                        <div className="flex justify-between items-center">
-                          <label className="text-xs font-semibold text-gray-700">Clip Duration (seconds)</label>
-                          <span className="text-xs font-bold text-blue-600 font-mono">{selectedTimelineClip.duration.toFixed(1)}s</span>
-                        </div>
-                        <input 
-                          type="range"
-                          min="0.5"
-                          max={selectedTimelineClip.asset.duration || 15}
-                          step="0.5"
-                          value={selectedTimelineClip.duration}
-                          onChange={(e) => {
-                            const newDur = parseFloat(e.target.value);
-                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, duration: newDur } : c));
-                            setSelectedTimelineClip(prev => prev ? { ...prev, duration: newDur } : null);
-                            persistTimelineItemFields(selectedTimelineClip.id, { duration: newDur }, true);
-                          }}
-                          className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                        />
-                        <p className="text-[10px] text-gray-400">Decrease duration from left to right on the A2 track.</p>
-                      </div>
-
-                      {/* Trim Start from Left */}
-                      <div className="space-y-1.5 pt-2">
-                        <div className="flex justify-between items-center">
-                          <label className="text-xs font-semibold text-gray-700">Trim Start (Left edge)</label>
-                          <span className="text-xs font-bold text-blue-600 font-mono">{(selectedTimelineClip.trimStart || 0).toFixed(1)}s</span>
-                        </div>
-                        <input 
-                          type="range"
-                          min="0"
-                          max={(selectedTimelineClip.asset.duration || 15) - 0.5}
-                          step="0.5"
-                          value={selectedTimelineClip.trimStart || 0}
-                          onChange={(e) => {
-                            const newTrim = parseFloat(e.target.value);
-                            const maxDur = selectedTimelineClip.asset.duration || 15;
-                            const remainingDur = Math.max(0.5, maxDur - newTrim);
-                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { 
-                              ...c, 
-                              trimStart: newTrim,
-                              duration: Math.min(c.duration, remainingDur)
-                            } : c));
-                            setSelectedTimelineClip(prev => prev ? {
-                              ...prev,
-                              trimStart: newTrim,
-                              duration: Math.min(prev.duration, remainingDur)
-                            } : null);
-                            persistTimelineItemFields(selectedTimelineClip.id, {
-                              trim_start: newTrim,
-                              duration: Math.min(selectedTimelineClip.duration, remainingDur),
-                            }, true);
-                          }}
-                          className="w-full h-1.5 bg-gray-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
-                        />
-                        <p className="text-[10px] text-gray-400">Trim off the beginning of the audio from left to right.</p>
-                      </div>
-
-                      {/* Start Time on Timeline */}
-                      <div className="space-y-1.5 pt-2">
-                        <div className="flex justify-between items-center">
-                          <label className="text-xs font-semibold text-gray-700">Timeline Position (Start Time)</label>
-                          <span className="text-xs font-bold text-gray-700 font-mono">{selectedTimelineClip.startTime.toFixed(1)}s</span>
-                        </div>
-                        <input 
-                          type="number"
-                          step="0.5"
-                          min="0"
-                          value={selectedTimelineClip.startTime}
-                          onChange={(e) => {
-                            const newStart = Math.max(0, parseFloat(e.target.value) || 0);
-                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, startTime: newStart } : c));
-                            setSelectedTimelineClip(prev => prev ? { ...prev, startTime: newStart } : null);
-                            persistTimelineItemFields(selectedTimelineClip.id, { start_time: newStart }, true);
-                          }}
-                          className="w-full p-2 text-xs border border-gray-200 rounded-md font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="pt-4 border-t border-gray-100 flex items-center justify-end">
-                      <button 
-                        onClick={() => {
-                          setTimelineClips(prev => prev.filter(c => c.id !== selectedTimelineClip.id));
-                          setSelectedTimelineClip(null);
-                          setSelectedSceneTrack(null);
-                        }}
-                        className="bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 text-xs font-bold py-2 px-3 rounded-md transition-colors flex items-center gap-1.5"
-                      >
-                        <Trash2 size={14} /> Delete Clip
-                      </button>
-                    </div>
-                  </div>
-                ) : !selectedScene ? (
-                   /* Empty state only — the project-level controls that used to live
-                      here now render below, outside this branch, so they survive a
-                      selection instead of disappearing on the first block click. */
-                   <div className="flex flex-col items-center justify-center text-center px-4 py-12 opacity-70">
-                     <Layers size={40} className="text-gray-300 mb-4" />
-                     <h3 className="text-sm font-semibold text-gray-600 mb-2">No Scene Selected</h3>
-                     <p className="text-xs text-gray-500">Click a scene block on the timeline below to view and edit its properties.</p>
-                   </div>
-                ) : (
-                   <div className="flex flex-col gap-4 flex-1">
-                     <div className="flex items-center gap-3 pb-3 border-b border-gray-100">
-                        <div className="bg-purple-100 text-purple-700 w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm shrink-0">
-                          {selectedScene.sequence_number}
-                        </div>
-                        <div className="flex items-center justify-between flex-1">
-                          <h3 className="font-bold text-gray-900 text-sm">Scene Properties</h3>
-                          <span className="text-[10px] text-gray-400 font-mono bg-gray-50 border border-gray-100 px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
-                        </div>
-                     </div>
-                     
-                      {/* ── Visual Generation Accordion ──
-                          flex-1 only while expanded: applied unconditionally, this
-                          div would keep claiming the panel's remaining flex space even
-                          collapsed to just its header button, leaving a tall blank box
-                          above Voiceover/Overlay/Ken Burns/Transition. */}
-                     <div ref={visualAccordionRef} className={`border border-gray-200 rounded-lg overflow-hidden shadow-sm flex flex-col ${isVisualExpanded ? 'flex-1' : ''}`}>
-                        <button
-                          onClick={() => setIsVisualExpanded(prev => !prev)}
-                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                        >
-                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                            <ImageIcon size={14} className="text-blue-500" /> Visual Generation
-                          </span>
-                          {isVisualExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                        </button>
-                        {isVisualExpanded && (() => {
-                          // A scene's own mode wins; otherwise it inherits the project
-                          // default. Same resolution order the generation handlers use,
-                          // so the panel can never show controls for a mode that a
-                          // click would not actually run.
-                          const sceneMode = selectedScene.generation_mode || globalGenerationMode || 'ai_video';
-                          const isAiMode = sceneMode === 'ai_video' || sceneMode === 'ai_image';
-
-                          return (
-                          <div className="p-3 bg-white border-t border-gray-100 space-y-3 flex-1 flex flex-col">
-
-                           <div>
-                              <label className="block text-[10px] font-bold text-gray-500 mb-1">How this scene is generated</label>
-                              <select
-                                value={sceneMode}
-                                onChange={(e: any) => updateSceneDetails(selectedScene.id, 'generation_mode', e.target.value)}
-                                className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                              >
-                                <option value="ai_video">AI Video (Prompt)</option>
-                                <option value="ai_image">AI Image (Prompt)</option>
-                                <option value="project_media">Project Media (already uploaded / generated)</option>
-                                <option value="stock_media">Stock Media (Pexels / Pixabay)</option>
-                                <option value="static_theme">Static / Dark Theme</option>
-                                <option value="lip_sync">AI Lip Sync (Avatar)</option>
-                              </select>
-                           </div>
-
-                           {isAiMode && (
-                            <>
-                           {/* AI Model & Duration */}
-                           <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">AI Video Model</label>
-                                 <select
-                                   value={selectedScene.ai_model || selectedAiModel}
-                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
-                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                 >
-                                   <optgroup label="Live — real render">
-                                     <option value="gemini-image">Google Gemini Pro Image</option>
-                                   </optgroup>
-                                   <optgroup label="Simulated — no API key configured">
-                                     <option value="fal-luma">Fal.ai Luma Dream</option>
-                                     <option value="fal-kling">Fal.ai Kling AI</option>
-                                     <option value="fal-minimax">Fal.ai Minimax</option>
-                                     <option value="gemini-veo">Google Gemini / Veo</option>
-                                     <option value="runway-gen3">Runway Gen-3</option>
-                                     <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
-                                   </optgroup>
-                                 </select>
-                              </div>
-                              <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Clip Duration</label>
-                                 <select
-                                   value={selectedScene.video_duration || 5}
-                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'video_duration', Number(e.target.value))}
-                                   className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                 >
-                                   {/* Deepgram writes exact narration-aligned durations (e.g. 4.7s).
-                                       Surface that value so the select isn't blank and picking it back
-                                       doesn't silently snap the scene off the voiceover. */}
-                                   {selectedScene.video_duration != null && ![5, 8, 10].includes(Number(selectedScene.video_duration)) && (
-                                     <option value={selectedScene.video_duration}>
-                                       {Number(selectedScene.video_duration).toFixed(1)}s (narration-aligned)
-                                     </option>
-                                   )}
-                                   <option value={5}>5 seconds</option>
-                                   <option value={8}>8 seconds</option>
-                                   <option value={10}>10 seconds</option>
-                                 </select>
-                              </div>
-                           </div>
-
-                           {/* Media type. Generation still overwrites this from the
-                               provider's kind — newly generated media genuinely is
-                               whatever the model produced. This is here to correct an
-                               asset that was mislabeled on the way in (an upload whose
-                               type was misdetected), which previously left the scene
-                               stuck rendering an <img> for a video or vice versa with
-                               no way to fix it. */}
-                           <div>
-                              <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
-                              <div className="grid grid-cols-2 gap-1 bg-gray-100 p-1 rounded-lg">
-                                {(['video', 'image'] as const).map((mediaType) => {
-                                  const isActive = (selectedScene.custom_media_type || 'video') === mediaType;
-                                  return (
-                                    <button
-                                      key={mediaType}
-                                      type="button"
-                                      onClick={() => updateSceneDetails(selectedScene.id, 'custom_media_type', mediaType)}
-                                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
-                                        isActive
-                                          ? 'bg-white text-gray-900 shadow-sm'
-                                          : 'text-gray-500 hover:text-gray-800'
-                                      }`}
-                                    >
-                                      {mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
-                                      {mediaType === 'video' ? 'Video' : 'Image'}
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                           </div>
-
-                           <textarea
-                             className="w-full bg-white border border-gray-200 focus:border-blue-400 focus:ring-4 focus:ring-blue-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[200px] flex-1 shadow-sm"
-                             value={selectedScene.final_video_prompt}
-                             onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
-                             onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
-                             placeholder="Describe the visual scene in detail..."
-                           />
-                            </>
-                           )}
-
-                           {/* ── Project Media picker ──
-                               No provider call, no cost, no waiting: the asset already
-                               exists, so a click is a field write. That's why there is
-                               no "Apply" step and no Render button for this mode —
-                               there is nothing to render. */}
-                           {sceneMode === 'project_media' && (
-                             <div className="space-y-2 flex-1 flex flex-col min-h-0">
-                               {projectVisualAssets.length === 0 ? (
-                                 <div className="flex flex-col items-center justify-center text-center py-10 px-4 gap-2 border border-dashed border-gray-200 rounded-lg">
-                                   <FolderOpen size={22} className="text-gray-300" />
-                                   <p className="text-[11px] font-bold text-gray-600">No media in this project yet</p>
-                                   <p className="text-[10px] text-gray-400 leading-relaxed">
-                                     Upload files in the Media tab, or generate a visual, and it will show up here for any scene to reuse.
-                                   </p>
-                                 </div>
-                               ) : (
-                                 <>
-                                   <div className="flex items-center justify-between">
-                                     <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider">
-                                       Pick a visual
-                                     </label>
-                                     <span className="text-[10px] text-gray-400">{projectVisualAssets.length} available</span>
-                                   </div>
-
-                                   <div className="grid grid-cols-3 gap-1.5 overflow-y-auto custom-scrollbar pr-0.5">
-                                     {projectVisualAssets.map(asset => {
-                                       const stagedHere = pendingProjectPick && pendingProjectPick.sceneId === selectedScene.id
-                                         ? pendingProjectPick.asset
-                                         : null;
-                                       const isStaged = stagedHere?.id === asset.id;
-                                       const isCurrent = !stagedHere && selectedScene.custom_media_url === (asset.persistedUrl || asset.url);
-                                       // Everything that isn't the staged pick greys out, so the
-                                       // one thing Apply would commit is unmistakable.
-                                       const isDimmed = Boolean(stagedHere) && !isStaged;
-                                       return (
-                                         <button
-                                           key={asset.id}
-                                           type="button"
-                                           onClick={() => setPendingProjectPick({ sceneId: selectedScene.id, asset })}
-                                           title={`${asset.name} — click to preview on this scene`}
-                                           className={`relative aspect-video rounded-md overflow-hidden border-2 bg-gray-100 group transition-all ${
-                                             isStaged
-                                               ? 'border-blue-500 ring-2 ring-blue-200'
-                                               : isCurrent
-                                                 ? 'border-emerald-400'
-                                                 : 'border-gray-200 hover:border-blue-300'
-                                           } ${isDimmed ? 'opacity-40 grayscale hover:opacity-70' : ''}`}
-                                         >
-                                           {asset.type === 'video' ? (
-                                             /* muted+playsInline so the browser will paint a poster frame
-                                                without autoplaying a wall of videos in the panel. */
-                                             <video src={asset.url} muted playsInline preload="metadata" className="w-full h-full object-cover" />
-                                           ) : (
-                                             <img src={asset.url} alt={asset.name} className="w-full h-full object-cover" />
-                                           )}
-
-                                           <span className="absolute top-0.5 left-0.5 bg-black/60 text-white rounded px-1 py-0.5 flex items-center">
-                                             {asset.type === 'video' ? <Film size={8} /> : <ImageIcon size={8} />}
-                                           </span>
-
-                                           {isStaged && (
-                                             <span className="absolute top-0.5 right-0.5 bg-blue-500 text-white rounded-full p-0.5 flex items-center">
-                                               <Check size={8} />
-                                             </span>
-                                           )}
-                                           {/* Distinct from the staged marker on purpose: green means
-                                               "already saved on this scene", blue means "about to be". */}
-                                           {isCurrent && (
-                                             <span className="absolute top-0.5 right-0.5 bg-emerald-500 text-white rounded-full p-0.5 flex items-center" title="Currently used by this scene">
-                                               <Check size={8} />
-                                             </span>
-                                           )}
-
-                                           <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/80 to-transparent text-white text-[8px] font-bold truncate px-1 py-0.5 text-left">
-                                             {asset.name}
-                                           </span>
-                                         </button>
-                                       );
-                                     })}
-                                   </div>
-
-                                   {pendingProjectPick && pendingProjectPick.sceneId === selectedScene.id ? (
-                                     <div className="space-y-1.5">
-                                       <div className="flex gap-1.5">
-                                         <button
-                                           onClick={() => applyProjectMediaToScene(selectedScene.id, pendingProjectPick.asset)}
-                                           className="flex-1 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-md flex items-center justify-center gap-1.5 transition-colors"
-                                         >
-                                           <Check size={12} />
-                                           Apply to Scene {selectedScene.sequence_number}
-                                         </button>
-                                         <button
-                                           onClick={() => setPendingProjectPick(null)}
-                                           title="Discard this pick"
-                                           className="px-2.5 py-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-600 text-xs font-bold rounded-md transition-colors"
-                                         >
-                                           <X size={12} />
-                                         </button>
-                                       </div>
-                                       <p className="text-[10px] text-amber-600 font-medium text-center">
-                                         Previewing only — nothing is saved until you apply.
-                                       </p>
-                                     </div>
-                                   ) : (
-                                     <p className="text-[10px] text-gray-400 leading-relaxed">
-                                       Click a thumbnail to preview it on this scene, then apply. No generation, no cost. Includes uploads as well as visuals generated for other scenes.
-                                     </p>
-                                   )}
-                                 </>
-                               )}
-                             </div>
-                           )}
-
-                           {sceneMode === 'stock_media' && (
-                             <div className="space-y-3">
-                               <div className="grid grid-cols-2 gap-2">
-                                 <div>
-                                   <label className="block text-[10px] font-bold text-gray-500 mb-1">Platform</label>
-                                   <select
-                                     value={globalStockProvider}
-                                     onChange={(e: any) => { setGlobalStockProvider(e.target.value); setStockSearchResults(null); }}
-                                     className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                   >
-                                     <option value="pexels">Pexels</option>
-                                     <option value="pixabay">Pixabay</option>
-                                   </select>
-                                 </div>
-                                 <div>
-                                   <label className="block text-[10px] font-bold text-gray-500 mb-1">Media Type</label>
-                                   <select
-                                     value={globalStockType}
-                                     onChange={(e: any) => { setGlobalStockType(e.target.value); setStockSearchResults(null); }}
-                                     className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                   >
-                                     <option value="video">Video</option>
-                                     <option value="image">Image</option>
-                                   </select>
-                                 </div>
-                               </div>
-
-                               <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Search</label>
-                                 <div className="flex gap-2">
-                                   <input
-                                     type="text"
-                                     placeholder="Falls back to this scene's AI prompt…"
-                                     value={selectedScene.stock_search_query || ''}
-                                     onChange={(e: any) => updateSceneDetails(selectedScene.id, 'stock_search_query', e.target.value)}
-                                     onKeyDown={(e) => {
-                                       if (e.key === 'Enter') {
-                                         handleStockSearch(
-                                           selectedScene.id,
-                                           selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
-                                         );
-                                       }
-                                     }}
-                                     className="w-full bg-white border border-gray-200 focus:border-blue-400 rounded-md p-2 text-xs text-gray-800 outline-none shadow-sm"
-                                   />
-                                   <button
-                                     onClick={() => handleStockSearch(
-                                       selectedScene.id,
-                                       selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
-                                     )}
-                                     disabled={isSearchingStock}
-                                     className="px-3 bg-gray-100 border border-gray-200 rounded-md text-xs font-bold text-gray-700 hover:bg-gray-200 disabled:opacity-50 flex items-center gap-1.5 shrink-0"
-                                   >
-                                     {isSearchingStock ? <Loader2 size={12} className="animate-spin" /> : null}
-                                     Search
-                                   </button>
-                                 </div>
-                               </div>
-
-                               {stockSearchResults && stockSearchResults.sceneId === selectedScene.id && (
-                                 stockSearchResults.results.length > 0 ? (
-                                   <div className="grid grid-cols-3 gap-2">
-                                     {stockSearchResults.results.map((r) => {
-                                       const isPending = !!pendingStockPick && pendingStockPick.sceneId === selectedScene.id && pendingStockPick.result.id === r.id;
-                                       return (
-                                         <button
-                                           key={r.id}
-                                           type="button"
-                                           onClick={() => handleSelectStockResult(selectedScene.id, r)}
-                                           title="Preview this for the scene"
-                                           className={`relative aspect-video rounded-md overflow-hidden border-2 transition-all group ${
-                                             isPending ? 'border-blue-500 ring-2 ring-blue-200' : 'border-gray-200 hover:border-blue-300'
-                                           }`}
-                                         >
-                                           {r.thumbnailUrl ? (
-                                             <img src={r.thumbnailUrl} alt="" className="w-full h-full object-cover" />
-                                           ) : (
-                                             <div className="w-full h-full bg-gray-100 flex items-center justify-center">
-                                               <Film size={14} className="text-gray-400" />
-                                             </div>
-                                           )}
-                                           {isPending && (
-                                             <span className="absolute top-1 right-1 bg-blue-500 text-white rounded-full p-0.5">
-                                               <Check size={10} />
-                                             </span>
-                                           )}
-                                           <span className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors" />
-                                         </button>
-                                       );
-                                     })}
-                                   </div>
-                                 ) : (
-                                   <p className="text-[10px] text-gray-500 italic">No results — try a different search term.</p>
-                                 )
-                               )}
-
-                               {pendingStockPick && pendingStockPick.sceneId === selectedScene.id && (
-                                 <button
-                                   onClick={() => handleApplyStockResult(selectedScene.id, pendingStockPick.result)}
-                                   disabled={isApplyingStock}
-                                   className="w-full py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-md flex items-center justify-center gap-1.5"
-                                 >
-                                   {isApplyingStock ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
-                                   {isApplyingStock ? 'Saving…' : 'Apply to Scene'}
-                                 </button>
-                               )}
-
-                               <p className="text-[10px] text-gray-500 italic leading-relaxed">
-                                 Free stock media. Click a result to preview it, then Apply to save it to this scene.
-                               </p>
-                             </div>
-                           )}
-
-                           {sceneMode === 'static_theme' && (
-                             <p className="text-[10px] text-gray-500 italic leading-relaxed bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2">
-                               This scene renders as a solid dark theme — useful for text-only slides. Costs nothing to generate.
-                             </p>
-                           )}
-
-                           {sceneMode === 'lip_sync' && (
-                             <div className="space-y-2">
-                               <div>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">Character Image URL</label>
-                                 <input
-                                   type="text"
-                                   placeholder="https://… portrait image or video"
-                                   value={selectedScene.lip_sync_character_url || ''}
-                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'lip_sync_character_url', e.target.value)}
-                                   className="w-full bg-white border border-gray-200 rounded-md p-2 text-xs text-gray-800 outline-none shadow-sm"
-                                 />
-                               </div>
-                               <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2.5 py-2 leading-relaxed">
-                                 No lip-sync provider is wired up yet, so this scene will be skipped by bulk generation.
-                                 The plan is bytedance/latentsync via Replicate, driven by this scene&rsquo;s voiceover.
-                               </p>
-                             </div>
-                           )}
-
-                           <div className="flex flex-col gap-3 mt-2">
-                              {/* Inline Toggle Switch */}
-                              <div className="flex flex-col gap-1 px-2 py-1.5 bg-gray-50 rounded-lg border border-gray-200/60">
-                                <div className="flex items-center justify-between">
-                                <span className="text-[11px] font-bold text-gray-600">Apply this setup to all scenes</span>
-                                <button
-                                  onClick={() => {
-                                    const turningOn = generateMode !== 'all';
-                                    setGenerateMode(turningOn ? 'all' : 'individual');
-                                    // Propagate on the way ON only. Flipping it back off
-                                    // must not revert anything — the scenes have been
-                                    // reconfigured, and silently undoing that would be a
-                                    // worse surprise than leaving it.
-                                    if (turningOn) applyVisualSetupToAllScenes(selectedScene);
-                                  }}
-                                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
-                                    generateMode === 'all' ? 'bg-purple-600' : 'bg-gray-300'
-                                  }`}
-                                >
-                                  <span
-                                    className={`inline-block h-3 w-3 transform rounded-full bg-white shadow-sm transition-transform ${
-                                      generateMode === 'all' ? 'translate-x-3.5' : 'translate-x-0.5'
-                                    }`}
-                                  />
-                                </button>
-                                </div>
-                                {generateMode === 'all' && (
-                                  <p className="text-[10px] text-purple-700 leading-relaxed">
-                                    All {scenes.length} scenes now use <strong>{sceneMode.replace('_', ' ')}</strong>
-                                    {isAiMode ? <> · <strong>{selectedScene.ai_model || selectedAiModel}</strong></> : null}.
-                                    Durations and prompts are untouched.
-                                  </p>
-                                )}
-                              </div>
-
-                              {/* Primary Action Button */}
-                              {generateMode === 'all' ? (
-                                <button
-                                  onClick={handleGenerateAllVisuals}
-                                  disabled={isGeneratingAllVisuals}
-                                  className="w-full py-2.5 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-all flex justify-center items-center gap-2"
-                                  title="Automatically generate videos for Scene 1 to N"
-                                >
-                                  {isGeneratingAllVisuals ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All Scenes (1→N)"}
-                                </button>
-                              ) : isAiMode ? (
-                                <button
-                                  onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
-                                  disabled={isGeneratingVisualId === selectedScene.id}
-                                  className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-[11px] font-bold rounded-lg shadow-sm transition-colors flex justify-center items-center gap-2"
-                                >
-                                  {isGeneratingVisualId === selectedScene.id ? (
-                                    <Loader2 size={14} className="animate-spin" />
-                                  ) : (
-                                    <ImageIcon size={14} />
-                                  )}
-                                  {selectedScene.custom_media_url ? "Regenerate Current Scene" : "Render Current Scene"}
-                                </button>
-                              ) : null}
-                           </div>
-                          </div>
-                          );
-                        })()}
-                     </div>
-                     {/* ── Voiceover Accordion ── */}
-                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-                        <button
-                          onClick={() => setIsVoiceoverExpanded(prev => !prev)}
-                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                        >
-                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                            <Volume2 size={14} className="text-green-600" /> Voiceover Text
-                          </span>
-                          {isVoiceoverExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                        </button>
-                        {isVoiceoverExpanded && (
-                          <div className="p-3 bg-white border-t border-gray-100 space-y-3">
-                           <textarea 
-                             className="w-full bg-white border border-gray-200 focus:border-purple-400 focus:ring-4 focus:ring-purple-100 rounded-lg p-3 text-sm text-gray-800 transition-all resize-none min-h-[80px] shadow-sm"
-                             value={selectedScene.voice_over_beat}
-                             onChange={(e) => updateSceneDetails(selectedScene.id, 'voice_over_beat', e.target.value)}
-                             onBlur={(e) => persistSceneFields(selectedScene.id, { voice_over_beat: e.target.value })}
-                           />
-                           {availableVoices.length > 0 && (
-                             <div>
-                               <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">
-                                 Voice Artist
-                               </label>
-                               <select
-                                 value={selectedVoiceId}
-                                 onChange={(e) => setSelectedVoiceId(e.target.value)}
-                                 className="w-full bg-white border border-gray-200 rounded-lg p-1.5 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-200"
-                               >
-                                 <option value="">Auto (Default for active engine)</option>
-                                 {availableVoices.map((v) => (
-                                   <option key={v.id} value={v.id}>
-                                     {v.name} ({v.engine} · {v.gender || "voice"})
-                                   </option>
-                                 ))}
-                               </select>
-                             </div>
-                           )}
-                           <div className="flex justify-between items-center">
-                              <span className="text-[10px] font-medium text-gray-500 flex items-center gap-1"><Clock size={12}/> Est. duration: {selectedScene.video_duration}s</span>
-                              <button 
-                                onClick={() => handleRegenerateSingleAudio(selectedScene.id, selectedScene.voice_over_beat)}
-                                disabled={generatingSceneId === selectedScene.id}
-                                className="text-[10px] px-3 py-1.5 bg-white hover:bg-gray-50 text-gray-700 font-bold rounded-md border border-gray-200 shadow-sm transition-colors flex items-center gap-1.5"
-                              >
-                                {generatingSceneId === selectedScene.id ? <Loader2 size={12} className="animate-spin text-green-600" /> : <Volume2 size={12} className="text-green-600"/>}
-                                {selectedScene.audio_url ? "Regenerate" : "Generate"}
-                              </button>
-                           </div>
-                           {selectedScene.audio_url && (
-                             <div className="bg-gray-50 border border-gray-200 rounded-lg p-2 shadow-sm">
-                               <audio src={selectedScene.audio_url} controls className="w-full h-8 outline-none" />
-                             </div>
-                           )}
-                          </div>
-                        )}
-                     </div>
-
-                     {/* ── Text Overlay Accordion ── */}
-                     <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-                        <button
-                          onClick={() => setIsOverlayExpanded(prev => !prev)}
-                          className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                        >
-                          <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                            <Type size={14} className="text-amber-500" /> Text Overlay
-                          </span>
-                          {isOverlayExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                        </button>
-                        {isOverlayExpanded && (
-                          <div className="p-3 bg-white border-t border-gray-100 space-y-3">
-                            {/* Overlay Text */}
-                            <div>
-                              <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1">Overlay Text</label>
-                              <input
-                                type="text"
-                                className="w-full bg-white border border-gray-200 focus:border-amber-400 focus:ring-4 focus:ring-amber-100 rounded-lg p-2 text-sm text-gray-800 transition-all shadow-sm"
-                                value={selectedScene.overlay_text || ''}
-                                onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_text', e.target.value)}
-                                placeholder="e.g. Welcome to the future!"
-                              />
-                            </div>
-                            {/* Preset & Color */}
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="block text-[10px] font-bold text-gray-500 mb-1">Animation</label>
-                                <select
-                                  value={selectedScene.overlay_preset || 'none'}
-                                  onChange={(e: any) => updateSceneDetails(selectedScene.id, 'overlay_preset', e.target.value)}
-                                  className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                >
-                                  <option value="none">None</option>
-                                  <option value="slide">Slide In</option>
-                                  <option value="pop">Pop In (Hormozi)</option>
-                                  <option value="typewriter">Typewriter</option>
-                                  <option value="lower-third">Lower Third</option>
-                                </select>
-                              </div>
-                              <div>
-                                <label className="block text-[10px] font-bold text-gray-500 mb-1">Color</label>
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="color"
-                                    value={selectedScene.overlay_color || '#FFFFFF'}
-                                    onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_color', e.target.value)}
-                                    className="w-8 h-8 rounded border border-gray-200 cursor-pointer"
-                                  />
-                                  <span className="text-[10px] text-gray-500 font-mono">{selectedScene.overlay_color || '#FFFFFF'}</span>
-                                </div>
-                              </div>
-                            </div>
-                            {selectedScene.overlay_text && selectedScene.overlay_preset !== 'none' && (
-                              <p className="text-[10px] text-amber-600 font-medium bg-amber-50 border border-amber-200 rounded-md px-2 py-1">
-                                ✨ Preview this overlay in the main video player above.
-                              </p>
-                            )}
-                          </div>
-                        )}
-                     </div>
-
-                      {/* ── Ken Burns ──
-                          A single checkbox rather than an accordion like Overlay and
-                          Transition: there is nothing to expand into, the effect has
-                          no sub-settings once it's on. Image-only — video scenes carry
-                          their own motion, and the renderer ignores the flag for them.
-                          Deliberately its own control and not a "Transition In" option:
-                          transition is movement BETWEEN scenes, this is movement WITHIN
-                          one, and a scene can have both at once. */}
-                     {selectedScene.custom_media_type !== 'video' && (
-                       <div className="relative">
-                         <div className="flex items-center gap-2 px-3 py-2.5 border border-gray-200 rounded-lg shadow-sm bg-gray-50 hover:bg-gray-100 transition-colors">
-                           <label className="flex items-center gap-2 flex-1 cursor-pointer">
-                             <input
-                               type="checkbox"
-                               checked={Boolean(selectedScene.ken_burns_enabled)}
-                               onChange={(e) => updateSceneDetails(selectedScene.id, 'ken_burns_enabled', e.target.checked)}
-                               className="accent-purple-600"
-                             />
-                             <span className="text-xs font-bold text-gray-700">Ken Burns pan &amp; zoom</span>
-                           </label>
-                           {/* Bulk sibling of the checkbox above: that one edits THIS
-                               scene, this menu applies the setting to every image scene
-                               in the project in a single action. */}
-                           <button
-                             type="button"
-                             onClick={() => setShowKenBurnsMenu(prev => !prev)}
-                             className="flex items-center gap-0.5 text-[10px] font-bold text-gray-400 hover:text-purple-600 transition-colors shrink-0"
-                             title="Apply to all image scenes"
-                           >
-                             Bulk <ChevronDown size={12} />
-                           </button>
-                         </div>
-
-                         {showKenBurnsMenu && (
-                           <div className="absolute right-0 top-full mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50">
-                             <button
-                               onClick={() => applyKenBurnsToAllImageScenes(true)}
-                               className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                             >
-                               Enable for all image scenes
-                             </button>
-                             <button
-                               onClick={() => applyKenBurnsToAllImageScenes(false)}
-                               className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors"
-                             >
-                               Disable for all image scenes
-                             </button>
-                           </div>
-                         )}
-                       </div>
-                     )}
-
-                      {/* ── Transition Accordion ──
-                          The transition belongs to the scene it plays INTO, so the
-                          first scene has nothing to configure. */}
-                     {(() => {
-                       const sceneIndex = scenes.findIndex(s => s.id === selectedScene.id);
-                       const isFirstScene = sceneIndex <= 0;
-                       const transitionType = (selectedScene.transition_type || 'none') as TransitionType;
-                       const maxSeconds = maxTransitionSeconds(remotionScenes, sceneIndex, remotionFps);
-                       const currentSeconds =
-                         typeof selectedScene.transition_duration === 'number'
-                           ? selectedScene.transition_duration
-                           : 0.5;
-
-                       return (
-                         <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-                           <button
-                             onClick={() => setIsTransitionExpanded(prev => !prev)}
-                             className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                           >
-                             <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                               <Layers size={14} className="text-purple-500" /> Transition In
-                             </span>
-                             {isTransitionExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                           </button>
-                           {isTransitionExpanded && (
-                             <div className="p-3 bg-white border-t border-gray-100 space-y-2.5">
-                               {/* Drag source, independent of `isFirstScene` below on
-                                   purpose: these cards target whichever scene block they
-                                   land on, not necessarily this selected one, so they
-                                   stay usable even while scene 1 (which can't itself take
-                                   a transition) is selected. A click still applies to
-                                   THIS scene as a one-step alternative to the dropdown —
-                                   same target and same first-scene rule as it has. */}
-                               <div>
-                                 <label className="block text-[10px] font-bold text-purple-600 uppercase tracking-wider mb-1.5">
-                                   Visual Transition
-                                 </label>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">
-                                   Drag onto any scene, or click to apply to this one
-                                 </label>
-                                 <div className="grid grid-cols-3 gap-1.5">
-                                   {TRANSITION_CARDS.map((card) => {
-                                     const isActive = !isFirstScene && transitionType === card.type;
-                                     return (
-                                       <button
-                                         key={card.type}
-                                         type="button"
-                                         draggable
-                                         onDragStart={(e) => {
-                                           e.dataTransfer.setData(
-                                             'text/plain',
-                                             JSON.stringify({ type: 'transition', transitionType: card.type })
-                                           );
-                                           // A second, dedicated MIME type purely as a marker: dataTransfer
-                                           // payloads set via 'text/plain' can't be READ during dragover
-                                           // (browsers only expose that during drop, for security), but
-                                           // `.types` — which type names are present — IS readable during
-                                           // dragover. The V1 scene blocks check for this type name to know
-                                           // "a transition card is over me" and light up their drop-target
-                                           // ring, without needing to decode the JSON early.
-                                           e.dataTransfer.setData('application/x-transition-card', card.type);
-                                           e.dataTransfer.effectAllowed = 'copy';
-                                         }}
-                                         onDragEnd={() => setTransitionDragOverSceneId(null)}
-                                         onClick={() => {
-                                           if (isFirstScene) return;
-                                           applyTransitionToScene(selectedScene.id, card.type);
-                                         }}
-                                         title={
-                                           isFirstScene
-                                             ? 'The first scene has no preceding scene to transition from — drag this onto a later scene instead'
-                                             : `Click to apply to Scene ${sceneIndex + 1}, or drag onto any scene on the timeline`
-                                         }
-                                         className={`flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border text-center cursor-grab active:cursor-grabbing transition-colors ${
-                                           isActive
-                                             ? 'border-purple-400 bg-purple-50 text-purple-700'
-                                             : 'border-gray-200 bg-white text-gray-600 hover:border-purple-200 hover:bg-purple-50/40'
-                                         }`}
-                                       >
-                                         <card.icon size={16} style={{ animation: card.sampleAnimation }} />
-                                         <span className="text-[9px] font-bold leading-tight">{card.label}</span>
-                                       </button>
-                                     );
-                                   })}
-                                 </div>
-                               </div>
-
-                               {isFirstScene ? (
-                                 <p className="text-[11px] text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-2.5 py-2 leading-relaxed">
-                                   The first scene has no preceding scene to transition from.
-                                 </p>
-                               ) : (
-                                 <>
-                                   <div>
-                                     <label className="block text-[10px] font-bold text-gray-500 mb-1">Style</label>
-                                     <select
-                                       value={transitionType}
-                                       onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_type', e.target.value)}
-                                       className="w-full bg-white border border-gray-200 rounded-md p-1.5 text-xs text-gray-800 outline-none font-medium shadow-sm"
-                                     >
-                                       <option value="none">Cut (no transition)</option>
-                                       <option value="crossfade">Crossfade / Dissolve</option>
-                                       <option value="slide">Slide / Push</option>
-                                       <option value="zoom">Smooth Zoom</option>
-                                       <option value="glitch">Glitch</option>
-                                       <option value="light-leak">Wipe / Light Leak</option>
-                                     </select>
-                                   </div>
-
-                                   {transitionType !== 'none' && (
-                                     <div>
-                                       <div className="flex items-center justify-between mb-1">
-                                         <label className="text-[10px] font-bold text-gray-500">Duration</label>
-                                         <span className="text-[10px] font-bold text-purple-600">
-                                           {Math.min(currentSeconds, maxSeconds).toFixed(2)}s
-                                         </span>
-                                       </div>
-                                       {/* Max comes from the same clamp the renderer applies, so the
-                                           slider can never offer a value that would be silently
-                                           reduced at render time. */}
-                                       <input
-                                         type="range"
-                                         min={0.1}
-                                         max={Math.max(0.1, maxSeconds)}
-                                         step={0.05}
-                                         value={Math.min(currentSeconds, Math.max(0.1, maxSeconds))}
-                                         onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_duration', Number(e.target.value))}
-                                         className="w-full accent-purple-600"
-                                       />
-                                       <p className="text-[10px] text-gray-400 mt-1 leading-relaxed">
-                                         Capped at half the shorter neighbouring scene ({maxSeconds.toFixed(2)}s here).
-                                         Transitions never change total video length.
-                                       </p>
-                                     </div>
-                                   )}
-                                 </>
-                               )}
-
-                               {/* ── Transition Sound ──
-                                   Deliberately separated from Visual Transition above by
-                                   its own heading and a divider, not folded into the same
-                                   grid — these are a different kind of thing (an audio
-                                   stinger on A2, not a per-scene field) with a different
-                                   drop target. Drag-only, same as the visual cards' drag
-                                   path: there's no "click to apply to this scene" here,
-                                   because a transition SOUND isn't scoped to a scene at
-                                   all — it belongs to whichever cut you drop it on, which
-                                   is why it stays draggable from this panel no matter
-                                   which scene (including the first) happens to be
-                                   selected. */}
-                               <div className="pt-2.5 border-t border-gray-100">
-                                 <label className="block text-[10px] font-bold text-blue-600 uppercase tracking-wider mb-1.5">
-                                   Transition Sound
-                                 </label>
-                                 <label className="block text-[10px] font-bold text-gray-500 mb-1">
-                                   Drag onto A2, centered on a scene cut. Click to preview.
-                                 </label>
-                                 <div className="grid grid-cols-3 gap-1.5">
-                                   {TRANSITION_MUSIC_PRESETS.map((preset) => (
-                                     <button
-                                       key={preset.key}
-                                       type="button"
-                                       draggable
-                                       onDragStart={(e) => {
-                                         e.dataTransfer.setData(
-                                           'text/plain',
-                                           JSON.stringify({ type: 'transition-music', presetKey: preset.key })
-                                         );
-                                         // Marker MIME so A2's onDragOver can tell a music-preset
-                                         // drag is in flight without decoding JSON on every event —
-                                         // same reasoning as the visual cards' own marker type.
-                                         e.dataTransfer.setData('application/x-transition-music', preset.key);
-                                         e.dataTransfer.effectAllowed = 'copy';
-                                         setIsDraggingMusicPreset(true);
-                                       }}
-                                       onDragEnd={() => {
-                                         setIsDraggingMusicPreset(false);
-                                         setMusicDragNearestBoundaryIdx(null);
-                                       }}
-                                       onClick={() => {
-                                         // Preview only — applying happens via drag, since a
-                                         // transition sound has no "currently selected scene" to
-                                         // apply to on click the way a visual transition does.
-                                         new Audio(preset.url).play().catch(() => {});
-                                       }}
-                                       title={`Preview "${preset.label}", or drag onto A2 to apply it to a scene cut`}
-                                       className="flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border border-gray-200 bg-white text-gray-600 text-center cursor-grab active:cursor-grabbing hover:border-blue-200 hover:bg-blue-50/40 transition-colors"
-                                     >
-                                       <Music size={16} />
-                                       <span className="text-[9px] font-bold leading-tight">{preset.label}</span>
-                                     </button>
-                                   ))}
-                                 </div>
-                               </div>
-                             </div>
-                           )}
-                         </div>
-                       );
-                     })()}
-
-                   </div>
-                )}
-
-                {/* ── Project (whole-video) accordion ──
-                    Sibling of the selection branches above, not part of any of
-                    them, so summary/voice/narration stay reachable no matter what
-                    is selected. mt-auto pins it to the bottom of the panel when a
-                    scene's expanded Visual Generation accordion claims flex-1;
-                    shrink-0 stops it collapsing when that content is tall. */}
-                <div className="mt-auto pt-4 shrink-0">
-                  <div className="border border-gray-200 rounded-lg overflow-hidden shadow-sm">
-                    <button
-                      onClick={() => setIsProjectExpanded(prev => !prev)}
-                      className="w-full flex items-center justify-between px-3 py-2.5 bg-gray-50 hover:bg-gray-100 transition-colors text-left"
-                    >
-                      <span className="flex items-center gap-2 text-xs font-bold text-gray-700">
-                        <Layers size={14} className="text-purple-500" /> Project
-                      </span>
-                      <span className="flex items-center gap-2">
-                        {/* Status stays visible while collapsed — the whole point of
-                            the badge is answering "is narration done?" at a glance. */}
-                        {masterAudioUrl && !isProjectExpanded && (
-                          <span className="flex items-center gap-1.5">
-                            <span className="w-1.5 h-1.5 rounded-full bg-green-500 flex-none" />
-                            <span className="text-[10px] font-bold text-green-700">
-                              {masterAudioDuration > 0 ? `${Math.round(masterAudioDuration)}s` : 'Ready'}
-                            </span>
-                          </span>
-                        )}
-                        {isProjectExpanded ? <ChevronDown size={14} className="text-gray-400" /> : <ChevronRight size={14} className="text-gray-400" />}
-                      </span>
-                    </button>
-
-                    {isProjectExpanded && (
-                      <div className="p-3 bg-white border-t border-gray-100">
-                        <p className="text-sm text-gray-800 font-bold mb-1 line-clamp-2">{initialProject.topic}</p>
-                        <p className="text-xs text-gray-500 mb-3 font-medium">{scenes.length} Scenes • {Math.round(contentDuration)} seconds</p>
-
-                        {isLongForm ? (
-                          <div className="mb-3 p-2 bg-purple-50 border border-purple-200 rounded-lg">
-                            <div className="flex items-center gap-2">
-                              <div className={`w-2 h-2 rounded-full flex-none ${hasActNarration ? 'bg-purple-500' : 'bg-gray-300'}`} />
-                              <span className="text-[10px] font-bold text-purple-700 truncate">
-                                {actNarrations.length} of {actOutlines.length || '?'} acts narrated
-                                {hasActNarration ? ` · ${Math.round(actNarrationDuration)}s` : ''}
-                              </span>
-                            </div>
-                            <p className="text-[10px] text-purple-600/80 mt-1 leading-relaxed">
-                              {hasActNarration
-                                ? 'Click any act on A1 to record, re-record, or approve its visuals.'
-                                : 'Click an act on A1 to generate its audio and get started.'}
-                            </p>
-                          </div>
-                        ) : masterAudioUrl && (
-                          <div className="flex items-center gap-2 mb-3 p-2 bg-green-50 border border-green-200 rounded-lg">
-                            <div className="w-2 h-2 rounded-full bg-green-500 flex-none" />
-                            <span className="text-[10px] font-bold text-green-700 truncate">
-                              Narration ready{masterAudioDuration > 0 ? ` · ${Math.round(masterAudioDuration)}s` : ' · on A1'}
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Bulk finish-the-rest option. Per-act approval
-                            (`handleApproveActVisuals`, on each Act block) is the
-                            primary path now — this is for whoever has reviewed every
-                            act's audio and just wants the remaining visual work done
-                            in one go rather than clicking through each act. Until an
-                            act is approved its scenes carry no `final_video_prompt` —
-                            the ~2-calls-per-scene visual pass is deliberately withheld
-                            per-act so rewriting one act never costs the others. */}
-                        {isLongForm && hasActNarration && projectStatus !== 'approved' && (
-                          <div className="mb-3">
-                            <button
-                              onClick={handleApproveAndGenerateVisuals}
-                              disabled={isApproving}
-                              className="w-full py-2.5 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 bg-emerald-600 hover:bg-emerald-700 text-white"
-                            >
-                              {isApproving
-                                ? <><Loader2 size={16} className="animate-spin" /> Generating visuals…</>
-                                : <><CheckCircle2 size={16} /> Approve all remaining acts</>}
-                            </button>
-                            <p className="text-[10px] text-gray-500 mt-2 leading-relaxed">
-                              Builds a visual prompt for every scene in every act not yet approved, sharing one cast across all of them. Takes a while — usually easier to approve acts one at a time from A1 as you finish each.
-                            </p>
-                          </div>
-                        )}
-
-                        {availableVoices.length > 0 && (
-                          <div className="mb-3">
-                            <label className="block text-[10px] font-bold text-gray-500 uppercase tracking-wider mb-1.5">
-                              Voice Artist
-                            </label>
-                            <select
-                              value={selectedVoiceId}
-                              onChange={(e) => setSelectedVoiceId(e.target.value)}
-                              className="w-full bg-white border border-gray-200 rounded-lg p-2 text-xs font-bold text-gray-800 focus:outline-none focus:ring-2 focus:ring-purple-200"
-                            >
-                              <option value="">Auto (Default for active engine)</option>
-                              {availableVoices.map((v) => (
-                                <option key={v.id} value={v.id}>
-                                  {v.name} ({v.engine} · {v.gender || "voice"})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        )}
-
-                        {/* Single-file narration — short/mid-form only. Long-form
-                            never shows this: it would write a whole-project
-                            `narration_url` that plays alongside the per-Act blocks
-                            above, which is exactly the double-playback hazard
-                            `CompositionAudioClip` warns about. Primary purple only for
-                            the first run — once narration exists this overwrites it
-                            and costs another TTS pass, so it drops to a secondary
-                            outline rather than staying the loudest thing in the panel. */}
-                        {!isLongForm && (
-                        <>
-                        <button
-                          onClick={handleGenerateFullNarration}
-                          disabled={isGeneratingNarration}
-                          className={`w-full py-2.5 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 mb-2 ${
-                            masterAudioUrl && !isGeneratingNarration
-                              ? 'bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300'
-                              : 'bg-purple-600 hover:bg-purple-700 text-white'
-                          }`}
-                        >
-                          {isGeneratingNarration ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
-                          {isGeneratingNarration
-                            ? 'Generating Narration…'
-                            : masterAudioUrl
-                              ? 'Re-generate Narration'
-                              : 'Generate Full Narration'}
-                        </button>
-                        <p className="text-[10px] text-gray-400 text-center">One continuous audio on A1 · align V1 b-roll to match</p>
-                        </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Discoverability for the new Escape binding — shown only when
-                      there is actually a selection to clear. */}
-                  {(selectedScene || selectedTimelineClip || selectedOverlayClip) && (
-                    <p className="text-[10px] text-gray-400 text-center mt-2">
-                      Press <kbd className="px-1 py-0.5 bg-gray-100 border border-gray-200 rounded font-mono text-[9px]">Esc</kbd> to deselect
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* EXPORT TAB */}
-            {activeTab === 'export' && (
-              <div className="animate-in fade-in duration-200">
-                <h3 className="text-sm font-bold text-gray-800 mb-4">Export Settings</h3>
-                <div className="space-y-4">
-                   <div>
-                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Default AI Model</label>
-                     <select
-                       value={selectedAiModel}
-                       onChange={(e) => setSelectedAiModel(e.target.value as typeof selectedAiModel)}
-                       className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
-                     >
-                       <option value="gemini-image">Google Gemini Pro Image (Real)</option>
-                       <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
-                       <option value="fal-luma">Fal.ai — Luma Dream Machine</option>
-                       <option value="fal-kling">Fal.ai — Kling Video</option>
-                       <option value="fal-minimax">Fal.ai — MiniMax</option>
-                       <optgroup label="Simulated — no API key configured">
-                         <option value="gemini-veo">Google Gemini / Veo</option>
-                         <option value="runway-gen3">Runway Gen-3</option>
-                       </optgroup>
-                     </select>
-                     <p className="text-[10px] text-gray-400 mt-1">Used by &ldquo;Generate All&rdquo; and as the fallback for scenes with no model set.</p>
-                   </div>
-                   <div>
-                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Resolution</label>
-                     <select 
-                       value={exportResolution}
-                       onChange={(e: any) => setExportResolution(e.target.value)}
-                       className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
-                     >
-                       <option value="1080x1920">1080x1920 (9:16 Shorts)</option>
-                       <option value="1920x1080">1920x1080 (16:9 Landscape)</option>
-                       <option value="1080x1080">1080x1080 (1:1 Square)</option>
-                     </select>
-                   </div>
-                   <div>
-                     <label className="block text-xs font-bold text-gray-600 mb-1.5">Quality</label>
-                     <select 
-                       value={exportQuality}
-                       onChange={(e: any) => setExportQuality(e.target.value)}
-                       className="w-full bg-white border border-gray-200 rounded-lg p-2.5 text-sm text-gray-800 outline-none focus:border-purple-400 focus:ring-4 focus:ring-purple-100 shadow-sm font-medium"
-                     >
-                       <option value="High">High (1080p, 60fps)</option>
-                       <option value="Standard">Standard (1080p, 30fps)</option>
-                       <option value="Draft">Draft (720p, 30fps)</option>
-                     </select>
-                   </div>
-                   
-                   <div className="pt-6 mt-4 border-t border-gray-100">
-                     {renderOutputPath ? (
-                        <div className="flex flex-col gap-3">
-                          <a
-                            href={renderOutputPath}
-                            download={toExportFileName(initialProject.topic)}
-                            className="w-full py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                          >
-                            <Download size={18} /> Download Video
-                          </a>
-                        </div>
-                     ) : (
-                       <button 
-                         onClick={handleRenderVideo}
-                         disabled={isRendering}
-                         className="w-full py-3 bg-purple-600 hover:bg-purple-700 disabled:opacity-50 text-white rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                       >
-                         {isRendering ? (
-                           <>
-                             <Loader2 size={18} className="animate-spin" /> Rendering Video...
-                           </>
-                         ) : (
-                           <>
-                             <Download size={18} /> Render & Export Video
-                           </>
-                         )}
-                       </button>
-                     )}
-                     
-                     {renderStatusMessage && !renderOutputPath && (
-                        <div className="mt-4 p-4 rounded-xl border text-xs font-medium break-all bg-gray-50 border-gray-200 text-gray-700">
-                          {renderStatusMessage}
-                        </div>
-                      )}
-
-                     <p className="text-center text-[10px] text-gray-500 font-medium mt-3">Estimated cloud render time: 5-15 seconds</p>
-                   </div>
-                </div>
-              </div>
-            )}
-
-          </div>
-        </div>
-
-        {/* Middle Panel (Main Video Preview — Remotion Player) */}
-        <div className="flex-1 bg-gray-100 relative flex items-center justify-center p-4 lg:p-8 border-l border-r border-gray-200 shadow-inner overflow-hidden">
-           
-           {/* Maximized player container that respects aspect ratio */}
-           <div className="w-full h-full flex flex-col items-center justify-center pb-4">
-             <div 
-               className="bg-black rounded-2xl overflow-hidden shadow-2xl relative flex flex-col items-center justify-center border border-gray-800 transition-all duration-300 w-full max-h-full"
-               style={{ 
-                 aspectRatio: getAspectRatioStyle(),
-                 maxWidth: aspectRatio === '16:9' ? '100%' : 'min(100%, 80vh)'
-               }}
-             >
-               
-               {/* Media Asset Preview (when an asset is explicitly selected from the media panel) */}
-               {selectedAsset ? (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-black">
-                     {selectedAsset.type === 'video' ? (
-                        <video src={selectedAsset.url} controls playsInline className="w-full h-full object-contain" autoPlay />
-                     ) : selectedAsset.type === 'image' ? (
-                        <img src={selectedAsset.url} className="w-full h-full object-contain" alt="Asset Preview" />
-                     ) : (
-                        <div className="flex flex-col items-center text-gray-400 bg-gray-900 w-full h-full justify-center">
-                           <Music size={64} className="mb-6 opacity-50 text-purple-500" />
-                           <p className="text-sm font-bold mb-4">{selectedAsset.name}</p>
-                           <audio src={selectedAsset.url} controls className="w-3/4 max-w-sm outline-none" autoPlay />
-                        </div>
-                     )}
-                  </div>
-               ) : scenes.length > 0 ? (
-                  /* Remotion Player — renders the full composition with all scenes and overlays */
-                  <div className="absolute inset-0" ref={playerStageRef}>
-                    {isolatedScene && (
-                      <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-3 bg-purple-600/95 backdrop-blur-sm text-white rounded-lg px-3 py-2 shadow-lg">
-                        <span className="text-[11px] font-bold flex items-center gap-2 min-w-0">
-                          <Repeat size={13} className="shrink-0" />
-                          <span className="truncate">
-                            Previewing scene {scenes.findIndex(s => s.id === isolatedSceneId) + 1} only — looping
-                          </span>
-                        </span>
-                        <button
-                          onClick={() => setIsolatedSceneId(null)}
-                          className="text-[11px] font-bold bg-white/20 hover:bg-white/30 px-2.5 py-1 rounded-md transition-colors shrink-0"
-                        >
-                          Exit
-                        </button>
-                      </div>
-                    )}
-                    <Player
-                      ref={remotionPlayerRef}
-                      component={VideoComposition}
-                      inputProps={remotionPreviewProps}
-                      durationInFrames={isolatedScene ? isolatedDurationInFrames : remotionTotalDurationInFrames}
-                      compositionWidth={remotionDimensions.width}
-                      compositionHeight={remotionDimensions.height}
-                      fps={remotionFps}
-                      style={{ width: '100%', height: '100%' }}
-                      controls={false}
-                      autoPlay={false}
-                      // Looping is what makes isolation useful for inspecting a single
-                      // scene; the full timeline must not loop or it would fight the
-                      // playhead's own end-of-timeline stop.
-                      loop={Boolean(isolatedScene)}
-                      // Remotion's Player has no `muted` prop — only `initiallyMuted`,
-                      // plus imperative mute()/unmute() applied in the sync effect.
-                      // The Player supplies V1 scene-video audio only (narration is
-                      // stripped from remotionPreviewProps), so the V1 mute button drives it.
-                      initiallyMuted={trackStates.V1.muted}
-                    />
-
-                    {/* ── Drag-to-position layer ──
-                        Only mounted while an overlay clip is selected, and sized
-                        to the VIDEO's letterboxed rect rather than this
-                        container, so a percentage here means the same thing it
-                        means in the render. Deliberately not shown in isolation
-                        mode, where overlay clips aren't rendered at all. */}
-                    {selectedOverlayClip && !isEnvironmentalKind(selectedOverlayClip.kind) && !isolatedScene && playerStageRect.width > 0 && (
-                      <div
-                        className="absolute z-20"
-                        style={{
-                          left: playerStageRect.left,
-                          top: playerStageRect.top,
-                          width: playerStageRect.width,
-                          height: playerStageRect.height,
-                          // The layer itself must not swallow clicks meant for the
-                          // player; only the handle below is interactive.
-                          pointerEvents: 'none',
-                        }}
-                      >
-                        {/* Snap guides, shown only while this overlay is sitting
-                            on one — a permanent grid would just be noise. */}
-                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.xPercent)) && (
-                          <div
-                            className="absolute top-0 bottom-0 w-px bg-gray-300/60"
-                            style={{ left: `${selectedOverlayClip.xPercent}%` }}
-                          />
-                        )}
-                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.yPercent)) && (
-                          <div
-                            className="absolute left-0 right-0 h-px bg-gray-300/60"
-                            style={{ top: `${selectedOverlayClip.yPercent}%` }}
-                          />
-                        )}
-
-                        {/* Invisible drag-to-reposition region, sized to roughly cover
-                            the actual rendered content (not a fixed dot at the exact
-                            centre point) so grabbing anywhere near the visible text/card
-                            works, not just one precise spot. No visible fill/border at
-                            rest — now that selecting a clip seeks the playhead into its
-                            own time range (see seekIntoOverlayClip), the real render is
-                            already on screen right here, so drawing a badge on top of it
-                            would just duplicate what's already visible. The resize handle
-                            only appears on hover, at the estimated box's corner. */}
-                        {(() => {
-                          const fontSize = selectedOverlayClip.fontSize ?? 64;
-                          const cardScale = (selectedOverlayClip.templateData as { scale?: number } | undefined)?.scale ?? 1;
-                          let boxWidth: number;
-                          let boxHeight: number;
-                          if (selectedOverlayClip.kind === 'checklist-card') {
-                            const bulletCount = ((selectedOverlayClip.templateData as ChecklistCardData)?.bullets ?? []).length;
-                            boxWidth = 420 * cardScale;
-                            boxHeight = (60 + bulletCount * 36 + 32) * cardScale;
-                          } else if (selectedOverlayClip.kind === 'title-cutout-card') {
-                            boxWidth = 400 * cardScale;
-                            boxHeight = 500 * cardScale;
-                          } else {
-                            boxWidth = Math.max(80, selectedOverlayClip.text.length * fontSize * 0.55);
-                            boxHeight = fontSize * 1.4;
-                          }
-                          // These widths/heights are real-composition pixels (e.g. against a
-                          // 1080-wide export); scale them down to the preview's on-screen size.
-                          const scaleX = remotionDimensions.width > 0 ? playerStageRect.width / remotionDimensions.width : 1;
-                          const scaleY = remotionDimensions.height > 0 ? playerStageRect.height / remotionDimensions.height : 1;
-                          const widthPx = boxWidth * scaleX;
-                          const heightPx = boxHeight * scaleY;
-
-                          return (
-                            <div
-                              onPointerDown={(e) => handleOverlayPositionDragStart(e, selectedOverlayClip)}
-                              className="absolute group cursor-move select-none"
-                              style={{
-                                left: `${selectedOverlayClip.xPercent}%`,
-                                top: `${selectedOverlayClip.yPercent}%`,
-                                width: widthPx,
-                                height: heightPx,
-                                transform: 'translate(-50%, -50%)',
-                                pointerEvents: 'auto',
-                              }}
-                              title="Drag to reposition this overlay"
-                            >
-                              {/* Resize handle — drag to grow/shrink this overlay directly on
-                                  the preview, instead of only via the properties panel slider
-                                  (font size for plain text, card scale for a graphic card — see
-                                  handleOverlayResizeDragStart). Hidden until hover so it isn't
-                                  visual noise at rest. Its own onPointerDown stops propagation
-                                  (first line of handleOverlayResizeDragStart) so it doesn't also
-                                  start the parent region's move-drag. */}
-                              <div
-                                onPointerDown={(e) => handleOverlayResizeDragStart(e, selectedOverlayClip)}
-                                className="absolute -right-1 -bottom-1 w-3 h-3 rounded-full bg-white border-2 border-gray-500 shadow-sm cursor-nwse-resize opacity-0 group-hover:opacity-100 transition-opacity"
-                                title="Drag to resize"
-                              />
-                            </div>
-                          );
-                        })()}
-                      </div>
-                    )}
-                  </div>
-               ) : (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-600 bg-gray-900">
-                     <MonitorPlay size={48} className="mb-4 opacity-50" />
-                     <p className="font-medium text-sm">Select a scene to preview</p>
-                  </div>
-               )}
-
-             </div>
-           </div>
-        </div>
-
-
-        {/* Right Panel (CapCut-style File Details / Properties) */}
-        {selectedScene && (!selectedTimelineClip || (selectedSceneTrack !== 'A1' && selectedSceneTrack !== 'A2')) && activeTab === 'scene' && (
-           <div className="w-[300px] lg:w-[320px] bg-white flex flex-col flex-none shadow-[-2px_0_10px_rgba(0,0,0,0.05)] z-10 h-full">
-              {/* Tab Header */}
-              <div className="flex items-center border-b border-gray-100 p-2 gap-1 bg-gray-50/50">
-                 <div className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold bg-white text-gray-900 shadow-sm border border-gray-200">
-                    <Info size={14} className="text-gray-500" /> Details
-                 </div>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
-                 <div className="space-y-5">
-                    {/* Thumbnail Preview */}
-                    <div className="rounded-xl overflow-hidden border border-gray-200 shadow-sm bg-black aspect-video relative">
-                       {pendingPickFor(selectedScene.id) ? (
-                         pendingPickFor(selectedScene.id)!.type === 'video' ? (
-                           <video src={pendingPickFor(selectedScene.id)!.mediaUrl} className="w-full h-full object-contain" muted preload="metadata" />
-                         ) : (
-                           <img src={pendingPickFor(selectedScene.id)!.mediaUrl} className="w-full h-full object-contain" alt="Pending scene pick" />
-                         )
-                       ) : selectedScene.custom_media_url ? (
-                         selectedScene.custom_media_type === 'video' ? (
-                           <video src={selectedScene.custom_media_url} className="w-full h-full object-contain" muted preload="metadata" />
-                         ) : (
-                           <img src={selectedScene.custom_media_url} className="w-full h-full object-contain" alt="Scene thumbnail" />
-                         )
-                       ) : (
-                         <div className="w-full h-full flex flex-col items-center justify-center text-gray-500 bg-gray-900">
-                           <Film size={32} className="opacity-40 mb-2" />
-                           <span className="text-[10px] font-medium opacity-60">No media yet</span>
-                         </div>
-                       )}
-                       <div className="absolute top-2 left-2 px-2 py-0.5 bg-black/60 backdrop-blur-sm rounded text-[9px] text-white font-mono font-bold">
-                         Scene {selectedScene.sequence_number}
-                       </div>
-                       {pendingPickFor(selectedScene.id) && (
-                         <div className="absolute bottom-2 left-2 px-2 py-0.5 bg-amber-500/90 backdrop-blur-sm rounded text-[9px] text-white font-bold">
-                           Preview — not saved yet
-                         </div>
-                       )}
-                    </div>
-
-                    {/* Properties Table */}
-                    <div className="space-y-0 border border-gray-200 rounded-lg overflow-hidden">
-                       {/* Name */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Name</span>
-                         <span className="text-[11px] font-semibold text-gray-800 text-right truncate max-w-[160px]" title={selectedScene.voice_over_beat}>
-                           {selectedScene.custom_media_url ? (selectedScene.voice_over_beat?.substring(0, 30) || 'Scene ' + selectedScene.sequence_number) : 'Scene ' + selectedScene.sequence_number}
-                         </span>
-                       </div>
-                       {/* Source */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Source</span>
-                         <span className="text-[11px] font-semibold text-gray-800">
-                           {selectedScene.generation_status === 'Simulated'
-                             ? 'Simulated Placeholder'
-                             : selectedScene.custom_media_url
-                               ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
-                               : 'Draft (No Media)'}
-                         </span>
-                       </div>
-                       {/* Type */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Type</span>
-                         <span className="text-[11px] font-semibold text-gray-800 capitalize">
-                           {selectedScene.custom_media_type || 'text'}
-                         </span>
-                       </div>
-                       {/* Duration */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Duration</span>
-                         <span className="text-[11px] font-bold text-gray-800 font-mono">
-                           {(selectedScene.video_duration || 5).toFixed(1)}s
-                         </span>
-                       </div>
-                       {/* Resolution */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Resolution</span>
-                         <span className="text-[11px] font-semibold text-gray-800">
-                           {aspectRatio === '9:16' ? '1080 × 1920' : aspectRatio === '1:1' ? '1080 × 1080' : '1920 × 1080'}
-                         </span>
-                       </div>
-                       {/* FPS */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Frame Rate</span>
-                         <span className="text-[11px] font-semibold text-gray-800">
-                           {exportQuality === 'High' ? '60 fps' : '30 fps'}
-                         </span>
-                       </div>
-                       {/* Track */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50 border-b border-gray-100">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Track</span>
-                         <span className="text-[11px] font-bold text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                           V1 — Video
-                         </span>
-                       </div>
-                       {/* Status */}
-                       <div className="flex items-center justify-between px-3 py-2.5 bg-white">
-                         <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Status</span>
-                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
-                           selectedScene.generation_status === 'Completed' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
-                           selectedScene.generation_status === 'Simulated' ? 'bg-amber-50 text-amber-700 border-amber-200' :
-                           selectedScene.generation_status === 'Rendering' ? 'bg-blue-50 text-blue-700 border-blue-200 animate-pulse' :
-                           'bg-gray-100 text-gray-600 border-gray-200'
-                         }`}>
-                           {selectedScene.generation_status || 'Pending'}
-                         </span>
-                       </div>
-                    </div>
-
-                    {/* Audio Info (if narration exists) */}
-                    {(selectedScene.audio_url || masterAudioUrl) && (
-                      <div className="border border-gray-200 rounded-lg overflow-hidden">
-                        <div className="px-3 py-2 bg-gray-50 border-b border-gray-100">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider flex items-center gap-1.5">
-                            <Volume2 size={12} className="text-green-600" /> Audio
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between px-3 py-2.5 bg-white border-b border-gray-100">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Type</span>
-                          <span className="text-[11px] font-semibold text-gray-800">
-                            {masterAudioUrl ? 'Full Narration' : 'Per-Scene TTS'}
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between px-3 py-2.5 bg-gray-50">
-                          <span className="text-[10px] font-bold text-gray-500 uppercase tracking-wider">Track</span>
-                          <span className="text-[11px] font-bold text-green-700 bg-green-50 px-2 py-0.5 rounded border border-green-200">
-                            A1 — Audio
-                          </span>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Scene ID */}
-                    <div className="text-center pt-2 border-t border-gray-100">
-                       <span className="text-[9px] font-mono text-gray-400">ID: {selectedScene.id}</span>
-                    </div>
-                 </div>
-              </div>
-           </div>
-        )}
-      </div>
-
-      {/* Resizer Handle */}
-      <div 
-        className="h-1.5 w-full bg-gray-200 border-y border-gray-300 cursor-row-resize hover:bg-purple-200 transition-colors flex items-center justify-center flex-none z-20"
-        onMouseDown={() => setIsResizingPanel(true)}
-      >
-        <div className="w-12 h-0.5 rounded-full bg-gray-400"></div>
-      </div>
-
-      {/* Bottom Horizontal Timeline (Light Theme) */}
-      <div 
-        className="bg-white overflow-hidden flex flex-col flex-none relative z-10"
-        style={{ height: `${timelineHeight}px` }}
-      >
-        {/* Timeline Toolbar */}
-        <div className="bg-gray-50 px-4 py-2 border-b border-gray-200 flex items-center justify-between shadow-sm relative z-40">
-          <div className="flex items-center gap-4">
-             <span className="text-[10px] font-bold text-gray-500 tracking-widest uppercase">Timeline Editor</span>
-             <div className="h-4 w-px bg-gray-300"></div>
-             {/* NOTE: an "Undo" button used to sit here with no onClick handler.
-                 Removed rather than faked — real undo needs an inverse-operation log
-                 (a delete must be re-inserted into Supabase, not just restored in
-                 React state), which is a feature in its own right, not a wiring fix.
-                 A button that looks live and does nothing is worse than no button. */}
-             <button
-                onClick={() => {
-                  const allKeys: string[] = [
-                    ...scenes.map(s => `${s.id}_V1`),
-                    ...scenes.map(s => `${s.id}_A1`),
-                    ...timelineClips.map(c => `${c.id}_${c.trackId}`)
-                  ];
-                  setSelectedSceneKeys(allKeys);
-                }}
-                className="text-gray-500 hover:text-purple-600 transition-colors flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded hover:bg-purple-50"
-                title="Select All items across V1, A1, A2 (Ctrl+A)"
-              >
-                <Layers size={13} /> Select All
-              </button>
-             {/* Destructive actions deliberately do NOT live in the toolbar. A delete
-                 button that appears on selection is easy to hit by accident and is
-                 detached from the thing it deletes; deletion belongs on the item's own
-                 right-click menu (and the Delete key). What the toolbar shows instead
-                 is a passive selection count, which is information, not a hazard. */}
-             {selectedSceneKeys.length > 0 && (
-               <span className="flex items-center gap-1.5 text-[11px] font-semibold text-purple-700 bg-purple-50 border border-purple-200 px-2.5 py-1 rounded-md animate-in fade-in duration-150">
-                 <Layers size={12} />
-                 {selectedSceneKeys.length} selected
-                 <span className="text-purple-400 font-medium">— right-click to delete</span>
-               </span>
-             )}
-          </div>
-
-          {/* Centered Play Button & Skip to Start */}
-          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5">
-             <button 
-                onClick={() => {
-                   setCursorPosition(0);
-                   setSelectedAsset(null);
-                }}
-                className="w-8 h-8 flex items-center justify-center rounded-md shadow-sm transition-colors border bg-white text-gray-700 hover:text-purple-600 border-gray-200"
-                title="Skip to Beginning (0s)"
-             >
-                <SkipBack size={14} />
-             </button>
-             <button 
-                onClick={() => {
-                   setSelectedAsset(null);
-                   setIsPlaying(!isPlaying);
-                }}
-                className={`w-8 h-8 flex items-center justify-center rounded-md shadow-sm transition-colors border ${isPlaying ? 'bg-purple-100 text-purple-700 border-purple-200' : 'bg-white text-gray-700 hover:text-purple-600 border-gray-200'}`}
-                title={isPlaying ? "Pause" : "Play"}
-             >
-                {isPlaying ? <Pause size={14} className="fill-current" /> : <Play size={14} className="fill-current ml-0.5" />}
-             </button>
-          </div>
-
-          <div className="flex items-center gap-4">
-             {/* Ratio selector relocated to Timeline Toolbar */}
-             <div className="relative">
-               <button 
-                 onClick={() => setShowRatioMenu(!showRatioMenu)}
-                 className="flex items-center gap-1.5 text-xs font-bold text-gray-600 hover:text-purple-600 bg-white border border-gray-200 px-2.5 py-1.5 rounded-md shadow-sm transition-colors"
-               >
-                 <LayoutTemplate size={14} />
-                 {aspectRatio}
-                 <ChevronDown size={14} className="ml-0.5 text-gray-400" />
-               </button>
-               
-               {showRatioMenu && (
-                 <div className="absolute top-full left-0 mt-1 w-24 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-50">
-                   {(['16:9', '9:16', '1:1'] as AspectRatio[]).map((ratio) => (
-                     <button
-                       key={ratio}
-                       onClick={() => {
-                         setAspectRatio(ratio);
-                         setShowRatioMenu(false);
-                       }}
-                       className={`w-full text-left px-3 py-2 text-xs font-semibold hover:bg-gray-50 transition-colors ${aspectRatio === ratio ? 'text-purple-600 bg-purple-50/50' : 'text-gray-700'}`}
-                     >
-                       {ratio}
-                     </button>
-                   ))}
-                 </div>
-               )}
-             </div>
-
-             {/* Zoom Controls */}
-             <div className="flex items-center gap-2 bg-white border border-gray-200 rounded-md px-2 py-1 shadow-sm">
-                <button 
-                  onClick={() => setScale(Math.max(10, scale - 10))}
-                  className="text-gray-500 hover:text-gray-800 font-bold px-1"
-                >-</button>
-                <div className="w-24 h-1.5 bg-gray-100 rounded-full overflow-hidden relative border border-gray-200">
-                   <div className="absolute left-0 top-0 h-full bg-gray-400 rounded-full" style={{ width: `${(scale/100)*100}%`}}></div>
-                </div>
-                <button 
-                  onClick={() => setScale(Math.min(100, scale + 10))}
-                  className="text-gray-500 hover:text-gray-800 font-bold px-1"
-                >+</button>
-             </div>
-          </div>
-        </div>
-
-        {/* Timeline Track Area */}
-        <div className="flex-1 overflow-x-auto overflow-y-auto relative pb-6 pt-1 custom-scrollbar bg-gray-50/30 z-10"
-           onKeyDown={(e) => { if (e.key === 'Backspace' || e.key === 'Delete') handleDeleteSelectedScenes(); }}>
-           
-           <div className="min-w-max relative">
-              {/* Playhead Vertical Line */}
-              <div
-                className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
-                style={{ left: `calc(8rem + ${cursorPosition}px)`, transform: 'translateX(-50%)' }}
-              >
-                 <div className="w-px h-full bg-black shadow-[0_0_8px_rgba(0,0,0,0.3)]"></div>
-              </div>
-
-              {/* OV-to-V1 alignment guide — CapCut-style: while dragging or
-                  trimming an overlay clip, if either of its edges lands within
-                  snapping distance of a V1 scene boundary, that edge snaps to
-                  it and this line lights up at that exact time, spanning every
-                  track so it's obvious the two are lined up. */}
-              {overlaySnapGuideTime !== null && (
-                <div
-                  className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
-                  style={{ left: `calc(8rem + ${overlaySnapGuideTime * scale}px)`, transform: 'translateX(-50%)' }}
-                >
-                  <div className="w-px h-full bg-gray-300/80 shadow-[0_0_6px_rgba(0,0,0,0.15)]"></div>
-                </div>
-              )}
-
-              {/* Ruler Track */}
-              <div className="flex items-end mb-1 relative group w-max">
-                 <div className="w-32 shrink-0 sticky left-0 z-50 bg-white h-6 border-b border-gray-200 pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] before:absolute before:-inset-y-4 before:inset-x-0 before:bg-white before:-z-10 before:border-r before:border-gray-200"></div>
-                 <div 
-                    className="relative h-6 border-b border-gray-200 cursor-pointer"
-                    style={{ width: `${timelineDuration * scale}px` }}
-                    onClick={(e) => {
-                       const rect = e.currentTarget.getBoundingClientRect();
-                       setCursorPosition(e.clientX - rect.left);
-                       setSelectedAsset(null);
-                       setSelectedSceneKeys([]);
-                    }}
-                 >
-                    {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => {
-                       // Only show labels every 5 seconds if zoomed out, or every second if zoomed in
-                       const showLabel = scale < 20 ? i % 5 === 0 : true;
-                       return (
-                         <div key={i} className="absolute flex flex-col items-center" style={{ left: `${i * scale}px` }}>
-                            {showLabel && <span className="text-[9px] text-gray-500 font-mono font-medium mb-1">{i}s</span>}
-                            <div className={`w-px ${i % 5 === 0 ? 'h-2 bg-gray-400' : 'h-1 bg-gray-300'}`}></div>
-                         </div>
-                       )
-                    })}
-
-                    {/* Playhead / Cursor - Changed to Purple */}
-                    <div 
-                      className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
-                      style={{ left: `${cursorPosition}px`, transform: 'translateX(-50%)' }}
-                    >
-                       <div className="w-3 h-3 bg-black rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
-                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-black"></div>
-                       </div>
-                    </div>
-                 </div>
-              </div>
-
-              {/* ── Overlay Track (OV) ──
-                  Above V1 because overlays paint on top of everything, matching
-                  the V2-above-V1 convention every NLE uses. Unlike V1/A1/A2 this
-                  is a track GROUP: it grows extra lanes on its own whenever two
-                  clips overlap in time (see packOverlayLanes), so simultaneous
-                  overlays never render stacked on one another. */}
-              <div className="flex items-stretch group relative">
-                 <div className="w-32 shrink-0 sticky left-0 z-[52] bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400">
-                    <span
-                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
-                      title="Text overlay track"
-                    >
-                      OV
-                    </span>
-                    <div className="relative">
-                      <button
-                        ref={addOverlayButtonRef}
-                        onClick={() => {
-                          if (!showAddOverlayMenu && addOverlayButtonRef.current) {
-                            const rect = addOverlayButtonRef.current.getBoundingClientRect();
-                            const GAP = 4;
-                            const spaceBelow = window.innerHeight - rect.bottom - GAP;
-                            const spaceAbove = rect.top - GAP;
-                            // The OV row sits low in the timeline, so in practice
-                            // there is never room below and this always flips up —
-                            // but it's measured rather than hard-coded so the menu
-                            // still behaves on a short viewport or if the track
-                            // moves. Whichever side wins, `maxHeight` keeps the menu
-                            // inside the viewport instead of letting the last items
-                            // fall off the edge unreachable.
-                            const openUpward = spaceBelow < Math.min(spaceAbove, 260);
-                            setAddOverlayMenuPos({
-                              left: rect.left,
-                              ...(openUpward
-                                ? { bottom: window.innerHeight - rect.top + GAP }
-                                : { top: rect.bottom + GAP }),
-                              maxHeight: Math.max(120, (openUpward ? spaceAbove : spaceBelow) - GAP),
-                            });
-                          }
-                          setShowAddOverlayMenu(prev => !prev);
-                        }}
-                        className="flex items-center gap-0.5 text-[10px] font-bold text-gray-500 hover:text-purple-600 transition-colors"
-                        title="Add an overlay at the playhead"
-                      >
-                        <Type size={14} /> Add <ChevronDown size={10} />
-                      </button>
-                      {showAddOverlayMenu && addOverlayMenuPos && createPortal(
-                        <>
-                          {/* Full-screen click-catcher, closes the menu on outside click —
-                              needed now that the menu itself is fixed/detached from this
-                              button's own DOM subtree, so it no longer sits "inside" the
-                              button's hover/click area. */}
-                          <div className="fixed inset-0 z-[59]" onClick={() => setShowAddOverlayMenu(false)} />
-                          <div
-                            className="fixed w-48 bg-white border border-gray-200 rounded-lg shadow-xl py-1 z-[60] overflow-y-auto"
-                            style={{
-                              top: addOverlayMenuPos.top,
-                              bottom: addOverlayMenuPos.bottom,
-                              left: addOverlayMenuPos.left,
-                              maxHeight: addOverlayMenuPos.maxHeight,
-                            }}
-                          >
-                            <button
-                              onClick={() => { handleAddOverlayClip('text'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <Type size={13} className="text-gray-400" /> Add Text
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('checklist-card'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <CheckCircle2 size={13} className="text-gray-400" /> Add Checklist Card
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('title-cutout-card'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <ImageIcon size={13} className="text-gray-400" /> Add Title Card
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('dim-scrim'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <Contrast size={13} className="text-gray-400" /> Add Dim Scrim
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('particles'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <Sparkles size={13} className="text-gray-400" /> Add Particles
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('light-beam'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <Sunrise size={13} className="text-gray-400" /> Add Light Beam
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('light-sweep'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <ArrowRightLeft size={13} className="text-gray-400" /> Add Light Sweep
-                            </button>
-                            <button
-                              onClick={() => { handleAddOverlayClip('film-damage'); setShowAddOverlayMenu(false); }}
-                              className="w-full text-left px-3 py-2 text-xs font-semibold text-gray-700 hover:bg-gray-50 transition-colors flex items-center gap-2"
-                            >
-                              <Film size={13} className="text-gray-400" /> Add Old Film
-                            </button>
-                          </div>
-                        </>,
-                        document.body
-                      )}
-                    </div>
-                 </div>
-                 <div
-                   className="flex flex-1 relative rounded-r-md border border-dashed border-gray-200 bg-gray-50 transition-colors"
-                   style={{
-                     width: `${timelineDuration * scale}px`,
-                     // One lane is 40px; the row grows as lanes are added rather
-                     // than squeezing clips into a fixed height.
-                     height: `${overlayLaneCount * 40}px`,
-                   }}
-                   onClick={(e) => {
-                     const rect = e.currentTarget.getBoundingClientRect();
-                     setCursorPosition(e.clientX - rect.left);
-                     setSelectedOverlayClipId(null);
-                   }}
-                 >
-                    {overlayClips.length === 0 && (
-                      <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50">
-                        <Type size={12} className="mr-2 text-gray-500" />
-                        <span className="text-[10px] text-gray-500 font-bold italic">
-                          Add a text overlay — it can sit anywhere, across any scene
-                        </span>
-                      </div>
-                    )}
-
-                    {overlayClips.map((clip) => {
-                      const lane = overlayLaneByClipId[clip.id] ?? 0;
-                      const isSelected = selectedOverlayClipId === clip.id;
-                      const accent = OVERLAY_KIND_ACCENT[clip.kind] ?? OVERLAY_KIND_ACCENT.text;
-                      return (
-                        <Rnd
-                          key={clip.id}
-                          bounds="parent"
-                          dragAxis="x"
-                          minWidth={0.5 * scale}
-                          enableResizing={false}
-                          disableDragging={true}
-                          size={{ width: clip.duration * scale, height: 32 }}
-                          position={{ x: clip.startTime * scale, y: lane * 40 + 4 }}
-                          className={`rounded-md border overflow-hidden shadow-sm px-1 transition-[filter,background-color,border-color] ${
-                            isSelected
-                              ? 'border-white ring-2 ring-white/80 ring-offset-1 ring-offset-gray-900 bg-gray-800/45 z-30'
-                              : 'border-gray-700 bg-gray-900/30 hover:bg-gray-900/45 z-20'
-                          }`}
-                          onClick={(e: any) => {
-                            e.stopPropagation();
-                            setSelectedOverlayClipId(clip.id);
-                            // An overlay clip isn't a scene or an A1/A2 clip, so clear
-                            // both — otherwise the right panel would still be showing
-                            // whichever of those was last selected.
-                            setSelectedScene(null);
-                            setSelectedTimelineClip(null);
-                            setSelectedSceneKeys([]);
-                            setSelectedAsset(null);
-                            setActiveTab('scene');
-                            // So the <Player> is actually showing this clip's real
-                            // render (not just the drag badge) the moment its panel
-                            // opens for editing.
-                            seekIntoOverlayClip(clip);
-                          }}
-                          onContextMenu={(e: any) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            setSelectedOverlayClipId(clip.id);
-                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'overlay', id: clip.id });
-                          }}
-                        >
-                          {/* Move handle. Same split as A1/A2 clips: the label drags
-                              the clip, the edge handles trim it. */}
-                          <div
-                            className="flex items-center gap-1 h-full cursor-move text-gray-100 overflow-hidden"
-                            onPointerDown={(e) => handleOverlayDragStart(e, clip)}
-                          >
-                            {clip.kind === 'dim-scrim' ? (
-                              <Contrast size={10} className={`shrink-0 ${accent.icon}`} />
-                            ) : clip.kind === 'particles' ? (
-                              <Sparkles size={10} className={`shrink-0 ${accent.icon}`} />
-                            ) : clip.kind === 'light-beam' ? (
-                              <Sunrise size={10} className={`shrink-0 ${accent.icon}`} />
-                            ) : clip.kind === 'light-sweep' ? (
-                              <ArrowRightLeft size={10} className={`shrink-0 ${accent.icon}`} />
-                            ) : clip.kind === 'film-damage' ? (
-                              <Film size={10} className={`shrink-0 ${accent.icon}`} />
-                            ) : (
-                              <Type size={10} className={`shrink-0 ${accent.icon}`} />
-                            )}
-                            <span className="text-[9px] font-bold truncate">
-                              {/* The environmental kinds carry no text, so they're
-                                  labelled by what they ARE — a `clip.text` fallback
-                                  would label all three "Text". */}
-                              {OVERLAY_KIND_BLOCK_LABEL[clip.kind] ?? (clip.text || 'Text')}
-                            </span>
-                          </div>
-
-                          {/* Trim handles double as the kind's color identity — tinted
-                              with this clip's accent instead of a flat gray, since they're
-                              already visible at rest at both ends of every clip regardless
-                              of kind. */}
-                          <div
-                            className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize ${accent.stripe} opacity-80 hover:opacity-100 z-50 rounded-l-md flex items-center justify-center`}
-                            title="Drag to change when this overlay starts"
-                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'left')}
-                          >
-                            <div className="w-0.5 h-3 bg-white/80 rounded-full" />
-                          </div>
-                          <div
-                            className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize ${accent.stripe} opacity-80 hover:opacity-100 z-50 rounded-r-md flex items-center justify-center`}
-                            title="Drag to change how long this overlay lasts"
-                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'right')}
-                          >
-                            <div className="w-0.5 h-3 bg-white/80 rounded-full" />
-                          </div>
-                        </Rnd>
-                      );
-                    })}
-                 </div>
-              </div>
-
-              {/* Video Track (V1) */}
-              <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-[52]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
-                    <span 
-                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
-                      onClick={() => {
-                        const allV1Keys = [
-                          ...scenes.map(s => `${s.id}_V1`),
-                          ...timelineClips.filter(c => c.trackId === 'V1').map(c => `${c.id}_V1`)
-                        ];
-                        setSelectedSceneKeys(allV1Keys);
-                        setSelectedScene(null);
-                        setSelectedTimelineClip(null);
-                        setSelectedSceneTrack(null);
-                      }}
-                      title="Select all on V1"
-                    >
-                      V1
-                    </span>
-                    <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
-                       {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
-                    </button>
-                    <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'V1' ? null : 'V1'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.V1.muted || trackStates.V1.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
-                         {trackStates.V1.muted || trackStates.V1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
-                      </button>
-                      {activeVolumePopup === 'V1' && (
-                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
-                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.V1.volume ?? 1) * 100)}</span>
-                          <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
-                             <input 
-                               type="range" min="0" max="1" step="0.05" 
-                               value={trackStates.V1.volume ?? 1} 
-                               onChange={e => {
-                                  const vol = parseFloat(e.target.value);
-                                  setTrackVolume('V1', vol);
-                               }} 
-                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
-                             />
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                 </div>
-                 <div 
-                   className={`flex flex-1 relative h-16 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.V1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`}
-                   style={{ width: `${timelineDuration * scale}px` }}
-                   onClick={(e) => {
-                     const rect = e.currentTarget.getBoundingClientRect();
-                     setCursorPosition(e.clientX - rect.left);
-                     setSelectedAsset(null);
-                     setSelectedSceneKeys([]);
-                   }}
-                   onDragOver={(e) => {
-                     if (trackStates.V1.locked) return;
-                     handleDragOver(e);
-                     if ((draggingAsset && (draggingAsset.type === 'video' || draggingAsset.type === 'image')) || (draggingScene && draggingScene.track === 'V1')) {
-                        const rect = e.currentTarget.getBoundingClientRect();
-                        const dropX = e.clientX - rect.left;
-                        let insertIdx = scenes.length;
-                        
-                        for (let i = 0; i < scenes.length; i++) {
-                           const sceneDuration = getSceneDuration(scenes[i]);
-                           const sceneLeft = getSceneLeftPosition('V1', i);
-                           const sceneMidpoint = sceneLeft + (sceneDuration * scale / 2);
-                           if (dropX < sceneMidpoint) {
-                              insertIdx = i;
-                              break;
-                           }
-                        }
-                        if (v1DragInsertIndex !== insertIdx) {
-                           setV1DragInsertIndex(insertIdx);
-                        }
-                     }
-                   }}
-                   onDrop={(e) => {
-                     if (trackStates.V1.locked) return;
-                     handleDrop(e, 'V1')
-                   }}
-                 >
-                    {/* Scene Blocks (AI Generated) */}
-                    {scenes.map((scene, idx) => {
+    scripted: { label: 'Ready to narrate', cls: 'bg-ed-accent-soft text-ed-accent-text border-ed-accent-border', icon: <Mic size={11} /> },
+    narrated: { label: 'Review audio', cls: 'bg-ed-accent-soft text-ed-accent-text border-ed-accent-border', icon: <Mic size={11} /> },
+    approved: { label: 'Approved', cls: 'bg-ed-ok-soft text-ed-ok border-ed-ok-border', icon: <CheckCircle2 size={11} /> },
+  }[projectStatus] ?? { label: 'Draft', cls: 'bg-ed-warn-soft text-ed-warn border-ed-warn-border', icon: <Film size={11} /> };
+
+
+  // Virtualization: a 200+ scene long-form project was mounting every scene block in
+  // the DOM at once regardless of scroll position, which is real, unavoidable browser
+  // cost (layout/paint/compositing across hundreds of elements) that memoization alone
+  // cannot remove — memoization only stops REACT from re-diffing them, it doesn't stop
+  // the BROWSER from having to composite them every frame. Only scenes within the
+  // visible scroll window (plus a buffer so fast scrolling doesn't show gaps) are
+  // rendered; scrolling further mounts more as they enter range.
+  const trackScrollRef = useRef<HTMLDivElement | null>(null);
+  const [visiblePxRange, setVisiblePxRange] = useState<{ start: number; end: number }>({ start: 0, end: 4000 });
+
+  useLayoutEffect(() => {
+    const el = trackScrollRef.current;
+    if (!el) return;
+
+    let frame: number | null = null;
+    const measure = () => {
+      frame = null;
+      setVisiblePxRange(prev => {
+        // Rounded, and only accepted past a threshold, because this is a feedback
+        // loop by construction: changing the range changes how many blocks render,
+        // which changes the track's content width, which can add or remove the
+        // horizontal scrollbar, which changes clientWidth — feeding straight back
+        // into this same measurement. Sub-pixel scrollLeft values (trackpads, zoom)
+        // would let that oscillate forever and trip React's update-depth guard.
+        // Snapping to whole pixels and ignoring sub-threshold deltas makes the loop
+        // converge instead.
+        const next = {
+          start: Math.round(el.scrollLeft),
+          end: Math.round(el.scrollLeft + el.clientWidth),
+        };
+        const MEASURE_EPSILON_PX = 4;
+        const moved =
+          Math.abs(prev.start - next.start) > MEASURE_EPSILON_PX ||
+          Math.abs(prev.end - next.end) > MEASURE_EPSILON_PX;
+        return moved ? next : prev;
+      });
+    };
+    const onScroll = () => {
+      // Coalesce to one measurement per animation frame — a raw scroll listener can
+      // fire far more often than that, which would recreate the same reconciliation
+      // cost virtualization exists to remove.
+      if (frame === null) frame = requestAnimationFrame(measure);
+    };
+
+    measure();
+    el.addEventListener('scroll', onScroll, { passive: true });
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+    return () => {
+      if (frame !== null) cancelAnimationFrame(frame);
+      el.removeEventListener('scroll', onScroll);
+      observer.disconnect();
+    };
+  }, []);
+
+  // Roughly two screens' worth of slack on each side, so scrolling — even a fast
+  // drag of the scrollbar — reveals blocks that are already mounted rather than a
+  // visible pop-in gap. V1's cumulative left-position math is close enough to A1's
+  // (both lay scenes out in the same sequential order) that one shared filter for
+  // both tracks is correct within this buffer; drag-insert offsetting is the only
+  // thing that can differ between them, and it moves things by at most one scene
+  // width, far inside this margin.
+  const VIRTUALIZE_BUFFER_PX = 1600;
+
+  // Which acts have real, narrated timing. Un-narrated acts' scenes still carry the
+  // Scene Slicer's ESTIMATED durations, which Deepgram alignment overwrites the moment
+  // that act is narrated — so their blocks would be drawn at widths that are about to
+  // change anyway. They collapse to one summary block per act instead (see
+  // `collapsedActBlocks`), which is both honest about the state and keeps a 9-act
+  // project from mounting 200+ blocks before any work has started on them.
+  const narratedActNumbers = useMemo(
+    () => new Set(actNarrations.map(a => a.actNumber)),
+    [actNarrations]
+  );
+
+  const visibleSceneEntries = useMemo(() => {
+    const lowPx = visiblePxRange.start - VIRTUALIZE_BUFFER_PX;
+    const highPx = visiblePxRange.end + VIRTUALIZE_BUFFER_PX;
+    const entries: { scene: any; idx: number }[] = [];
+    for (let idx = 0; idx < scenes.length; idx++) {
+      const scene = scenes[idx];
+      // Long-form only: short/mid-form has no per-act narration model, so every scene
+      // always renders normally there regardless of what act_number it carries.
+      if (isLongForm && !narratedActNumbers.has(Number(scene.act_number ?? 1))) continue;
+      const leftPx = getSceneLeftPosition('V1', idx);
+      const widthPx = getSceneDuration(scene) * scale;
+      if (leftPx + widthPx >= lowPx && leftPx <= highPx) {
+        entries.push({ scene, idx });
+      }
+    }
+    return entries;
+  }, [scenes, visiblePxRange, scale, v1DragInsertIndex, draggingAsset, draggingScene, isLongForm, narratedActNumbers]);
+
+  // One placeholder per un-narrated act, spanning where that act's scenes WOULD sit.
+  // Clicking it records that act — the same entry point as the A1 placeholder, so the
+  // V1 track stays a usable way to start work on an act rather than a dead region.
+  const collapsedActBlocks = useMemo(() => {
+    if (!isLongForm) return [];
+
+    const byAct = new Map<number, { leftPx: number; rightPx: number; sceneCount: number }>();
+    for (let idx = 0; idx < scenes.length; idx++) {
+      const scene = scenes[idx];
+      const actNumber = Number(scene.act_number ?? 1);
+      if (narratedActNumbers.has(actNumber)) continue;
+
+      const leftPx = getSceneLeftPosition('V1', idx);
+      const rightPx = leftPx + getSceneDuration(scene) * scale;
+      const existing = byAct.get(actNumber);
+      if (existing) {
+        existing.leftPx = Math.min(existing.leftPx, leftPx);
+        existing.rightPx = Math.max(existing.rightPx, rightPx);
+        existing.sceneCount += 1;
+      } else {
+        byAct.set(actNumber, { leftPx, rightPx, sceneCount: 1 });
+      }
+    }
+
+    return Array.from(byAct.entries())
+      .map(([actNumber, box]) => ({ actNumber, ...box }))
+      .sort((a, b) => a.actNumber - b.actNumber);
+  }, [scenes, scale, isLongForm, narratedActNumbers, v1DragInsertIndex, draggingAsset, draggingScene]);
+
+  // Scene blocks are memoized independent of cursorPosition/isPlaying/currentTime so
+  // scrubbing and playback (which tick cursorPosition up to 60x/sec) don't force React
+  // to re-run scenes.map() and re-diff every block on every tick. A 250-scene long-form
+  // project was re-rendering all 250 blocks per frame purely because the playhead moved.
+                    const v1SceneBlocks = useMemo(() => visibleSceneEntries.map(({ scene, idx }) => {
                       const leftPx = getSceneLeftPosition('V1', idx);
                       const isSelected = selectedSceneKeys.includes(`${scene.id}_V1`)
                         || (selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && selectedSceneKeys.length === 0);
@@ -7463,8 +4214,18 @@ export default function TimelineEditor({
                       const pendingHere = pendingPickFor(scene.id);
                       const previewMediaUrl = pendingHere ? pendingHere.mediaUrl : scene.custom_media_url;
                       const previewMediaType = pendingHere ? pendingHere.type : scene.custom_media_type;
+                      // Selection reads as DEPTH, not colour. The old violet ring + violet
+                      // wash fought with everything else on the block: it tinted the status
+                      // colour underneath (a selected Failed scene stopped looking red), and
+                      // violet is already the app's primary-action colour, so it said
+                      // "button" as much as "selected". Scale + a lifted drop shadow says
+                      // "this one is picked up" without spending a hue.
+                      //
+                      // The neutral dark outline carries it at low zoom, where a narrow
+                      // block is only a few px wide and a 7% scale is a couple of pixels.
+                      // Delete the ring-* classes for a pure zoom-only selection.
                       const ringClass = isSelected
-                        ? 'ring-2 ring-purple-500 ring-offset-1 z-20 bg-purple-500/20'
+                        ? 'ring-2 ring-ed-border-strong ring-offset-1 ring-offset-white z-30 shadow-[0_8px_18px_-6px_rgba(15,23,42,0.55)]'
                         : 'hover:brightness-95 z-10';
                       const hasTransition = idx > 0 && Boolean(scene.transition_type) && scene.transition_type !== 'none';
                       // The seam this scene's incoming transition lives at is its own
@@ -7567,11 +4328,11 @@ export default function TimelineEditor({
                          }}
                        >
                          <div className="w-full h-full p-1.5 flex flex-col relative">
-                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-black/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
+                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-ed-media/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
                                {previewMediaType === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
                                <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {previewMediaUrl ? `(${scene.voice_over_beat})` : ''}</span>
                                {pendingHere && (
-                                 <span className="text-[8px] font-bold text-amber-300">•preview</span>
+                                 <span className="text-[8px] font-bold text-ed-warn">•preview</span>
                                )}
                             </div>
                             {previewMediaUrl && (
@@ -7581,7 +4342,7 @@ export default function TimelineEditor({
                                         <video
                                           key={i}
                                           src={`${previewMediaUrl}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
-                                          className="h-full object-cover shrink-0 border-r border-black/20"
+                                          className="h-full object-cover shrink-0 border-r border-ed-text/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                           preload="metadata"
                                           muted
@@ -7592,7 +4353,7 @@ export default function TimelineEditor({
                                         <img
                                           key={i}
                                           src={previewMediaUrl}
-                                          className="h-full object-cover shrink-0 border-r border-black/20"
+                                          className="h-full object-cover shrink-0 border-r border-ed-text/20"
                                           style={{ width: `${100 / arr.length}%` }}
                                         />
                                      ))
@@ -7606,22 +4367,50 @@ export default function TimelineEditor({
                              what's being communicated). Extends slightly past the block's
                              own top/bottom so it reads as a small opening right at the
                              seam, exactly where you'd drag a card to. */}
-                         {seamIndicator && (
-                           <div
-                             className={`absolute -left-[3px] -top-1 -bottom-1 w-1.5 rounded-full z-40 pointer-events-none ${
-                               seamIndicator === 'drag-over'
-                                 ? 'bg-amber-400 shadow-[0_0_10px_3px_rgba(251,191,36,0.9)] animate-pulse'
-                                 : seamIndicator === 'just-applied'
-                                   // White with a dark outline ring, not just a glow — the
-                                   // glow alone washed out against the lighter scene-status
-                                   // backgrounds (amber-50/emerald-50 etc.), where a white
-                                   // line with no outline nearly disappears.
-                                   ? 'bg-white animate-pulse shadow-[0_0_0_1px_rgba(0,0,0,0.45),0_0_10px_3px_rgba(255,255,255,0.95)]'
-                                   : 'bg-white shadow-[0_0_0_1px_rgba(0,0,0,0.45),0_0_4px_1px_rgba(255,255,255,0.8)]'
-                             }`}
-                             title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Drop a transition card here'}
-                           />
-                         )}
+                         {seamIndicator && (() => {
+                           const TransitionIcon = TRANSITION_ICONS[scene.transition_type ?? ''] ?? Layers;
+                           const isDragOver = seamIndicator === 'drag-over';
+                           return (
+                             <div
+                               className="absolute -left-[3px] -top-1 -bottom-1 w-1.5 z-40 pointer-events-none"
+                               title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Drop a transition card here'}
+                             >
+                               {/* The seam bar. Dark slate rather than white: EVERY scene
+                                   block background is a light status tint (emerald-50,
+                                   amber-50, blue-50, red-50, gray-100), so a white line
+                                   has almost no contrast to work with no matter how much
+                                   outline you stack on it, while near-black separates
+                                   from all five at once. The thin white ring keeps it
+                                   readable if a dark thumbnail is showing underneath. */}
+                               <div
+                                 className={`absolute inset-0 rounded-full ${
+                                   isDragOver
+                                     ? 'bg-ed-warn shadow-[0_0_10px_3px_rgba(251,191,36,0.9)] animate-pulse'
+                                     : seamIndicator === 'just-applied'
+                                       ? 'bg-ed-surface animate-pulse shadow-[0_0_0_1.5px_rgba(255,255,255,0.95)]'
+                                       : 'bg-ed-surface shadow-[0_0_0_1.5px_rgba(255,255,255,0.95)]'
+                                 }`}
+                               />
+                               {/* CapCut's actual affordance isn't a tinted line, it's a
+                                   badge straddling the cut — a shape your eye finds at any
+                                   zoom, carrying WHICH transition is set, not just THAT one
+                                   is. Colour alone can't say that, and the timeline's other
+                                   colours are already spoken for: purple = selection, amber
+                                   = drop target, and blue/emerald/red/gray = scene status.
+                                   Neutral dark + icon stays unambiguous, and works for a
+                                   colour-blind user since the icon does the identifying. */}
+                               {hasTransition && (
+                                 <div
+                                   className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[15px] w-[15px] rounded-full flex items-center justify-center ring-[1.5px] ring-ed-border shadow-md ${
+                                     isDragOver ? 'bg-ed-warn text-ed-base' : 'bg-ed-surface text-ed-base'
+                                   } ${seamIndicator === 'just-applied' ? 'animate-pulse' : ''}`}
+                                 >
+                                   <TransitionIcon size={9} strokeWidth={2.75} />
+                                 </div>
+                               )}
+                             </div>
+                           );
+                         })()}
                          {/* Awaiting-visuals overlay — long-form only. `environment` is
                              written exclusively by agents 4-7 (never by the Scene
                              Slicer), so its absence means this scene's Act has not
@@ -7633,14 +4422,14 @@ export default function TimelineEditor({
                              steals the click/drag/resize handlers above. */}
                          {isLongForm && scene.environment == null && (
                            <div
-                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-gray-400/25"
+                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-ed-text-faint/25"
                              style={{
                                backgroundImage:
                                  'repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0px, rgba(0,0,0,0.06) 6px, transparent 6px, transparent 12px)',
                              }}
                            >
                              {getSceneDuration(scene) * scale > 40 && (
-                               <span className="text-[8px] font-bold text-gray-500 bg-white/70 px-1 py-0.5 rounded-sm whitespace-nowrap">
+                               <span className="text-[8px] font-bold text-ed-text-dim bg-ed-surface/70 px-1 py-0.5 rounded-sm whitespace-nowrap">
                                  Awaiting visuals
                                </span>
                              )}
@@ -7650,22 +4439,3779 @@ export default function TimelineEditor({
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
                             <>
                               <div
-                                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md transition-colors"
+                                className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-ed-accent/80 hover:bg-ed-accent z-50 rounded-l-md transition-colors"
                                 onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'left', getSceneDuration(scene), scene.trim_start || 0)}
                               />
                               <div
-                                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md transition-colors"
+                                className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-ed-accent/80 hover:bg-ed-accent z-50 rounded-r-md transition-colors"
                                 onPointerDown={(e) => handleResizeStart(e, scene.id, 'V1', 'right', getSceneDuration(scene), scene.trim_start || 0)}
                               />
                             </>
                          )}
                        </div>
                       );
+                    }), [visibleSceneEntries, trackStates, selectedSceneKeys, selectedScene, selectedSceneTrack, frozenStrip, isReordering, draggingScene, draggingAsset, isResizing, transitionDragOverSceneId, transitionJustAppliedId, isLongForm, scale, pendingStockPick, pendingProjectPick]);
+
+                     const a1SceneBlocks = useMemo(() => visibleSceneEntries.map(({ scene, idx }) => {
+                        const leftPx = getSceneLeftPosition('A1', idx);
+                        const isSelected = selectedSceneKeys.includes(`${scene.id}_A1`)
+                          || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0);
+                        return (
+                        <div
+                          key={`audio-${scene.id}`}
+                          ref={el => { blockRefs.current[`${scene.id}_A1`] = el; }}
+                          data-base-left={leftPx}
+                          data-scaled={isSelected ? '1' : '0'}
+                          draggable={!trackStates.A1.locked}
+                          onDragStart={(e) => {
+                             if (trackStates.A1.locked) { e.preventDefault(); return; }
+                             e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', track: 'A1', sceneId: scene.id, index: idx }));
+                             setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
+                             e.dataTransfer.effectAllowed = 'copyMove';
+                          }}
+                          onDragEnd={() => { setDraggingScene(null); setA1DragInsertIndex(null); }}
+                          onClick={(e) => { if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1', idx); }}
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
+                          }}
+                          className={`h-[70%] absolute top-[15%] left-0 rounded-md border border-ed-border-strong bg-ed-accent-soft text-ed-accent-text cursor-pointer transition-colors overflow-hidden p-1 shadow-sm ${
+                            isSelected
+                              ? 'ring-2 ring-ed-border-strong ring-offset-1 z-20 bg-ed-accent-soft'
+                              : 'hover:bg-ed-accent-soft z-10'
+                          }`}
+                          style={{
+                            transform: blockTransform(leftPx, isSelected),
+                            width: `${(scene.video_duration || 5) * scale}px`,
+                            opacity: draggingScene?.id === scene.id ? 0.001 : 1,
+                            transition: isReordering && draggingScene?.id !== scene.id ? REORDER_SLIDE : undefined
+                          }}
+                        >
+                          <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
+                             <Volume2 size={9} />
+                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{scene.voice_over_beat}</span>
+                          </div>
+                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                              <path suppressHydrationWarning
+                                d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                                stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} strokeWidth="2.5" strokeLinecap="round"
+                              />
+                            </svg>
+                          </div>
+                          {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
+                            <>
+                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-ed-accent/80 hover:bg-ed-accent z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5, scene.trim_start || 0)} />
+                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-ed-accent/80 hover:bg-ed-accent z-50 rounded-r-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5, scene.trim_start || 0)} />
+                            </>
+                          )}
+                        </div>
+                        );
+                     }), [visibleSceneEntries, trackStates, selectedSceneKeys, selectedScene, selectedSceneTrack, draggingScene, draggingAsset, isResizing, isReordering, scale]);
+
+  return (
+    <div className="flex flex-col h-full bg-ed-well text-ed-text">
+      {/* Editor header. Lives here rather than in the server page so its actions can
+          reach real editor state — that separation is why the old buttons were dead. */}
+      <header className="flex items-center justify-between px-3 h-12 flex-none bg-ed-surface border-b border-ed-border shadow-sm z-30">
+        <div className="flex items-center gap-3 min-w-0">
+          {/* Rendered as a non-interactive span mid-render rather than relying on the
+              modal's coverage alone — defense in depth, so the header stays honest
+              even if the overlay's stacking were ever imperfect. */}
+          {isRendering ? (
+            <span
+              className="p-1.5 rounded-md text-ed-text-faint cursor-not-allowed shrink-0"
+              title="Can't leave while exporting"
+            >
+              <ArrowLeft size={16} />
+            </span>
+          ) : (
+            <Link
+              href={`/workspaces/${workspaceId}`}
+              className="p-1.5 rounded-md text-ed-text-dim hover:text-ed-text hover:bg-ed-raised transition-colors shrink-0"
+              title="Back to workspace"
+            >
+              <ArrowLeft size={16} />
+            </Link>
+          )}
+          <div className="h-5 w-px bg-ed-hover shrink-0" />
+          <h1 className="text-[13px] font-bold text-ed-text truncate" title={initialProject.topic || 'Untitled Video'}>
+            {initialProject.topic || 'Untitled Video'}
+          </h1>
+          <span className={`shrink-0 flex items-center gap-1.5 text-[10px] uppercase tracking-wider font-bold px-2 py-1 rounded-md border ${statusChip.cls}`}>
+            {statusChip.icon}
+            {statusChip.label}
+          </span>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-ed-text-faint mr-1">
+            <Clock size={12} />
+            {formatDuration(contentDuration)}
+          </span>
+          {/* All three per-video surfaces are routes now, so the editor shows the same
+              tab group they do rather than its own one-off pair of buttons. */}
+          <VideoTabs workspaceId={workspaceId} videoId={initialProject.id} active="timeline" />
+          <button
+            onClick={handleRenderVideo}
+            disabled={isRendering || scenes.length === 0}
+            className="bg-ed-accent hover:bg-ed-accent-hover disabled:bg-ed-border-strong disabled:cursor-not-allowed text-ed-base px-4 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
+            title={scenes.length === 0 ? 'Add at least one scene to export' : 'Render this project to an .mp4'}
+          >
+            {isRendering ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
+            {isRendering ? 'Rendering…' : 'Export'}
+          </button>
+        </div>
+      </header>
+
+      {/* Phase banner. Shown for the whole per-Act audio+visual phase — from right
+          after the Whiteboard hands off (zero Acts narrated yet, all placeholders on
+          A1) through to every Act individually approved. V1 blocks for an unapproved
+          Act carry no generated visual yet — that pass is withheld per-Act until the
+          user approves it — so this explains why parts of the video track look empty
+          instead of leaving the user to wonder. */}
+      {isLongForm && projectStatus !== 'approved' && projectStatus !== 'rendering' && projectStatus !== 'exported' && (
+        <div className="flex items-center gap-2 px-3 py-2 flex-none bg-ed-accent-soft border-b border-ed-accent-border">
+          <Mic size={13} className="text-ed-accent-text flex-none" />
+          <span className="text-[11px] font-bold text-ed-accent-text">Audio &amp; visual review</span>
+          <span className="text-[11px] text-ed-accent-text/90">
+            {actNarrations.length} of {actOutlines.length || '?'} acts narrated · click an act on A1 to record, re-record, or approve its visuals — in any order.
+          </span>
+        </div>
+      )}
+
+      {/* Background-persistence failures. Floating rather than inline so it never
+          shifts the timeline layout, and dismissible so it can't trap the user. */}
+      {persistenceWarning && (
+        <div className="fixed bottom-4 right-4 z-[200] max-w-sm bg-ed-warn-soft border border-ed-warn-border rounded-lg shadow-lg p-3 flex items-start gap-2.5">
+          <Info size={15} className="text-ed-warn shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <p className="text-[11px] font-bold text-ed-warn mb-0.5">Changes may not be saved</p>
+            <p className="text-[10px] text-ed-warn leading-relaxed">{persistenceWarning}</p>
+          </div>
+          <button
+            onClick={() => setPersistenceWarning(null)}
+            className="text-ed-warn hover:text-ed-warn text-xs font-bold leading-none shrink-0"
+            title="Dismiss"
+          >
+            ✕
+          </button>
+        </div>
+      )}
+
+      {/* Hidden Media Elements for Audio Sync */}
+      <div className="hidden">
+         {/* Master narration audio (single file, audio-first) */}
+         {masterAudioUrl && (
+           <audio
+             key="master-narration"
+             src={masterAudioUrl}
+             // The element lives in a display:none wrapper, where browsers are free to
+             // resolve preload to "none" — without this the duration is never learned,
+             // which leaves the A1 block spanning the whole ruler and makes the sync
+             // effect chase seek targets past the end of the file.
+             preload="auto"
+             ref={el => {
+               masterAudioRef.current = el;
+               mediaRefs.current["master-narration"] = el;
+               if (el && el.readyState >= 1) {
+                 const d = el.duration;
+                 if (Number.isFinite(d) && d > 0) {
+                    setMasterAudioDuration(d);
+                 }
+               }
+             }}
+             data-start="0"
+             data-duration={masterAudioDuration || 9999}
+             data-track="A1"
+             muted={trackStates.A1.muted}
+             onLoadedMetadata={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
+             onCanPlay={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
+             onDurationChange={(e) => {
+               const d = (e.target as HTMLAudioElement).duration;
+               if (Number.isFinite(d) && d > 0) setMasterAudioDuration(d);
+             }}
+           />
+         )}
+         {/* Per-Act narration (long-form). One element per act, positioned by the same
+             data-start/data-duration contract the sync effect already drives every
+             other native element with — no new playback plumbing needed. */}
+         {actNarrations.map(act => (
+           <audio
+             key={`act-narration-${act.actNumber}`}
+             src={act.audioUrl}
+             preload="auto"
+             ref={el => { mediaRefs.current[`act-narration-${act.actNumber}`] = el; }}
+             data-start={act.startSeconds}
+             data-duration={act.durationSeconds || 9999}
+             data-track="A1"
+             muted={trackStates.A1.muted}
+           />
+         ))}
+         {/* Per-scene audio clips — used only when no master narration exists.
+             Gated on `!isLongForm` rather than `!hasActNarration`: a long-form scene
+             can end up with a stray `audio_url` from the legacy single-scene
+             regenerate action even before any Act has been narrated, and that must
+             never play alongside — or instead of — this project's Act blocks. */}
+         {!masterAudioUrl && !isLongForm && scenes.map((scene, idx) => scene.audio_url && (
+            <audio
+              key={`audio-scene-${scene.id}`}
+              src={scene.audio_url}
+              ref={el => { mediaRefs.current[`scene-${scene.id}`] = el; }}
+              data-start={scenes.slice(0, idx).reduce((acc, s) => acc + (s.video_duration || 5), 0)}
+              data-duration={scene.video_duration || 5}
+              data-track="A1"
+              muted={trackStates.A1.muted}
+            />
+         ))}
+         {/* Timeline Audio Clips (A1 & A2) */}
+         {timelineClips.filter(c => c.asset.type === 'audio').map(clip => (
+            <audio
+              key={`clip-${clip.id}`}
+              src={clip.asset.url}
+              ref={el => { mediaRefs.current[`clip-${clip.id}`] = el; }}
+              data-start={clip.startTime}
+              data-duration={clip.duration}
+              // The playback sync effect reads data-trim-start; without it a trimmed
+              // clip previewed from its head while the export honoured the trim, so
+              // editor and .mp4 disagreed.
+              data-trim-start={clip.trimStart || 0}
+              data-track={clip.trackId}
+              muted={trackStates[clip.trackId as 'A1' | 'A2']?.muted || false}
+            />
+         ))}
+      </div>
+
+      {/* Top Section: Split View */}
+      <div className="flex-1 flex overflow-hidden">
+        
+        {/* Left Panel (Tabbed Interface) */}
+        <div className="w-[380px] lg:w-[420px] bg-ed-surface border-r border-ed-border flex flex-col flex-none shadow-[2px_0_10px_rgba(0,0,0,0.05)] z-10">
+          
+          {/* Tab Headers */}
+          <div className="flex items-center border-b border-ed-border p-2 gap-1 bg-ed-raised">
+            <button 
+              onClick={() => setActiveTab('media')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'media' ? 'bg-ed-surface text-ed-text shadow-sm border border-ed-border' : 'text-ed-text-dim hover:text-ed-text hover:bg-ed-raised/50'}`}
+            >
+              <FolderOpen size={14} /> Media
+            </button>
+            <button 
+              onClick={() => setActiveTab('scene')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'scene' ? 'bg-ed-surface text-ed-text shadow-sm border border-ed-border' : 'text-ed-text-dim hover:text-ed-text hover:bg-ed-raised/50'}`}
+            >
+              <Layers size={14} /> Scene Info
+            </button>
+            <button 
+              onClick={() => setActiveTab('export')}
+              className={`flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold transition-all ${activeTab === 'export' ? 'bg-ed-accent-soft text-ed-accent-text shadow-sm border border-ed-accent-border' : 'text-ed-text-dim hover:text-ed-accent-text hover:bg-ed-accent-soft'}`}
+            >
+              <Wand2 size={14} /> Export
+            </button>
+          </div>
+
+          {/* Auto-Captions — a whole-video setting, so it sits outside the tabs rather
+              than inside Scene Info, which only renders when a scene is selected.
+              Disabled until narration exists: the word timings come from the Deepgram
+              pass inside generateFullNarration, and a toggle that flips but changes
+              nothing would be worse than one that explains itself. */}
+          <div className="px-3 py-2.5 border-b border-ed-border bg-ed-surface">
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className={`p-1.5 rounded-md shrink-0 ${captionWords.length > 0 ? 'bg-ed-accent-soft' : 'bg-ed-raised'}`}>
+                  <Type size={14} className={captionWords.length > 0 ? 'text-ed-accent-text' : 'text-ed-text-faint'} />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-bold text-ed-text leading-tight">Auto-Captions</p>
+                  <p className="text-[10px] text-ed-text-dim leading-tight truncate">
+                    {captionWords.length > 0
+                      ? `${captionWords.length} words timed to narration`
+                      : 'Generate narration to enable'}
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                role="switch"
+                aria-checked={captionsEnabled}
+                disabled={captionWords.length === 0}
+                onClick={async () => {
+                  const next = !captionsEnabled;
+                  setCaptionsEnabled(next);
+                  const res = await updateProjectCaptionsEnabled(initialProject.id, next);
+                  if (!res.success) {
+                    // Revert rather than leave the editor showing captions that the
+                    // next render would not include.
+                    setCaptionsEnabled(!next);
+                    setPersistenceWarning(
+                      `Couldn't save the captions setting (${res.error}). Run db/add-caption-columns.sql if you haven't yet.`
+                    );
+                  }
+                }}
+                className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                  captionsEnabled ? 'bg-ed-accent' : 'bg-ed-border-strong'
+                }`}
+              >
+                <span
+                  className={`absolute top-[3px] w-4 h-4 rounded-full shadow transition-transform ${
+                    captionsEnabled ? 'bg-ed-base translate-x-[21px]' : 'bg-ed-text translate-x-[3px]'
+                  }`}
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* Tab Content Area */}
+          <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-ed-surface">
+            
+            {/* MEDIA TAB */}
+            {activeTab === 'media' && (
+              <div className="space-y-4 animate-in fade-in duration-200">
+                <h3 className="text-sm font-bold text-ed-text mb-4">Project Assets</h3>
+                <div 
+                  className="border-2 border-dashed border-ed-border-strong hover:border-ed-accent-border bg-ed-well hover:bg-ed-accent-soft/30 rounded-xl p-8 flex flex-col items-center justify-center gap-3 transition-colors cursor-pointer group"
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <input 
+                    type="file" 
+                    className="hidden" 
+                    ref={fileInputRef} 
+                    accept="audio/*,video/*,image/*" 
+                    multiple 
+                    onChange={handleFileUpload}
+                  />
+                  <div className="bg-ed-surface p-3 rounded-full border border-ed-border shadow-sm group-hover:border-ed-accent-border transition-colors">
+                    <Upload size={20} className="text-ed-text-faint group-hover:text-ed-accent-text" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-semibold text-ed-text-dim group-hover:text-ed-accent-text">Import Media</p>
+                    <p className="text-xs text-ed-text-faint mt-1">Drag & drop or click to browse</p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-3 gap-3 mt-4">
+                   {mediaAssets.map((asset) => (
+                     <div 
+                       key={asset.id} 
+                       onClick={() => {
+                         setSelectedAsset(asset);
+                         setSelectedScene(null);
+                       }}
+                       draggable
+                       onDragStart={(e) => {
+                         setDraggingAsset(asset);
+                         e.dataTransfer.setData('text/plain', JSON.stringify(asset));
+                         e.dataTransfer.effectAllowed = 'copy';
+                         
+                         const duration = asset.duration || 5;
+                         const width = duration * scale;
+                         
+                         const dragGhost = document.createElement('div');
+                         dragGhost.style.width = `${width}px`;
+                         dragGhost.style.height = '50px';
+                         dragGhost.style.borderRadius = '6px';
+                         dragGhost.style.border = '2px solid #10b981'; // emerald-500 to match the screenshot
+                         dragGhost.style.overflow = 'hidden';
+                         dragGhost.style.position = 'absolute';
+                         dragGhost.style.top = '-1000px';
+                         dragGhost.style.backgroundColor = '#ecfdf5';
+                         dragGhost.style.display = 'flex';
+                         
+                         if (asset.type === 'image' || asset.type === 'video') {
+                             if (asset.type === 'image') {
+                                dragGhost.style.backgroundImage = `url(${asset.url})`;
+                                dragGhost.style.backgroundSize = 'cover';
+                                dragGhost.style.backgroundPosition = 'center';
+                             } else {
+                                const numFrames = Math.max(1, Math.ceil(width / 80));
+                                for(let i=0; i<numFrames; i++) {
+                                   const vid = document.createElement('video');
+                                   vid.src = `${asset.url}#t=${(duration / numFrames) * i + 0.1}`;
+                                   vid.style.height = '100%';
+                                   vid.style.width = `${100 / numFrames}%`;
+                                   vid.style.objectFit = 'cover';
+                                   vid.style.borderRight = '1px solid rgba(0,0,0,0.2)';
+                                   dragGhost.appendChild(vid);
+                                }
+                             }
+                         } else {
+                             const icon = document.createElement('div');
+                             icon.style.padding = '10px';
+                             icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="text-ed-info"><path d="M9 18V5l12-2v13"></path><circle cx="6" cy="18" r="3"></circle><circle cx="18" cy="16" r="3"></circle></svg>`;
+                             dragGhost.appendChild(icon);
+                         }
+
+                         const label = document.createElement('div');
+                         label.style.position = 'absolute';
+                         label.style.left = '6px';
+                         label.style.top = '6px';
+                         label.style.backgroundColor = 'rgba(0,0,0,0.5)';
+                         label.style.color = 'white';
+                         label.style.padding = '2px 6px';
+                         label.style.borderRadius = '4px';
+                         label.style.fontSize = '10px';
+                         label.style.fontWeight = 'bold';
+                         label.style.zIndex = '10';
+                         label.style.whiteSpace = 'nowrap';
+                         label.innerText = asset.name;
+                         dragGhost.appendChild(label);
+                         
+                         document.body.appendChild(dragGhost);
+                         e.dataTransfer.setDragImage(dragGhost, 10, 10);
+                         setTimeout(() => { document.body.removeChild(dragGhost); }, 0);
+                       }}
+                       onDragEnd={() => {
+                         setDraggingAsset(null);
+                         setV1DragInsertIndex(null);
+                         setA1DragInsertIndex(null);
+                       }}
+                       className="flex flex-col items-center gap-1.5 cursor-grab active:cursor-grabbing group/asset w-full"
+                     >
+                       {/* Preview Box */}
+                       <div className={`w-full aspect-square bg-ed-raised rounded-lg relative overflow-hidden flex items-center justify-center border transition-colors ${selectedAsset?.id === asset.id ? 'border-ed-accent-border ring-2 ring-ed-accent-border' : 'border-ed-border group-hover/asset:border-ed-accent-border shadow-sm'}`}>
+                         
+                         {asset.type === 'image' ? (
+                           <div className="absolute inset-0 bg-cover bg-center opacity-90 group-hover/asset:opacity-100 transition-opacity" style={{ backgroundImage: `url(${asset.url})` }}></div>
+                         ) : asset.type === 'video' ? (
+                           <video 
+                             src={asset.url} 
+                             className="absolute inset-0 w-full h-full object-cover opacity-90 group-hover/asset:opacity-100 transition-opacity" 
+                             muted 
+                             preload="metadata"
+                             onLoadedMetadata={(e) => {
+                               if(!asset.duration) {
+                                  const d = e.currentTarget.duration;
+                                  if (d && !isNaN(d) && d !== Infinity) {
+                                      setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
+                                  }
+                               }
+                             }}
+                           />
+                         ) : (
+                           <div className="absolute inset-0 flex items-center justify-center bg-ed-well">
+                             <Music size={24} className="text-ed-accent-text group-hover/asset:text-ed-accent-text transition-colors" />
+                             <audio 
+                               src={asset.url} 
+                               className="hidden" 
+                               preload="metadata"
+                               onLoadedMetadata={(e) => {
+                                 if(!asset.duration) {
+                                    const d = e.currentTarget.duration;
+                                    if (d && !isNaN(d) && d !== Infinity) {
+                                        setMediaAssets(prev => prev.map(a => a.id === asset.id ? { ...a, duration: d } : a));
+                                    }
+                                 }
+                               }}
+                             />
+                           </div>
+                         )}
+
+                         {/* Duration Badge */}
+                         {(asset.type === 'video' || asset.type === 'audio') && (
+                            <div className="absolute top-1 right-1 px-1.5 py-0.5 bg-ed-media/60 rounded text-[9px] text-white font-mono font-medium drop-shadow-md z-10">
+                              {asset.duration ? formatDuration(asset.duration) : '00:00'}
+                            </div>
+                         )}
+                         {/* Upload state — a failed upload means this asset won't survive a reload */}
+                         {asset.uploadStatus === 'uploading' && (
+                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-ed-media/60 rounded text-[9px] text-white font-bold flex items-center gap-1 z-10">
+                              <Loader2 size={9} className="animate-spin" /> Saving
+                            </div>
+                         )}
+                         {asset.uploadStatus === 'failed' && (
+                            <div className="absolute top-1 left-1 px-1.5 py-0.5 bg-ed-danger rounded text-[9px] text-ed-base font-bold z-10" title="Upload failed — this file won't persist after a reload">
+                              Not saved
+                            </div>
+                         )}
+                         {/* Audio Quick Add Buttons */}
+                         {asset.type === 'audio' && (
+                           <div className="absolute bottom-1 right-1 flex items-center gap-1 z-20">
+                             <button
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 addTimelineClip(asset, 'A1', 0, Math.min(asset.duration || 5, 5));
+                               }}
+                               className="px-1.5 py-0.5 bg-ed-accent hover:bg-ed-accent-hover text-ed-base rounded text-[9px] font-bold transition-colors shadow-sm"
+                               title="Add to Track A1 at 0s"
+                             >
+                               + A1
+                             </button>
+                             <button
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 addTimelineClip(asset, 'A2', 0, Math.min(asset.duration || 5, 5));
+                               }}
+                               className="px-1.5 py-0.5 bg-ed-info hover:bg-ed-info text-ed-base rounded text-[9px] font-bold transition-colors shadow-sm"
+                               title="Add to Track A2 at 0s"
+                             >
+                               + A2
+                             </button>
+                           </div>
+                         )}
+                       </div>
+                       
+                       {/* Filename Below */}
+                       <span className="text-[10px] text-ed-text-dim group-hover/asset:text-ed-accent-text font-medium truncate w-full text-center px-0.5 transition-colors" title={asset.name}>
+                         {asset.name}
+                       </span>
+                     </div>
+                   ))}
+                   {mediaAssets.length === 0 && (
+                      <div className="col-span-3 text-center text-xs text-ed-text-faint italic py-4">No media imported yet.</div>
+                   )}
+                </div>
+              </div>
+            )}
+
+            {/* SCENE DETAILS TAB */}
+            {activeTab === 'scene' && (
+              <div className="animate-in fade-in duration-200 h-full flex flex-col">
+                {selectedOverlayClip ? (
+                  /* ── Overlay clip properties ──
+                     Takes priority over the scene/audio-clip panels below: an
+                     overlay clip is its own thing on its own track, so while one
+                     is selected this panel is what the right-hand column shows. */
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-3 pb-4 border-b border-ed-border">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="bg-ed-ov-soft text-ed-ov w-8 h-8 rounded-lg flex items-center justify-center shadow-sm shrink-0">
+                          {selectedOverlayClip.kind === 'checklist-card' ? (
+                            <CheckCircle2 size={18} />
+                          ) : selectedOverlayClip.kind === 'title-cutout-card' ? (
+                            <ImageIcon size={18} />
+                          ) : selectedOverlayClip.kind === 'dim-scrim' ? (
+                            <Contrast size={18} />
+                          ) : selectedOverlayClip.kind === 'particles' ? (
+                            <Sparkles size={18} />
+                          ) : selectedOverlayClip.kind === 'light-beam' ? (
+                            <Sunrise size={18} />
+                          ) : selectedOverlayClip.kind === 'light-sweep' ? (
+                            <ArrowRightLeft size={18} />
+                          ) : selectedOverlayClip.kind === 'film-damage' ? (
+                            <Film size={18} />
+                          ) : (
+                            <Type size={18} />
+                          )}
+                        </div>
+                        <div className="min-w-0">
+                          <h3 className="font-bold text-ed-text text-sm">
+                            {selectedOverlayClip.kind === 'checklist-card'
+                              ? 'Checklist Card'
+                              : selectedOverlayClip.kind === 'title-cutout-card'
+                              ? 'Title + Cutout Card'
+                              : selectedOverlayClip.kind === 'dim-scrim'
+                              ? 'Dim Scrim'
+                              : selectedOverlayClip.kind === 'particles'
+                              ? 'Floating Particles'
+                              : selectedOverlayClip.kind === 'light-beam'
+                              ? 'Light Beam'
+                              : selectedOverlayClip.kind === 'light-sweep'
+                              ? 'Light Sweep'
+                              : selectedOverlayClip.kind === 'film-damage'
+                              ? 'Old Film'
+                              : 'Text Overlay'}
+                          </h3>
+                          <span className="text-[10px] text-ed-text-faint font-mono">
+                            {selectedOverlayClip.startTime.toFixed(1)}s · {selectedOverlayClip.duration.toFixed(1)}s long
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => handleDeleteOverlayClip(selectedOverlayClip.id)}
+                        className="text-ed-text-faint hover:text-ed-danger transition-colors shrink-0"
+                        title="Delete this overlay"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+
+                    {selectedOverlayClip.kind === 'checklist-card' ? (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Title</label>
+                          <input
+                            type="text"
+                            className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                            value={selectedOverlayClip.text}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
+                            placeholder="e.g. 3 Reasons to Switch"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Accent Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedOverlayClip.color}
+                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                            </div>
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Header bar &amp; checkmarks</p>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Text Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedChecklistTextColor}
+                                onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { textColor: e.target.value })}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedChecklistTextColor}</span>
+                            </div>
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Title wording</p>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Title Font Size</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{selectedOverlayClip.fontSize ?? 28}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={MIN_OVERLAY_FONT_SIZE}
+                            max={MAX_OVERLAY_FONT_SIZE}
+                            step={2}
+                            value={selectedOverlayClip.fontSize ?? 28}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Sizes the title wording only.</p>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Card Size</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedChecklistScale * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={MIN_OVERLAY_CARD_SCALE}
+                            max={MAX_OVERLAY_CARD_SCALE}
+                            step={0.05}
+                            value={selectedChecklistScale}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Scales the whole card. You can also drag the handle on it in the preview above.</p>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Bullets</label>
+                            <button
+                              onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets: [...selectedChecklistBullets, 'New point'] })}
+                              className="text-[10px] font-bold text-ed-ov hover:text-ed-ov transition-colors"
+                            >
+                              + Add bullet
+                            </button>
+                          </div>
+                          <div className="space-y-1.5">
+                            {selectedChecklistBullets.map((bullet, index) => (
+                              <div key={index} className="flex items-center gap-1.5">
+                                <input
+                                  type="text"
+                                  value={bullet}
+                                  onChange={(e) => {
+                                    const bullets = [...selectedChecklistBullets];
+                                    bullets[index] = e.target.value;
+                                    updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets });
+                                  }}
+                                  className="flex-1 bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-1.5 text-xs text-ed-text transition-all shadow-sm"
+                                  placeholder="Bullet text"
+                                />
+                                <button
+                                  onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { bullets: selectedChecklistBullets.filter((_, i) => i !== index) })}
+                                  className="text-ed-text-faint hover:text-ed-danger transition-colors shrink-0"
+                                  title="Remove bullet"
+                                >
+                                  <X size={14} />
+                                </button>
+                              </div>
+                            ))}
+                            {selectedChecklistBullets.length === 0 && (
+                              <p className="text-[10px] text-ed-text-faint italic">No bullets yet — add one above.</p>
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    ) : selectedOverlayClip.kind === 'title-cutout-card' ? (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Headline</label>
+                          <input
+                            type="text"
+                            className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                            value={selectedOverlayClip.text}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
+                            placeholder="e.g. The Discovery"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Animation</label>
+                            <select
+                              value={selectedOverlayClip.preset}
+                              onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
+                              className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                            >
+                              {OVERLAY_PRESET_OPTIONS.map(option => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Text Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedTitleCutoutData.textColor ?? '#FFFFFF'}
+                                onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { textColor: e.target.value })}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedTitleCutoutData.textColor ?? '#FFFFFF'}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Fallback Background Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Used only when no background image is set below.</p>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Headline Font Size</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{selectedOverlayClip.fontSize ?? 64}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={MIN_OVERLAY_FONT_SIZE}
+                            max={MAX_OVERLAY_FONT_SIZE}
+                            step={2}
+                            value={selectedOverlayClip.fontSize ?? 64}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Sizes the headline wording only.</p>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Card Size</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedTitleCutoutData.scale ?? 1) * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={MIN_OVERLAY_CARD_SCALE}
+                            max={MAX_OVERLAY_CARD_SCALE}
+                            step={0.05}
+                            value={selectedTitleCutoutData.scale ?? 1}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Scales the whole card, images included. You can also drag the handle on it in the preview above.</p>
+                        </div>
+
+                        <OverlayImagePicker
+                          label="Background Image"
+                          images={projectImageAssets}
+                          selectedUrl={selectedTitleCutoutData.backgroundImageUrl}
+                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { backgroundImageUrl: url })}
+                        />
+                        <OverlayImagePicker
+                          label="Foreground Cutout"
+                          images={projectImageAssets}
+                          selectedUrl={selectedTitleCutoutData.foregroundImageUrl}
+                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { foregroundImageUrl: url })}
+                        />
+                      </>
+                    ) : selectedOverlayClip.kind === 'dim-scrim' ? (
+                      <>
+                        <p className="text-[10px] text-ed-text-faint -mt-1">
+                          A full-frame dim layer with its own timing — start it before your
+                          text arrives, let it linger after, or fade it independently.
+                        </p>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Scrim Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Opacity</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedDimScrimData.opacity ?? 0.45) * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.05}
+                            max={1}
+                            step={0.05}
+                            value={selectedDimScrimData.opacity ?? 0.45}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { opacity: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade In</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedDimScrimData.fadeInSeconds ?? 0.3).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedDimScrimData.fadeInSeconds ?? 0.3}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade Out</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedDimScrimData.fadeOutSeconds ?? 0.3).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedDimScrimData.fadeOutSeconds ?? 0.3}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+
+                        <p className="text-[10px] text-ed-text-faint">
+                          Drag this clip on the OV track (or trim its edges) to control exactly when it starts and ends relative to your text.
+                        </p>
+                      </>
+                    ) : selectedOverlayClip.kind === 'particles' ? (
+                      <>
+                        <p className="text-[10px] text-ed-text-faint -mt-1">
+                          Drifting motes floating over the footage. Runs across scene cuts,
+                          so let one clip span several scenes rather than adding one per scene.
+                        </p>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Particle Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Count</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{selectedParticleData.count ?? 45}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={5}
+                            max={200}
+                            step={5}
+                            value={selectedParticleData.count ?? 45}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { count: parseInt(e.target.value, 10) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Speed</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedParticleData.speed ?? 1).toFixed(1)}x</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.2}
+                              max={3}
+                              step={0.1}
+                              value={selectedParticleData.speed ?? 1}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { speed: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Size</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedParticleData.sizeScale ?? 1) * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.3}
+                              max={2.5}
+                              step={0.1}
+                              value={selectedParticleData.sizeScale ?? 1}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { sizeScale: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Cluster</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">
+                              {selectedParticleData.xBias === undefined ? 'Even' : `${Math.round(selectedParticleData.xBias)}%`}
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={selectedParticleData.xBias ?? 50}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { xBias: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { xBias: undefined })}
+                            className="text-[9px] text-ed-text-faint hover:text-ed-ov mt-0.5 transition-colors"
+                          >
+                            Spread evenly across the frame
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade In</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedParticleData.fadeInSeconds ?? 0.8).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedParticleData.fadeInSeconds ?? 0.8}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade Out</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedParticleData.fadeOutSeconds ?? 0.8).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedParticleData.fadeOutSeconds ?? 0.8}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : selectedOverlayClip.kind === 'light-beam' ? (
+                      <>
+                        <p className="text-[10px] text-ed-text-faint -mt-1">
+                          A soft shaft of light. It only ever adds light — pair it with a Dim
+                          Scrim clip underneath when the rest of the frame should fall off too.
+                        </p>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Beam Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Position</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedLightBeamData.xPercent ?? 50)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={1}
+                            value={selectedLightBeamData.xPercent ?? 50}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { xPercent: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">
+                            The beam can&apos;t be blocked by anything in the footage, so it looks best
+                            placed away from your subject rather than across them.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Width</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedLightBeamData.width ?? 14)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={2}
+                              max={40}
+                              step={1}
+                              value={selectedLightBeamData.width ?? 14}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { width: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Intensity</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedLightBeamData.intensity ?? 0.75) * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.05}
+                              max={1}
+                              step={0.05}
+                              value={selectedLightBeamData.intensity ?? 0.75}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { intensity: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade In</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedLightBeamData.fadeInSeconds ?? 0.6).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedLightBeamData.fadeInSeconds ?? 0.6}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade Out</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedLightBeamData.fadeOutSeconds ?? 0.6).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedLightBeamData.fadeOutSeconds ?? 0.6}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : selectedOverlayClip.kind === 'light-sweep' ? (
+                      <>
+                        <p className="text-[10px] text-ed-text-faint -mt-1">
+                          A band of light raking across the frame, repeating on its own
+                          cycle. Unlike a Light Beam it doesn&apos;t stay in one place — it
+                          crosses edge to edge.
+                        </p>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Sweep Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Pass Every</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedLightSweepData.cycleSeconds ?? 4).toFixed(1)}s</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1}
+                            max={12}
+                            step={0.5}
+                            value={selectedLightSweepData.cycleSeconds ?? 4}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { cycleSeconds: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">
+                            Set this to the clip&apos;s own length for a single pass instead of a repeat.
+                          </p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Width</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedLightSweepData.width ?? 12)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={1}
+                              max={25}
+                              step={0.5}
+                              value={selectedLightSweepData.width ?? 5}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { width: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Intensity</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedLightSweepData.intensity ?? 0.6) * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.05}
+                              max={1}
+                              step={0.05}
+                              value={selectedLightSweepData.intensity ?? 0.6}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { intensity: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Lean</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedLightSweepData.angle ?? 100)}&deg;</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={70}
+                            max={110}
+                            step={1}
+                            value={selectedLightSweepData.angle ?? 100}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { angle: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">90&deg; is perfectly upright; either side of it tilts the band.</p>
+                        </div>
+
+                        <label className="flex items-center gap-2 px-3 py-2.5 border border-ed-border rounded-lg shadow-sm cursor-pointer bg-ed-well hover:bg-ed-raised transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(selectedLightSweepData.reverse)}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { reverse: e.target.checked })}
+                            className="accent-ed-accent-text"
+                          />
+                          <span className="text-xs font-bold text-ed-text-dim">Sweep right to left</span>
+                        </label>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade In</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedLightSweepData.fadeInSeconds ?? 0.5).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedLightSweepData.fadeInSeconds ?? 0.5}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade Out</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedLightSweepData.fadeOutSeconds ?? 0.5).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedLightSweepData.fadeOutSeconds ?? 0.5}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : selectedOverlayClip.kind === 'film-damage' ? (
+                      <>
+                        <p className="text-[10px] text-ed-text-faint -mt-1">
+                          Old-film print wear: drifting scratch lines and emulsion grain.
+                          This is the one overlay that sits <em>above</em> your text — damage
+                          is on the film, so captions get scratched too.
+                        </p>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Grain</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedFilmDamageData.grainAmount ?? 0.35) * 100)}%</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={1}
+                            step={0.05}
+                            value={selectedFilmDamageData.grainAmount ?? 0.35}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { grainAmount: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Drop to 0 for scratches with no grain.</p>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Grain Fineness</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedFilmDamageData.grainScale ?? 0.8).toFixed(2)}</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.2}
+                            max={1.6}
+                            step={0.05}
+                            value={selectedFilmDamageData.grainScale ?? 0.8}
+                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { grainScale: parseFloat(e.target.value) })}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Lower is coarser, older stock. Higher is finer, more modern.</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Scratches</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round(selectedFilmDamageData.scratchCount ?? 4)}</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={16}
+                              step={1}
+                              value={selectedFilmDamageData.scratchCount ?? 4}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scratchCount: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Brightness</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedFilmDamageData.scratchIntensity ?? 0.5) * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={1}
+                              step={0.05}
+                              value={selectedFilmDamageData.scratchIntensity ?? 0.5}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scratchIntensity: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Scratch Color</label>
+                          <div className="flex items-center gap-2">
+                            <input
+                              type="color"
+                              value={selectedOverlayClip.color}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                            />
+                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                          </div>
+                          <p className="text-[9px] text-ed-text-faint mt-0.5">Grain stays neutral — this only tints the scratches.</p>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade In</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedFilmDamageData.fadeInSeconds ?? 0.4).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedFilmDamageData.fadeInSeconds ?? 0.4}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeInSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Fade Out</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{(selectedFilmDamageData.fadeOutSeconds ?? 0.4).toFixed(1)}s</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0}
+                              max={3}
+                              step={0.1}
+                              value={selectedFilmDamageData.fadeOutSeconds ?? 0.4}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { fadeOutSeconds: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                          </div>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Text</label>
+                          <input
+                            type="text"
+                            className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                            value={selectedOverlayClip.text}
+                            // Debounced: this fires on every keystroke, and an
+                            // un-debounced write per character would hammer the DB.
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'text', e.target.value, 'text', true)}
+                            placeholder="e.g. The Discovery"
+                          />
+                        </div>
+
+                        {selectedOverlayClip.preset === 'chapter-card' && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Kicker</label>
+                            <input
+                              type="text"
+                              className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                              value={selectedOverlayClip.kickerText || ''}
+                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'kickerText', e.target.value, 'kicker_text', true)}
+                              placeholder="e.g. CHAPTER 02"
+                            />
+                            <p className="text-[10px] text-ed-text-faint mt-1">Small label that animates in above the headline.</p>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Animation</label>
+                            <select
+                              value={selectedOverlayClip.preset}
+                              onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
+                              className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                            >
+                              {OVERLAY_PRESET_OPTIONS.map(option => (
+                                <option key={option.value} value={option.value}>{option.label}</option>
+                              ))}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedOverlayClip.color}
+                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div>
+                          <div className="flex justify-between items-center mb-1">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Font Size</label>
+                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{selectedOverlayClip.fontSize ?? 64}px</span>
+                          </div>
+                          <input
+                            type="range"
+                            min={MIN_OVERLAY_FONT_SIZE}
+                            max={MAX_OVERLAY_FONT_SIZE}
+                            step={2}
+                            value={selectedOverlayClip.fontSize ?? 64}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'fontSize', parseInt(e.target.value, 10), 'font_size', true)}
+                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                          />
+                          <p className="text-[10px] text-ed-ov font-medium mt-1.5">
+                            ✨ You can also drag the small handle on the text in the preview above to resize it.
+                          </p>
+                        </div>
+                      </>
+                    )}
+
+                    {/* Neither applies to an environmental clip: they all cover the
+                        whole frame rather than sitting at a "position", and dimming
+                        the footage behind one is either redundant (the scrim IS the
+                        dim) or self-defeating (particles and a beam add light; a dim
+                        under them cancels out what they just added). The light
+                        beam's own position lives in its template_data slider, since
+                        it's a gradient-mask offset rather than a placed element. */}
+                    {!isEnvironmentalKind(selectedOverlayClip.kind) && (
+                      <>
+                        <label className="flex items-center gap-2 px-3 py-2.5 border border-ed-border rounded-lg shadow-sm cursor-pointer bg-ed-well hover:bg-ed-raised transition-colors">
+                          <input
+                            type="checkbox"
+                            checked={selectedOverlayClip.dimBackground}
+                            onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'dimBackground', e.target.checked, 'dim_background')}
+                            className="accent-ed-ov"
+                          />
+                          <span className="text-xs font-bold text-ed-text-dim">Dim background</span>
+                        </label>
+
+                        {/* Position — quick presets alongside the drag-on-preview
+                            interaction, since "put it at the bottom" is faster to
+                            click than to aim. */}
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1.5">
+                            Position — {Math.round(selectedOverlayClip.xPercent)}% / {Math.round(selectedOverlayClip.yPercent)}%
+                          </label>
+                          <div className="grid grid-cols-5 gap-1">
+                            {POSITION_PRESETS.map(preset => (
+                              <button
+                                key={preset.label}
+                                onClick={() => setOverlayClipPosition(selectedOverlayClip.id, preset.xPercent, preset.yPercent)}
+                                className="px-1 py-1.5 rounded-md border border-ed-border bg-ed-surface text-[9px] font-bold text-ed-text-dim hover:border-ed-ov-border hover:bg-ed-ov-soft/50 transition-colors"
+                              >
+                                {preset.label}
+                              </button>
+                            ))}
+                          </div>
+                          <p className="text-[10px] text-ed-ov font-medium bg-ed-ov-soft border border-ed-ov-border rounded-md px-2 py-1 mt-2">
+                            ✨ Drag the text directly on the preview above to place it anywhere.
+                          </p>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : selectedActNumber !== null && actNarrations.some(a => a.actNumber === selectedActNumber) ? (
+                  /* Act inspector. An Act is a first-class selectable object here
+                     precisely because it is the unit the user edits: re-record it and
+                     nothing outside it is re-synthesised, re-transcribed or re-timed. */
+                  (() => {
+                    const act = actNarrations.find(a => a.actNumber === selectedActNumber)!;
+                    const summary = actSummaries.find(s => s.outline.actNumber === selectedActNumber);
+                    const sceneCount = summary?.sceneTotal ?? scenes.filter(sc => Number(sc.act_number ?? 1) === act.actNumber).length;
+                    const isBusy = regeneratingActNumber === act.actNumber;
+                    const isApprovingThis = approvingActNumber === act.actNumber;
+                    const visualsApproved = summary?.visualsApproved ?? false;
+                    const sceneApproved = summary?.sceneApproved ?? 0;
+                    return (
+                      <div className="space-y-6">
+                        <div className="flex items-center gap-3 pb-4 border-b border-ed-border">
+                          <div className="bg-ed-accent-soft text-ed-accent-text w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
+                            <Mic size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-ed-text text-sm">Act {act.actNumber}</h3>
+                            <p className="text-[11px] text-ed-text-dim">
+                              {act.durationSeconds.toFixed(1)}s · {sceneCount} scene{sceneCount === 1 ? '' : 's'} · starts at {act.startSeconds.toFixed(1)}s
+                            </p>
+                          </div>
+                        </div>
+
+                        <button
+                          onClick={() => setCursorPosition(act.startSeconds * scale)}
+                          className="w-full px-3 py-2 rounded-lg border border-ed-border bg-ed-surface text-xs font-bold text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft/50 transition-colors flex items-center justify-center gap-2"
+                        >
+                          <SkipBack size={13} /> Jump to this act
+                        </button>
+
+                        {/* ── Audio ── */}
+                        <div>
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1.5">
+                            Audio
+                          </label>
+                          <button
+                            onClick={() => handleRegenerateAct(act.actNumber)}
+                            disabled={isBusy}
+                            className="w-full px-3 py-2.5 rounded-lg bg-ed-accent text-ed-base text-xs font-bold hover:bg-ed-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                          >
+                            {isBusy
+                              ? <><Loader2 size={13} className="animate-spin" /> Re-recording Act {act.actNumber}…</>
+                              : <><Repeat size={13} /> Re-record this act</>}
+                          </button>
+                          <p className="text-[10px] text-ed-text-dim mt-2 leading-relaxed">
+                            Re-records <strong>only Act {act.actNumber}</strong> from its current wording. Every other act keeps its exact audio and scene timings — if this act changes length, the later ones simply shift.
+                          </p>
+                        </div>
+
+                        <div className="rounded-lg border border-ed-warn-border bg-ed-warn-soft px-3 py-2">
+                          <p className="text-[10px] text-ed-warn leading-relaxed">
+                            Edit the wording first in the <strong>Whiteboard</strong>, then come back and re-record. Re-recording reads whatever text is currently saved.
+                          </p>
+                        </div>
+
+                        {/* ── Channel Format checklist ──
+                            Display-only (implementation_plans/18-channel-blueprint.md
+                            Phase 6): the SAME actCycle/requiredBeats data that drives
+                            the Script Writer's prompt, shown here so the human deciding
+                            whether to approve this act's visuals can check the script
+                            actually followed the channel's format — nothing here
+                            auto-verifies anything yet. */}
+                        {formatProfile && <ActFormatChecklist profile={formatProfile} />}
+
+                        {/* ── Visuals ──
+                            Deliberately per-Act: approving Act 3 does not touch Acts
+                            1-9. Casting still only ever runs once for the whole
+                            project — whichever act is approved first computes it,
+                            every later approval (in any order) reuses that same cast. */}
+                        <div className="pt-2 border-t border-ed-border">
+                          <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1.5">
+                            Visuals
+                          </label>
+                          {visualsApproved ? (
+                            <>
+                              <div className="flex items-center gap-2 mb-2 p-2 bg-ed-ok-soft border border-ed-ok-border rounded-lg">
+                                <CheckCircle2 size={13} className="text-ed-ok flex-none" />
+                                <span className="text-[11px] font-bold text-ed-ok">
+                                  Visuals approved · {sceneCount} scene{sceneCount === 1 ? '' : 's'}
+                                </span>
+                              </div>
+                              <button
+                                onClick={() => handleRegenerateActVisuals(act.actNumber)}
+                                disabled={isApprovingThis}
+                                className="w-full px-3 py-2 rounded-lg border border-ed-border bg-ed-surface text-xs font-bold text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft/50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                              >
+                                {isApprovingThis
+                                  ? <><Loader2 size={13} className="animate-spin" /> Regenerating…</>
+                                  : <><RefreshCw size={13} /> Regenerate this act's visuals</>}
+                              </button>
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => handleApproveActVisuals(act.actNumber)}
+                                disabled={isApprovingThis}
+                                className="w-full px-3 py-2.5 rounded-lg bg-ed-ok text-ed-base text-xs font-bold hover:bg-ed-ok disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                              >
+                                {isApprovingThis
+                                  ? <><Loader2 size={13} className="animate-spin" /> Approving Act {act.actNumber}…</>
+                                  : <><CheckCircle2 size={13} /> Approve this act's visuals</>}
+                              </button>
+                              <p className="text-[10px] text-ed-text-dim mt-2 leading-relaxed">
+                                {sceneApproved > 0
+                                  ? `${sceneApproved} of ${sceneCount} scenes already have visuals from a previous attempt — this fills in the rest.`
+                                  : `Builds a visual prompt for this act's ${sceneCount} scenes, timed against this act's real ${act.durationSeconds.toFixed(1)}s of narration. Other acts don't need audio yet — casting only runs once, whichever act approves first.`}
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })()
+                ) : selectedActNumber !== null && actOutlines.some(o => o.actNumber === selectedActNumber) ? (
+                  /* An act selected via its placeholder block (V1 collapsed block or
+                     the A1 "not recorded yet" block) BEFORE it has narration. Clicking
+                     those blocks used to generate real audio immediately — this panel
+                     is what replaced that: selecting is free, generating is one
+                     explicit click away, so a stray click can never start a recording
+                     you didn't mean to start. */
+                  (() => {
+                    const outline = actOutlines.find(o => o.actNumber === selectedActNumber)!;
+                    const isBusy = regeneratingActNumber === outline.actNumber;
+                    const sceneCountForAct = scenes.filter(sc => Number(sc.act_number ?? 1) === outline.actNumber).length;
+                    return (
+                      <div className="space-y-6">
+                        <div className="flex items-center gap-3 pb-4 border-b border-ed-border">
+                          <div className="bg-ed-raised text-ed-text-dim w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
+                            <Mic size={18} />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-ed-text text-sm">Act {outline.actNumber}</h3>
+                            <p className="text-[11px] text-ed-text-dim truncate">{outline.title}</p>
+                          </div>
+                        </div>
+
+                        {outline.description && (
+                          <p className="text-xs text-ed-text-dim leading-relaxed">{outline.description}</p>
+                        )}
+
+                        <div className="rounded-lg border border-ed-border bg-ed-well px-3 py-2.5">
+                          <p className="text-[10px] text-ed-text-dim leading-relaxed">
+                            {sceneCountForAct > 0
+                              ? `${sceneCountForAct} scene${sceneCountForAct === 1 ? '' : 's'} of script exist for this act, but it hasn't been narrated yet.`
+                              : `This act has no script yet — generate it from the Scene Board first.`}
+                            {' '}Visuals stay locked until narration exists, so its real timing drives them instead of a guess.
+                          </p>
+                        </div>
+
+                        <button
+                          onClick={() => void handleRegenerateAct(outline.actNumber)}
+                          disabled={isBusy || sceneCountForAct === 0}
+                          className="w-full px-3 py-2.5 rounded-lg bg-ed-accent text-ed-base text-xs font-bold hover:bg-ed-accent-hover disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center justify-center gap-2"
+                        >
+                          {isBusy
+                            ? <><Loader2 size={13} className="animate-spin" /> Recording Act {outline.actNumber}…</>
+                            : <><Mic size={13} /> Generate audio for this act</>}
+                        </button>
+                        {sceneCountForAct === 0 && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); openSceneBoard(); }}
+                            className="w-full px-3 py-2 rounded-lg border border-ed-border bg-ed-surface text-xs font-bold text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft/50 transition-colors flex items-center justify-center gap-2"
+                          >
+                            <Clapperboard size={13} className="text-ed-accent-text" />
+                            Open Scene Board to write its script
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })()
+                ) : selectedTimelineClip && (selectedSceneTrack === 'A1' || selectedSceneTrack === 'A2') ? (
+                  <div className="space-y-6">
+                    <div className="flex items-center gap-3 pb-4 border-b border-ed-border">
+                      <div className="bg-ed-info-soft text-ed-info w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm">
+                        <Music size={18} />
+                      </div>
+                      <div>
+                        <h3 className="font-bold text-ed-text text-sm">{selectedSceneTrack === 'A1' ? 'A1 Audio Clip' : 'A2 Custom Audio'}</h3>
+                        <span className="text-[10px] text-ed-text-faint font-mono">FILE: {selectedTimelineClip.asset.name}</span>
+                      </div>
+                    </div>
+
+                    <div className="bg-ed-info-soft/50 rounded-lg p-3 border border-ed-info-border">
+                      <p className="text-xs font-semibold text-ed-info mb-2">Audio Preview</p>
+                      <audio src={selectedTimelineClip.asset.url} controls className="w-full h-8" />
+                    </div>
+
+                    {/* Left to Right Trimming & Duration Controls */}
+                    <div className="space-y-4 pt-2">
+                      <h4 className="text-xs font-bold text-ed-text-dim uppercase tracking-wider">Trim & Duration (Left to Right)</h4>
+                      
+                      {/* Duration Control (Decrease from left to right) */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <label className="text-xs font-semibold text-ed-text-dim">Clip Duration (seconds)</label>
+                          <span className="text-xs font-bold text-ed-info font-mono">{selectedTimelineClip.duration.toFixed(1)}s</span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="0.5"
+                          max={selectedTimelineClip.asset.duration || 15}
+                          step="0.5"
+                          value={selectedTimelineClip.duration}
+                          onChange={(e) => {
+                            const newDur = parseFloat(e.target.value);
+                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, duration: newDur } : c));
+                            setSelectedTimelineClip(prev => prev ? { ...prev, duration: newDur } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, { duration: newDur }, true);
+                          }}
+                          className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-info"
+                        />
+                        <p className="text-[10px] text-ed-text-faint">Decrease duration from left to right on the A2 track.</p>
+                      </div>
+
+                      {/* Trim Start from Left */}
+                      <div className="space-y-1.5 pt-2">
+                        <div className="flex justify-between items-center">
+                          <label className="text-xs font-semibold text-ed-text-dim">Trim Start (Left edge)</label>
+                          <span className="text-xs font-bold text-ed-info font-mono">{(selectedTimelineClip.trimStart || 0).toFixed(1)}s</span>
+                        </div>
+                        <input 
+                          type="range"
+                          min="0"
+                          max={(selectedTimelineClip.asset.duration || 15) - 0.5}
+                          step="0.5"
+                          value={selectedTimelineClip.trimStart || 0}
+                          onChange={(e) => {
+                            const newTrim = parseFloat(e.target.value);
+                            const maxDur = selectedTimelineClip.asset.duration || 15;
+                            const remainingDur = Math.max(0.5, maxDur - newTrim);
+                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { 
+                              ...c, 
+                              trimStart: newTrim,
+                              duration: Math.min(c.duration, remainingDur)
+                            } : c));
+                            setSelectedTimelineClip(prev => prev ? {
+                              ...prev,
+                              trimStart: newTrim,
+                              duration: Math.min(prev.duration, remainingDur)
+                            } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, {
+                              trim_start: newTrim,
+                              duration: Math.min(selectedTimelineClip.duration, remainingDur),
+                            }, true);
+                          }}
+                          className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-info"
+                        />
+                        <p className="text-[10px] text-ed-text-faint">Trim off the beginning of the audio from left to right.</p>
+                      </div>
+
+                      {/* Start Time on Timeline */}
+                      <div className="space-y-1.5 pt-2">
+                        <div className="flex justify-between items-center">
+                          <label className="text-xs font-semibold text-ed-text-dim">Timeline Position (Start Time)</label>
+                          <span className="text-xs font-bold text-ed-text-dim font-mono">{selectedTimelineClip.startTime.toFixed(1)}s</span>
+                        </div>
+                        <input 
+                          type="number"
+                          step="0.5"
+                          min="0"
+                          value={selectedTimelineClip.startTime}
+                          onChange={(e) => {
+                            const newStart = Math.max(0, parseFloat(e.target.value) || 0);
+                            setTimelineClips(prev => prev.map(c => c.id === selectedTimelineClip.id ? { ...c, startTime: newStart } : c));
+                            setSelectedTimelineClip(prev => prev ? { ...prev, startTime: newStart } : null);
+                            persistTimelineItemFields(selectedTimelineClip.id, { start_time: newStart }, true);
+                          }}
+                          className="w-full p-2 text-xs border border-ed-border rounded-md font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="pt-4 border-t border-ed-border flex items-center justify-end">
+                      <button 
+                        onClick={() => {
+                          setTimelineClips(prev => prev.filter(c => c.id !== selectedTimelineClip.id));
+                          setSelectedTimelineClip(null);
+                          setSelectedSceneTrack(null);
+                        }}
+                        className="bg-ed-danger-soft hover:bg-ed-danger-soft text-ed-danger border border-ed-danger-border text-xs font-bold py-2 px-3 rounded-md transition-colors flex items-center gap-1.5"
+                      >
+                        <Trash2 size={14} /> Delete Clip
+                      </button>
+                    </div>
+                  </div>
+                ) : !selectedScene ? (
+                   /* Empty state only — the project-level controls that used to live
+                      here now render below, outside this branch, so they survive a
+                      selection instead of disappearing on the first block click. */
+                   <div className="flex flex-col items-center justify-center text-center px-4 py-12 opacity-70">
+                     <Layers size={40} className="text-ed-text-faint mb-4" />
+                     <h3 className="text-sm font-semibold text-ed-text-dim mb-2">No Scene Selected</h3>
+                     <p className="text-xs text-ed-text-dim">Click a scene block on the timeline below to view and edit its properties.</p>
+                   </div>
+                ) : (
+                   <div className="flex flex-col gap-4 flex-1">
+                     <div className="flex items-center gap-3 pb-3 border-b border-ed-border">
+                        <div className="bg-ed-accent-soft text-ed-accent-text w-8 h-8 rounded-lg flex items-center justify-center font-bold shadow-sm shrink-0">
+                          {selectedScene.sequence_number}
+                        </div>
+                        <div className="flex items-center justify-between flex-1">
+                          <h3 className="font-bold text-ed-text text-sm">Scene Properties</h3>
+                          <span className="text-[10px] text-ed-text-faint font-mono bg-ed-well border border-ed-border px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
+                        </div>
+                     </div>
+                     
+                      {/* ── Visual Generation Accordion ──
+                          flex-1 only while expanded: applied unconditionally, this
+                          div would keep claiming the panel's remaining flex space even
+                          collapsed to just its header button, leaving a tall blank box
+                          above Voiceover/Overlay/Ken Burns/Transition. */}
+                     <div ref={visualAccordionRef} className={`border border-ed-border rounded-lg overflow-hidden shadow-sm flex flex-col ${isVisualExpanded ? 'flex-1' : ''}`}>
+                        <button
+                          onClick={() => setIsVisualExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
+                            <ImageIcon size={14} className="text-ed-info" /> Visual Generation
+                          </span>
+                          {isVisualExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
+                        </button>
+                        {isVisualExpanded && (() => {
+                          // A scene's own mode wins; otherwise it inherits the project
+                          // default. Same resolution order the generation handlers use,
+                          // so the panel can never show controls for a mode that a
+                          // click would not actually run.
+                          const sceneMode = selectedScene.generation_mode || globalGenerationMode || 'ai_video';
+                          const isAiMode = sceneMode === 'ai_video' || sceneMode === 'ai_image';
+
+                          return (
+                          <div className="p-3 bg-ed-surface border-t border-ed-border space-y-3 flex-1 flex flex-col">
+
+                           <div>
+                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">How this scene is generated</label>
+                              <select
+                                value={sceneMode}
+                                onChange={(e: any) => updateSceneDetails(selectedScene.id, 'generation_mode', e.target.value)}
+                                className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                              >
+                                <option value="ai_video">AI Video (Prompt)</option>
+                                <option value="ai_image">AI Image (Prompt)</option>
+                                <option value="project_media">Project Media (already uploaded / generated)</option>
+                                <option value="stock_media">Stock Media (Pexels / Pixabay)</option>
+                                <option value="static_theme">Static / Dark Theme</option>
+                                <option value="lip_sync">AI Lip Sync (Avatar)</option>
+                              </select>
+                           </div>
+
+                           {isAiMode && (
+                            <>
+                           {/* AI Model & Duration */}
+                           <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">AI Video Model</label>
+                                 <select
+                                   value={selectedScene.ai_model || selectedAiModel}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'ai_model', e.target.value)}
+                                   className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                 >
+                                   <optgroup label="Live — real render">
+                                     <option value="gemini-image">Google Gemini Pro Image</option>
+                                   </optgroup>
+                                   <optgroup label="Simulated — no API key configured">
+                                     <option value="fal-luma">Fal.ai Luma Dream</option>
+                                     <option value="fal-kling">Fal.ai Kling AI</option>
+                                     <option value="fal-minimax">Fal.ai Minimax</option>
+                                     <option value="gemini-veo">Google Gemini / Veo</option>
+                                     <option value="runway-gen3">Runway Gen-3</option>
+                                     <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                                   </optgroup>
+                                 </select>
+                              </div>
+                              <div>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Clip Duration</label>
+                                 <select
+                                   value={selectedScene.video_duration || 5}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'video_duration', Number(e.target.value))}
+                                   className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                 >
+                                   {/* Deepgram writes exact narration-aligned durations (e.g. 4.7s).
+                                       Surface that value so the select isn't blank and picking it back
+                                       doesn't silently snap the scene off the voiceover. */}
+                                   {selectedScene.video_duration != null && ![5, 8, 10].includes(Number(selectedScene.video_duration)) && (
+                                     <option value={selectedScene.video_duration}>
+                                       {Number(selectedScene.video_duration).toFixed(1)}s (narration-aligned)
+                                     </option>
+                                   )}
+                                   <option value={5}>5 seconds</option>
+                                   <option value={8}>8 seconds</option>
+                                   <option value={10}>10 seconds</option>
+                                 </select>
+                              </div>
+                           </div>
+
+                           {/* Media type. Generation still overwrites this from the
+                               provider's kind — newly generated media genuinely is
+                               whatever the model produced. This is here to correct an
+                               asset that was mislabeled on the way in (an upload whose
+                               type was misdetected), which previously left the scene
+                               stuck rendering an <img> for a video or vice versa with
+                               no way to fix it. */}
+                           <div>
+                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Media Type</label>
+                              <div className="grid grid-cols-2 gap-1 bg-ed-raised p-1 rounded-lg">
+                                {(['video', 'image'] as const).map((mediaType) => {
+                                  const isActive = (selectedScene.custom_media_type || 'video') === mediaType;
+                                  return (
+                                    <button
+                                      key={mediaType}
+                                      type="button"
+                                      onClick={() => updateSceneDetails(selectedScene.id, 'custom_media_type', mediaType)}
+                                      className={`flex items-center justify-center gap-1.5 py-1.5 rounded-md text-[11px] font-bold transition-all ${
+                                        isActive
+                                          ? 'bg-ed-surface text-ed-text shadow-sm'
+                                          : 'text-ed-text-dim hover:text-ed-text'
+                                      }`}
+                                    >
+                                      {mediaType === 'video' ? <Film size={12} /> : <ImageIcon size={12} />}
+                                      {mediaType === 'video' ? 'Video' : 'Image'}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                           </div>
+
+                           <textarea
+                             className="w-full bg-ed-surface border border-ed-border focus:border-ed-info-border focus:ring-4 focus:ring-ed-info-border rounded-lg p-3 text-sm text-ed-text transition-all resize-none min-h-[200px] flex-1 shadow-sm"
+                             value={selectedScene.final_video_prompt}
+                             onChange={(e) => updateSceneDetails(selectedScene.id, 'final_video_prompt', e.target.value)}
+                             onBlur={(e) => persistSceneFields(selectedScene.id, { final_video_prompt: e.target.value })}
+                             placeholder="Describe the visual scene in detail..."
+                           />
+                            </>
+                           )}
+
+                           {/* ── Project Media picker ──
+                               No provider call, no cost, no waiting: the asset already
+                               exists, so a click is a field write. That's why there is
+                               no "Apply" step and no Render button for this mode —
+                               there is nothing to render. */}
+                           {sceneMode === 'project_media' && (
+                             <div className="space-y-2 flex-1 flex flex-col min-h-0">
+                               {projectVisualAssets.length === 0 ? (
+                                 <div className="flex flex-col items-center justify-center text-center py-10 px-4 gap-2 border border-dashed border-ed-border rounded-lg">
+                                   <FolderOpen size={22} className="text-ed-text-faint" />
+                                   <p className="text-[11px] font-bold text-ed-text-dim">No media in this project yet</p>
+                                   <p className="text-[10px] text-ed-text-faint leading-relaxed">
+                                     Upload files in the Media tab, or generate a visual, and it will show up here for any scene to reuse.
+                                   </p>
+                                 </div>
+                               ) : (
+                                 <>
+                                   <div className="flex items-center justify-between">
+                                     <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">
+                                       Pick a visual
+                                     </label>
+                                     <span className="text-[10px] text-ed-text-faint">{projectVisualAssets.length} available</span>
+                                   </div>
+
+                                   <div className="grid grid-cols-3 gap-1.5 overflow-y-auto custom-scrollbar pr-0.5">
+                                     {projectVisualAssets.map(asset => {
+                                       const stagedHere = pendingProjectPick && pendingProjectPick.sceneId === selectedScene.id
+                                         ? pendingProjectPick.asset
+                                         : null;
+                                       const isStaged = stagedHere?.id === asset.id;
+                                       const isCurrent = !stagedHere && selectedScene.custom_media_url === (asset.persistedUrl || asset.url);
+                                       // Everything that isn't the staged pick greys out, so the
+                                       // one thing Apply would commit is unmistakable.
+                                       const isDimmed = Boolean(stagedHere) && !isStaged;
+                                       return (
+                                         <button
+                                           key={asset.id}
+                                           type="button"
+                                           onClick={() => setPendingProjectPick({ sceneId: selectedScene.id, asset })}
+                                           title={`${asset.name} — click to preview on this scene`}
+                                           className={`relative aspect-video rounded-md overflow-hidden border-2 bg-ed-raised group transition-all ${
+                                             isStaged
+                                               ? 'border-ed-info-border ring-2 ring-ed-info-border'
+                                               : isCurrent
+                                                 ? 'border-ed-ok-border'
+                                                 : 'border-ed-border hover:border-ed-info-border'
+                                           } ${isDimmed ? 'opacity-40 grayscale hover:opacity-70' : ''}`}
+                                         >
+                                           {asset.type === 'video' ? (
+                                             /* muted+playsInline so the browser will paint a poster frame
+                                                without autoplaying a wall of videos in the panel. */
+                                             <video src={asset.url} muted playsInline preload="metadata" className="w-full h-full object-cover" />
+                                           ) : (
+                                             <img src={asset.url} alt={asset.name} className="w-full h-full object-cover" />
+                                           )}
+
+                                           <span className="absolute top-0.5 left-0.5 bg-ed-media/60 text-white rounded px-1 py-0.5 flex items-center">
+                                             {asset.type === 'video' ? <Film size={8} /> : <ImageIcon size={8} />}
+                                           </span>
+
+                                           {isStaged && (
+                                             <span className="absolute top-0.5 right-0.5 bg-ed-info text-ed-base rounded-full p-0.5 flex items-center">
+                                               <Check size={8} />
+                                             </span>
+                                           )}
+                                           {/* Distinct from the staged marker on purpose: green means
+                                               "already saved on this scene", blue means "about to be". */}
+                                           {isCurrent && (
+                                             <span className="absolute top-0.5 right-0.5 bg-ed-ok text-ed-base rounded-full p-0.5 flex items-center" title="Currently used by this scene">
+                                               <Check size={8} />
+                                             </span>
+                                           )}
+
+                                           <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-ed-text/80 to-transparent text-white text-[8px] font-bold truncate px-1 py-0.5 text-left">
+                                             {asset.name}
+                                           </span>
+                                         </button>
+                                       );
+                                     })}
+                                   </div>
+
+                                   {pendingProjectPick && pendingProjectPick.sceneId === selectedScene.id ? (
+                                     <div className="space-y-1.5">
+                                       <div className="flex gap-1.5">
+                                         <button
+                                           onClick={() => applyProjectMediaToScene(selectedScene.id, pendingProjectPick.asset)}
+                                           className="flex-1 py-2 bg-ed-info hover:bg-ed-info text-ed-base text-xs font-bold rounded-md flex items-center justify-center gap-1.5 transition-colors"
+                                         >
+                                           <Check size={12} />
+                                           Apply to Scene {selectedScene.sequence_number}
+                                         </button>
+                                         <button
+                                           onClick={() => setPendingProjectPick(null)}
+                                           title="Discard this pick"
+                                           className="px-2.5 py-2 bg-ed-surface border border-ed-border hover:bg-ed-well text-ed-text-dim text-xs font-bold rounded-md transition-colors"
+                                         >
+                                           <X size={12} />
+                                         </button>
+                                       </div>
+                                       <p className="text-[10px] text-ed-warn font-medium text-center">
+                                         Previewing only — nothing is saved until you apply.
+                                       </p>
+                                     </div>
+                                   ) : (
+                                     <p className="text-[10px] text-ed-text-faint leading-relaxed">
+                                       Click a thumbnail to preview it on this scene, then apply. No generation, no cost. Includes uploads as well as visuals generated for other scenes.
+                                     </p>
+                                   )}
+                                 </>
+                               )}
+                             </div>
+                           )}
+
+                           {sceneMode === 'stock_media' && (
+                             <div className="space-y-3">
+                               <div className="grid grid-cols-2 gap-2">
+                                 <div>
+                                   <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Platform</label>
+                                   <select
+                                     value={globalStockProvider}
+                                     onChange={(e: any) => { setGlobalStockProvider(e.target.value); setStockSearchResults(null); }}
+                                     className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                   >
+                                     <option value="pexels">Pexels</option>
+                                     <option value="pixabay">Pixabay</option>
+                                   </select>
+                                 </div>
+                                 <div>
+                                   <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Media Type</label>
+                                   <select
+                                     value={globalStockType}
+                                     onChange={(e: any) => { setGlobalStockType(e.target.value); setStockSearchResults(null); }}
+                                     className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                   >
+                                     <option value="video">Video</option>
+                                     <option value="image">Image</option>
+                                   </select>
+                                 </div>
+                               </div>
+
+                               <div>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Search</label>
+                                 <div className="flex gap-2">
+                                   <input
+                                     type="text"
+                                     placeholder="Falls back to this scene's AI prompt…"
+                                     value={selectedScene.stock_search_query || ''}
+                                     onChange={(e: any) => updateSceneDetails(selectedScene.id, 'stock_search_query', e.target.value)}
+                                     onKeyDown={(e) => {
+                                       if (e.key === 'Enter') {
+                                         handleStockSearch(
+                                           selectedScene.id,
+                                           selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
+                                         );
+                                       }
+                                     }}
+                                     className="w-full bg-ed-surface border border-ed-border focus:border-ed-info-border rounded-md p-2 text-xs text-ed-text outline-none shadow-sm"
+                                   />
+                                   <button
+                                     onClick={() => handleStockSearch(
+                                       selectedScene.id,
+                                       selectedScene.stock_search_query || selectedScene.final_video_prompt || ''
+                                     )}
+                                     disabled={isSearchingStock}
+                                     className="px-3 bg-ed-raised border border-ed-border rounded-md text-xs font-bold text-ed-text-dim hover:bg-ed-hover disabled:opacity-50 flex items-center gap-1.5 shrink-0"
+                                   >
+                                     {isSearchingStock ? <Loader2 size={12} className="animate-spin" /> : null}
+                                     Search
+                                   </button>
+                                 </div>
+                               </div>
+
+                               {stockSearchResults && stockSearchResults.sceneId === selectedScene.id && (
+                                 stockSearchResults.results.length > 0 ? (
+                                   <div className="grid grid-cols-3 gap-2">
+                                     {stockSearchResults.results.map((r) => {
+                                       const isPending = !!pendingStockPick && pendingStockPick.sceneId === selectedScene.id && pendingStockPick.result.id === r.id;
+                                       return (
+                                         <button
+                                           key={r.id}
+                                           type="button"
+                                           onClick={() => handleSelectStockResult(selectedScene.id, r)}
+                                           title="Preview this for the scene"
+                                           className={`relative aspect-video rounded-md overflow-hidden border-2 transition-all group ${
+                                             isPending ? 'border-ed-info-border ring-2 ring-ed-info-border' : 'border-ed-border hover:border-ed-info-border'
+                                           }`}
+                                         >
+                                           {r.thumbnailUrl ? (
+                                             <img src={r.thumbnailUrl} alt="" className="w-full h-full object-cover" />
+                                           ) : (
+                                             <div className="w-full h-full bg-ed-raised flex items-center justify-center">
+                                               <Film size={14} className="text-ed-text-faint" />
+                                             </div>
+                                           )}
+                                           {isPending && (
+                                             <span className="absolute top-1 right-1 bg-ed-info text-ed-base rounded-full p-0.5">
+                                               <Check size={10} />
+                                             </span>
+                                           )}
+                                           <span className="absolute inset-0 bg-ed-media/0 group-hover:bg-ed-media/10 transition-colors" />
+                                         </button>
+                                       );
+                                     })}
+                                   </div>
+                                 ) : (
+                                   <p className="text-[10px] text-ed-text-dim italic">No results — try a different search term.</p>
+                                 )
+                               )}
+
+                               {pendingStockPick && pendingStockPick.sceneId === selectedScene.id && (
+                                 <button
+                                   onClick={() => handleApplyStockResult(selectedScene.id, pendingStockPick.result)}
+                                   disabled={isApplyingStock}
+                                   className="w-full py-2 bg-ed-info hover:bg-ed-info disabled:opacity-50 text-ed-base text-xs font-bold rounded-md flex items-center justify-center gap-1.5"
+                                 >
+                                   {isApplyingStock ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />}
+                                   {isApplyingStock ? 'Saving…' : 'Apply to Scene'}
+                                 </button>
+                               )}
+
+                               <p className="text-[10px] text-ed-text-dim italic leading-relaxed">
+                                 Free stock media. Click a result to preview it, then Apply to save it to this scene.
+                               </p>
+                             </div>
+                           )}
+
+                           {sceneMode === 'static_theme' && (
+                             <p className="text-[10px] text-ed-text-dim italic leading-relaxed bg-ed-well border border-ed-border rounded-md px-2.5 py-2">
+                               This scene renders as a solid dark theme — useful for text-only slides. Costs nothing to generate.
+                             </p>
+                           )}
+
+                           {sceneMode === 'lip_sync' && (
+                             <div className="space-y-2">
+                               <div>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Character Image URL</label>
+                                 <input
+                                   type="text"
+                                   placeholder="https://… portrait image or video"
+                                   value={selectedScene.lip_sync_character_url || ''}
+                                   onChange={(e: any) => updateSceneDetails(selectedScene.id, 'lip_sync_character_url', e.target.value)}
+                                   className="w-full bg-ed-surface border border-ed-border rounded-md p-2 text-xs text-ed-text outline-none shadow-sm"
+                                 />
+                               </div>
+                               <p className="text-[10px] text-ed-warn bg-ed-warn-soft border border-ed-warn-border rounded-md px-2.5 py-2 leading-relaxed">
+                                 No lip-sync provider is wired up yet, so this scene will be skipped by bulk generation.
+                                 The plan is bytedance/latentsync via Replicate, driven by this scene&rsquo;s voiceover.
+                               </p>
+                             </div>
+                           )}
+
+                           <div className="flex flex-col gap-3 mt-2">
+                              {/* Inline Toggle Switch */}
+                              <div className="flex flex-col gap-1 px-2 py-1.5 bg-ed-well rounded-lg border border-ed-border/60">
+                                <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-bold text-ed-text-dim">Apply this setup to all scenes</span>
+                                <button
+                                  onClick={() => {
+                                    const turningOn = generateMode !== 'all';
+                                    setGenerateMode(turningOn ? 'all' : 'individual');
+                                    // Propagate on the way ON only. Flipping it back off
+                                    // must not revert anything — the scenes have been
+                                    // reconfigured, and silently undoing that would be a
+                                    // worse surprise than leaving it.
+                                    if (turningOn) applyVisualSetupToAllScenes(selectedScene);
+                                  }}
+                                  className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${
+                                    generateMode === 'all' ? 'bg-ed-accent' : 'bg-ed-border-strong'
+                                  }`}
+                                >
+                                  <span
+                                    className={`inline-block h-3 w-3 transform rounded-full bg-ed-surface shadow-sm transition-transform ${
+                                      generateMode === 'all' ? 'translate-x-3.5' : 'translate-x-0.5'
+                                    }`}
+                                  />
+                                </button>
+                                </div>
+                                {generateMode === 'all' && (
+                                  <p className="text-[10px] text-ed-accent-text leading-relaxed">
+                                    All {scenesInSameActAs(selectedScene).length} scene{scenesInSameActAs(selectedScene).length === 1 ? '' : 's'}
+                                    {isLongForm ? ` in Act ${selectedScene.act_number ?? 1}` : ''} now use <strong>{sceneMode.replace('_', ' ')}</strong>
+                                    {isAiMode ? <> · <strong>{selectedScene.ai_model || selectedAiModel}</strong></> : null}.
+                                    Durations and prompts are untouched.
+                                  </p>
+                                )}
+                              </div>
+
+                              {/* Primary Action Button */}
+                              {generateMode === 'all' ? (
+                                <button
+                                  onClick={handleGenerateAllVisuals}
+                                  disabled={isGeneratingAllVisuals}
+                                  className="w-full py-2.5 bg-ed-accent hover:bg-ed-accent-hover disabled:opacity-50 text-ed-base text-[11px] font-bold rounded-lg shadow-sm transition-all flex justify-center items-center gap-2"
+                                  title="Automatically generate videos for Scene 1 to N"
+                                >
+                                  {isGeneratingAllVisuals ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+                                  {isGeneratingAllVisuals ? "Generating 1→N..." : "Generate All Scenes (1→N)"}
+                                </button>
+                              ) : isAiMode ? (
+                                <button
+                                  onClick={() => handleGenerateSceneVisual(selectedScene.id, selectedScene.final_video_prompt, selectedScene.ai_model || selectedAiModel, selectedScene.video_duration || 5)}
+                                  disabled={isGeneratingVisualId === selectedScene.id}
+                                  className="w-full py-2.5 bg-ed-info hover:bg-ed-info disabled:opacity-50 text-ed-base text-[11px] font-bold rounded-lg shadow-sm transition-colors flex justify-center items-center gap-2"
+                                >
+                                  {isGeneratingVisualId === selectedScene.id ? (
+                                    <Loader2 size={14} className="animate-spin" />
+                                  ) : (
+                                    <ImageIcon size={14} />
+                                  )}
+                                  {selectedScene.custom_media_url ? "Regenerate Current Scene" : "Render Current Scene"}
+                                </button>
+                              ) : null}
+                           </div>
+                          </div>
+                          );
+                        })()}
+                     </div>
+                     {/* ── Voiceover Accordion ── */}
+                     <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm">
+                        <button
+                          onClick={() => setIsVoiceoverExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
+                            <Volume2 size={14} className="text-ed-ok" /> Voiceover Text
+                          </span>
+                          {isVoiceoverExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
+                        </button>
+                        {isVoiceoverExpanded && (
+                          <div className="p-3 bg-ed-surface border-t border-ed-border space-y-3">
+                           {/*
+                             Read-only: this is what "Generate audio" / "Re-record" on the
+                             Scene Board actually uses for this channel's Act narration — it
+                             comes from Settings > Channel, not from anything on this page.
+                             Shown here so a user reviewing a scene doesn't have to leave the
+                             editor to confirm which voice their audio will come out in. The
+                             "Voice Artist" override below this is a SEPARATE, per-scene
+                             control for single-scene regeneration only; it does not change
+                             the channel default shown here.
+                           */}
+                           <div className="flex items-center justify-between text-[10px] font-medium text-ed-text-dim bg-ed-well border border-ed-border rounded-lg px-2.5 py-1.5">
+                             <span>Channel default voice</span>
+                             <span className="font-bold text-ed-text">
+                               {channelVoiceId
+                                 ? (availableVoices.find((v) => v.id === channelVoiceId)?.name ?? channelVoiceId)
+                                 : "Auto (Voice Studio default)"}
+                             </span>
+                           </div>
+                           <textarea
+                             className="w-full bg-ed-surface border border-ed-border focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border rounded-lg p-3 text-sm text-ed-text transition-all resize-none min-h-[80px] shadow-sm"
+                             value={selectedScene.voice_over_beat}
+                             onChange={(e) => updateSceneDetails(selectedScene.id, 'voice_over_beat', e.target.value)}
+                             onBlur={(e) => persistSceneFields(selectedScene.id, { voice_over_beat: e.target.value })}
+                           />
+                           {availableVoices.length > 0 && (
+                             <div>
+                               <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">
+                                 Voice Artist
+                               </label>
+                               <select
+                                 value={selectedVoiceId}
+                                 onChange={(e) => setSelectedVoiceId(e.target.value)}
+                                 className="w-full bg-ed-surface border border-ed-border rounded-lg p-1.5 text-xs font-bold text-ed-text focus:outline-none focus:ring-2 focus:ring-ed-accent-border"
+                               >
+                                 <option value="">Auto (Default for active engine)</option>
+                                 {availableVoices.map((v) => (
+                                   <option key={v.id} value={v.id}>
+                                     {v.name} ({v.engine} · {v.gender || "voice"})
+                                   </option>
+                                 ))}
+                               </select>
+                             </div>
+                           )}
+                           <div className="flex justify-between items-center">
+                              <span className="text-[10px] font-medium text-ed-text-dim flex items-center gap-1"><Clock size={12}/> Est. duration: {selectedScene.video_duration}s</span>
+                              <button 
+                                onClick={() => handleRegenerateSingleAudio(selectedScene.id, selectedScene.voice_over_beat)}
+                                disabled={generatingSceneId === selectedScene.id}
+                                className="text-[10px] px-3 py-1.5 bg-ed-surface hover:bg-ed-well text-ed-text-dim font-bold rounded-md border border-ed-border shadow-sm transition-colors flex items-center gap-1.5"
+                              >
+                                {generatingSceneId === selectedScene.id ? <Loader2 size={12} className="animate-spin text-ed-ok" /> : <Volume2 size={12} className="text-ed-ok"/>}
+                                {selectedScene.audio_url ? "Regenerate" : "Generate"}
+                              </button>
+                           </div>
+                           {selectedScene.audio_url && (
+                             <div className="bg-ed-well border border-ed-border rounded-lg p-2 shadow-sm">
+                               <audio src={selectedScene.audio_url} controls className="w-full h-8 outline-none" />
+                             </div>
+                           )}
+                          </div>
+                        )}
+                     </div>
+
+                     {/* ── Text Overlay Accordion ── */}
+                     <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm">
+                        <button
+                          onClick={() => setIsOverlayExpanded(prev => !prev)}
+                          className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
+                        >
+                          <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
+                            <Type size={14} className="text-ed-warn" /> Text Overlay
+                          </span>
+                          {isOverlayExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
+                        </button>
+                        {isOverlayExpanded && (
+                          <div className="p-3 bg-ed-surface border-t border-ed-border space-y-3">
+                            {/* Overlay Text */}
+                            <div>
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Overlay Text</label>
+                              <input
+                                type="text"
+                                className="w-full bg-ed-surface border border-ed-border focus:border-ed-warn-border focus:ring-4 focus:ring-ed-warn-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                                value={selectedScene.overlay_text || ''}
+                                onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_text', e.target.value)}
+                                placeholder="e.g. Welcome to the future!"
+                              />
+                            </div>
+                            {/* Preset & Color */}
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Animation</label>
+                                <select
+                                  value={selectedScene.overlay_preset || 'none'}
+                                  onChange={(e: any) => updateSceneDetails(selectedScene.id, 'overlay_preset', e.target.value)}
+                                  className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                >
+                                  <option value="none">None</option>
+                                  <option value="slide">Slide In</option>
+                                  <option value="pop">Pop In (Hormozi)</option>
+                                  <option value="typewriter">Typewriter</option>
+                                  <option value="lower-third">Lower Third</option>
+                                </select>
+                              </div>
+                              <div>
+                                <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Color</label>
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="color"
+                                    value={selectedScene.overlay_color || '#FFFFFF'}
+                                    onChange={(e) => updateSceneDetails(selectedScene.id, 'overlay_color', e.target.value)}
+                                    className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                                  />
+                                  <span className="text-[10px] text-ed-text-dim font-mono">{selectedScene.overlay_color || '#FFFFFF'}</span>
+                                </div>
+                              </div>
+                            </div>
+                            {selectedScene.overlay_text && selectedScene.overlay_preset !== 'none' && (
+                              <p className="text-[10px] text-ed-warn font-medium bg-ed-warn-soft border border-ed-warn-border rounded-md px-2 py-1">
+                                ✨ Preview this overlay in the main video player above.
+                              </p>
+                            )}
+                          </div>
+                        )}
+                     </div>
+
+                      {/* ── Ken Burns ──
+                          A single checkbox rather than an accordion like Overlay and
+                          Transition: there is nothing to expand into, the effect has
+                          no sub-settings once it's on. Image-only — video scenes carry
+                          their own motion, and the renderer ignores the flag for them.
+                          Deliberately its own control and not a "Transition In" option:
+                          transition is movement BETWEEN scenes, this is movement WITHIN
+                          one, and a scene can have both at once. */}
+                     {selectedScene.custom_media_type !== 'video' && (
+                       <div className="relative">
+                         <div className="flex items-center gap-2 px-3 py-2.5 border border-ed-border rounded-lg shadow-sm bg-ed-well hover:bg-ed-raised transition-colors">
+                           <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                             <input
+                               type="checkbox"
+                               checked={Boolean(selectedScene.ken_burns_enabled)}
+                               onChange={(e) => updateSceneDetails(selectedScene.id, 'ken_burns_enabled', e.target.checked)}
+                               className="accent-ed-accent-text"
+                             />
+                             <span className="text-xs font-bold text-ed-text-dim">Ken Burns pan &amp; zoom</span>
+                           </label>
+                           {/* Bulk sibling of the checkbox above: that one edits THIS
+                               scene, this menu applies the setting to every image scene
+                               in the project in a single action. */}
+                           <button
+                             type="button"
+                             onClick={() => setShowKenBurnsMenu(prev => !prev)}
+                             className="flex items-center gap-0.5 text-[10px] font-bold text-ed-text-faint hover:text-ed-accent-text transition-colors shrink-0"
+                             title="Apply to all image scenes"
+                           >
+                             Bulk <ChevronDown size={12} />
+                           </button>
+                         </div>
+
+                         {showKenBurnsMenu && (
+                           <div className="absolute right-0 top-full mt-1 w-56 bg-ed-surface border border-ed-border rounded-lg shadow-xl py-1 z-50">
+                             <button
+                               onClick={() => applyKenBurnsToAllImageScenes(true)}
+                               className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
+                             >
+                               Enable for all image scenes
+                             </button>
+                             <button
+                               onClick={() => applyKenBurnsToAllImageScenes(false)}
+                               className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
+                             >
+                               Disable for all image scenes
+                             </button>
+                           </div>
+                         )}
+                       </div>
+                     )}
+
+                      {/* ── Transition Accordion ──
+                          The transition belongs to the scene it plays INTO, so the
+                          first scene has nothing to configure. */}
+                     {(() => {
+                       const sceneIndex = scenes.findIndex(s => s.id === selectedScene.id);
+                       const isFirstScene = sceneIndex <= 0;
+                       const transitionType = (selectedScene.transition_type || 'none') as TransitionType;
+                       const maxSeconds = maxTransitionSeconds(remotionScenes, sceneIndex, remotionFps);
+                       const currentSeconds =
+                         typeof selectedScene.transition_duration === 'number'
+                           ? selectedScene.transition_duration
+                           : 0.5;
+
+                       return (
+                         <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm">
+                           <button
+                             onClick={() => setIsTransitionExpanded(prev => !prev)}
+                             className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
+                           >
+                             <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
+                               <Layers size={14} className="text-ed-accent-text" /> Transition In
+                             </span>
+                             {isTransitionExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
+                           </button>
+                           {isTransitionExpanded && (
+                             <div className="p-3 bg-ed-surface border-t border-ed-border space-y-2.5">
+                               {/* Drag source, independent of `isFirstScene` below on
+                                   purpose: these cards target whichever scene block they
+                                   land on, not necessarily this selected one, so they
+                                   stay usable even while scene 1 (which can't itself take
+                                   a transition) is selected. A click still applies to
+                                   THIS scene as a one-step alternative to the dropdown —
+                                   same target and same first-scene rule as it has. */}
+                               <div>
+                                 <label className="block text-[10px] font-bold text-ed-accent-text uppercase tracking-wider mb-1.5">
+                                   Visual Transition
+                                 </label>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">
+                                   Drag onto any scene, or click to apply to this one
+                                 </label>
+                                 <div className="grid grid-cols-3 gap-1.5">
+                                   {TRANSITION_CARDS.map((card) => {
+                                     const isActive = !isFirstScene && transitionType === card.type;
+                                     return (
+                                       <button
+                                         key={card.type}
+                                         type="button"
+                                         draggable
+                                         onDragStart={(e) => {
+                                           e.dataTransfer.setData(
+                                             'text/plain',
+                                             JSON.stringify({ type: 'transition', transitionType: card.type })
+                                           );
+                                           // A second, dedicated MIME type purely as a marker: dataTransfer
+                                           // payloads set via 'text/plain' can't be READ during dragover
+                                           // (browsers only expose that during drop, for security), but
+                                           // `.types` — which type names are present — IS readable during
+                                           // dragover. The V1 scene blocks check for this type name to know
+                                           // "a transition card is over me" and light up their drop-target
+                                           // ring, without needing to decode the JSON early.
+                                           e.dataTransfer.setData('application/x-transition-card', card.type);
+                                           e.dataTransfer.effectAllowed = 'copy';
+                                         }}
+                                         onDragEnd={() => setTransitionDragOverSceneId(null)}
+                                         onClick={() => {
+                                           if (isFirstScene) return;
+                                           applyTransitionToScene(selectedScene.id, card.type);
+                                         }}
+                                         title={
+                                           isFirstScene
+                                             ? 'The first scene has no preceding scene to transition from — drag this onto a later scene instead'
+                                             : `Click to apply to Scene ${sceneIndex + 1}, or drag onto any scene on the timeline`
+                                         }
+                                         className={`flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border text-center cursor-grab active:cursor-grabbing transition-colors ${
+                                           isActive
+                                             ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text'
+                                             : 'border-ed-border bg-ed-surface text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft/40'
+                                         }`}
+                                       >
+                                         <card.icon size={16} style={{ animation: card.sampleAnimation }} />
+                                         <span className="text-[9px] font-bold leading-tight">{card.label}</span>
+                                       </button>
+                                     );
+                                   })}
+                                 </div>
+                               </div>
+
+                               {isFirstScene ? (
+                                 <p className="text-[11px] text-ed-text-dim bg-ed-well border border-ed-border rounded-md px-2.5 py-2 leading-relaxed">
+                                   The first scene has no preceding scene to transition from.
+                                 </p>
+                               ) : (
+                                 <>
+                                   <div>
+                                     <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Style</label>
+                                     <select
+                                       value={transitionType}
+                                       onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_type', e.target.value)}
+                                       className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                                     >
+                                       <option value="none">Cut (no transition)</option>
+                                       <option value="crossfade">Crossfade / Dissolve</option>
+                                       <option value="slide">Slide / Push</option>
+                                       <option value="zoom">Smooth Zoom</option>
+                                       <option value="glitch">Glitch</option>
+                                       <option value="light-leak">Wipe / Light Leak</option>
+                                     </select>
+                                   </div>
+
+                                   {transitionType !== 'none' && (
+                                     <div>
+                                       <div className="flex items-center justify-between mb-1">
+                                         <label className="text-[10px] font-bold text-ed-text-dim">Duration</label>
+                                         <span className="text-[10px] font-bold text-ed-accent-text">
+                                           {Math.min(currentSeconds, maxSeconds).toFixed(2)}s
+                                         </span>
+                                       </div>
+                                       {/* Max comes from the same clamp the renderer applies, so the
+                                           slider can never offer a value that would be silently
+                                           reduced at render time. */}
+                                       <input
+                                         type="range"
+                                         min={0.1}
+                                         max={Math.max(0.1, maxSeconds)}
+                                         step={0.05}
+                                         value={Math.min(currentSeconds, Math.max(0.1, maxSeconds))}
+                                         onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_duration', Number(e.target.value))}
+                                         className="w-full accent-ed-accent-text"
+                                       />
+                                       <p className="text-[10px] text-ed-text-faint mt-1 leading-relaxed">
+                                         Capped at half the shorter neighbouring scene ({maxSeconds.toFixed(2)}s here).
+                                         Transitions never change total video length.
+                                       </p>
+                                     </div>
+                                   )}
+                                 </>
+                               )}
+
+                               {/* ── Transition Sound ──
+                                   Deliberately separated from Visual Transition above by
+                                   its own heading and a divider, not folded into the same
+                                   grid — these are a different kind of thing (an audio
+                                   stinger on A2, not a per-scene field) with a different
+                                   drop target. Drag-only, same as the visual cards' drag
+                                   path: there's no "click to apply to this scene" here,
+                                   because a transition SOUND isn't scoped to a scene at
+                                   all — it belongs to whichever cut you drop it on, which
+                                   is why it stays draggable from this panel no matter
+                                   which scene (including the first) happens to be
+                                   selected. */}
+                               <div className="pt-2.5 border-t border-ed-border">
+                                 <label className="block text-[10px] font-bold text-ed-info uppercase tracking-wider mb-1.5">
+                                   Transition Sound
+                                 </label>
+                                 <label className="block text-[10px] font-bold text-ed-text-dim mb-1">
+                                   Drag onto A2, centered on a scene cut. Click to preview.
+                                 </label>
+                                 <div className="grid grid-cols-3 gap-1.5">
+                                   {TRANSITION_MUSIC_PRESETS.map((preset) => (
+                                     <button
+                                       key={preset.key}
+                                       type="button"
+                                       draggable
+                                       onDragStart={(e) => {
+                                         e.dataTransfer.setData(
+                                           'text/plain',
+                                           JSON.stringify({ type: 'transition-music', presetKey: preset.key })
+                                         );
+                                         // Marker MIME so A2's onDragOver can tell a music-preset
+                                         // drag is in flight without decoding JSON on every event —
+                                         // same reasoning as the visual cards' own marker type.
+                                         e.dataTransfer.setData('application/x-transition-music', preset.key);
+                                         e.dataTransfer.effectAllowed = 'copy';
+                                         setIsDraggingMusicPreset(true);
+                                       }}
+                                       onDragEnd={() => {
+                                         setIsDraggingMusicPreset(false);
+                                         setMusicDragNearestBoundaryIdx(null);
+                                       }}
+                                       onClick={() => {
+                                         // Preview only — applying happens via drag, since a
+                                         // transition sound has no "currently selected scene" to
+                                         // apply to on click the way a visual transition does.
+                                         new Audio(preset.url).play().catch(() => {});
+                                       }}
+                                       title={`Preview "${preset.label}", or drag onto A2 to apply it to a scene cut`}
+                                       className="flex flex-col items-center gap-1 px-1.5 py-2 rounded-md border border-ed-border bg-ed-surface text-ed-text-dim text-center cursor-grab active:cursor-grabbing hover:border-ed-info-border hover:bg-ed-info-soft/40 transition-colors"
+                                     >
+                                       <Music size={16} />
+                                       <span className="text-[9px] font-bold leading-tight">{preset.label}</span>
+                                     </button>
+                                   ))}
+                                 </div>
+                               </div>
+                             </div>
+                           )}
+                         </div>
+                       );
+                     })()}
+
+                   </div>
+                )}
+
+                {/* ── Project (whole-video) accordion ──
+                    Sibling of the selection branches above, not part of any of
+                    them, so summary/voice/narration stay reachable no matter what
+                    is selected. mt-auto pins it to the bottom of the panel when a
+                    scene's expanded Visual Generation accordion claims flex-1;
+                    shrink-0 stops it collapsing when that content is tall. */}
+                <div className="mt-auto pt-4 shrink-0">
+                  <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm">
+                    <button
+                      onClick={() => setIsProjectExpanded(prev => !prev)}
+                      className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
+                    >
+                      <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
+                        <Layers size={14} className="text-ed-accent-text" /> Project
+                      </span>
+                      <span className="flex items-center gap-2">
+                        {/* Status stays visible while collapsed — the whole point of
+                            the badge is answering "is narration done?" at a glance. */}
+                        {masterAudioUrl && !isProjectExpanded && (
+                          <span className="flex items-center gap-1.5">
+                            <span className="w-1.5 h-1.5 rounded-full bg-ed-ok flex-none" />
+                            <span className="text-[10px] font-bold text-ed-ok">
+                              {masterAudioDuration > 0 ? `${Math.round(masterAudioDuration)}s` : 'Ready'}
+                            </span>
+                          </span>
+                        )}
+                        {isProjectExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
+                      </span>
+                    </button>
+
+                    {isProjectExpanded && (
+                      <div className="p-3 bg-ed-surface border-t border-ed-border">
+                        <p className="text-sm text-ed-text font-bold mb-1 line-clamp-2">{initialProject.topic}</p>
+                        <p className="text-xs text-ed-text-dim mb-3 font-medium">{scenes.length} Scenes • {Math.round(contentDuration)} seconds</p>
+
+                        {isLongForm ? (
+                          <div className="mb-3 p-2 bg-ed-accent-soft border border-ed-accent-border rounded-lg">
+                            <div className="flex items-center gap-2">
+                              <div className={`w-2 h-2 rounded-full flex-none ${hasActNarration ? 'bg-ed-accent' : 'bg-ed-border-strong'}`} />
+                              <span className="text-[10px] font-bold text-ed-accent-text truncate">
+                                {actNarrations.length} of {actOutlines.length || '?'} acts narrated
+                                {hasActNarration ? ` · ${Math.round(actNarrationDuration)}s` : ''}
+                              </span>
+                            </div>
+                            <p className="text-[10px] text-ed-accent-text/80 mt-1 leading-relaxed">
+                              {hasActNarration
+                                ? 'Click any act on A1 to record, re-record, or approve its visuals.'
+                                : 'Click an act on A1 to generate its audio and get started.'}
+                            </p>
+                          </div>
+                        ) : masterAudioUrl && (
+                          <div className="flex items-center gap-2 mb-3 p-2 bg-ed-ok-soft border border-ed-ok-border rounded-lg">
+                            <div className="w-2 h-2 rounded-full bg-ed-ok flex-none" />
+                            <span className="text-[10px] font-bold text-ed-ok truncate">
+                              Narration ready{masterAudioDuration > 0 ? ` · ${Math.round(masterAudioDuration)}s` : ' · on A1'}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Bulk finish-the-rest option. Per-act approval
+                            (`handleApproveActVisuals`, on each Act block) is the
+                            primary path now — this is for whoever has reviewed every
+                            act's audio and just wants the remaining visual work done
+                            in one go rather than clicking through each act. Until an
+                            act is approved its scenes carry no `final_video_prompt` —
+                            the ~2-calls-per-scene visual pass is deliberately withheld
+                            per-act so rewriting one act never costs the others. */}
+                        {isLongForm && hasActNarration && projectStatus !== 'approved' && (
+                          <div className="mb-3">
+                            <button
+                              onClick={handleApproveAndGenerateVisuals}
+                              disabled={isApproving}
+                              className="w-full py-2.5 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 bg-ed-ok hover:bg-ed-ok text-ed-base"
+                            >
+                              {isApproving
+                                ? <><Loader2 size={16} className="animate-spin" /> Generating visuals…</>
+                                : <><CheckCircle2 size={16} /> Approve all remaining acts</>}
+                            </button>
+                            <p className="text-[10px] text-ed-text-dim mt-2 leading-relaxed">
+                              Builds a visual prompt for every <strong>narrated</strong> act not yet approved, sharing one cast across all of them. Acts without audio are skipped — visuals need the real timing narration provides. Takes a while; usually easier to approve acts one at a time from A1 as you finish each.
+                            </p>
+                          </div>
+                        )}
+
+                        {availableVoices.length > 0 && (
+                          <div className="mb-3">
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1.5">
+                              Voice Artist
+                            </label>
+                            <select
+                              value={selectedVoiceId}
+                              onChange={(e) => setSelectedVoiceId(e.target.value)}
+                              className="w-full bg-ed-surface border border-ed-border rounded-lg p-2 text-xs font-bold text-ed-text focus:outline-none focus:ring-2 focus:ring-ed-accent-border"
+                            >
+                              <option value="">Auto (Default for active engine)</option>
+                              {availableVoices.map((v) => (
+                                <option key={v.id} value={v.id}>
+                                  {v.name} ({v.engine} · {v.gender || "voice"})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        )}
+
+                        {/* Single-file narration — short/mid-form only. Long-form
+                            never shows this: it would write a whole-project
+                            `narration_url` that plays alongside the per-Act blocks
+                            above, which is exactly the double-playback hazard
+                            `CompositionAudioClip` warns about. Primary purple only for
+                            the first run — once narration exists this overwrites it
+                            and costs another TTS pass, so it drops to a secondary
+                            outline rather than staying the loudest thing in the panel. */}
+                        {!isLongForm && (
+                        <>
+                        <button
+                          onClick={handleGenerateFullNarration}
+                          disabled={isGeneratingNarration}
+                          className={`w-full py-2.5 rounded-lg text-sm font-bold shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 mb-2 ${
+                            masterAudioUrl && !isGeneratingNarration
+                              ? 'bg-ed-surface border border-ed-border text-ed-text-dim hover:bg-ed-well hover:border-ed-border-strong'
+                              : 'bg-ed-accent hover:bg-ed-accent-hover text-ed-base'
+                          }`}
+                        >
+                          {isGeneratingNarration ? <Loader2 size={16} className="animate-spin" /> : <Volume2 size={16} />}
+                          {isGeneratingNarration
+                            ? 'Generating Narration…'
+                            : masterAudioUrl
+                              ? 'Re-generate Narration'
+                              : 'Generate Full Narration'}
+                        </button>
+                        <p className="text-[10px] text-ed-text-faint text-center">One continuous audio on A1 · align V1 b-roll to match</p>
+                        </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Discoverability for the new Escape binding — shown only when
+                      there is actually a selection to clear. */}
+                  {(selectedScene || selectedTimelineClip || selectedOverlayClip) && (
+                    <p className="text-[10px] text-ed-text-faint text-center mt-2">
+                      Press <kbd className="px-1 py-0.5 bg-ed-raised border border-ed-border rounded font-mono text-[9px]">Esc</kbd> to deselect
+                    </p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* EXPORT TAB */}
+            {activeTab === 'export' && (
+              <div className="animate-in fade-in duration-200">
+                <h3 className="text-sm font-bold text-ed-text mb-4">Export Settings</h3>
+                <div className="space-y-4">
+                   <div>
+                     <label className="block text-xs font-bold text-ed-text-dim mb-1.5">Default AI Model</label>
+                     <select
+                       value={selectedAiModel}
+                       onChange={(e) => setSelectedAiModel(e.target.value as typeof selectedAiModel)}
+                       className="w-full bg-ed-surface border border-ed-border rounded-lg p-2.5 text-sm text-ed-text outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border shadow-sm font-medium"
+                     >
+                       <option value="gemini-image">Google Gemini Pro Image (Real)</option>
+                       <option value="mock-banana">Mock Generate (Free Test 🍌)</option>
+                       <option value="fal-luma">Fal.ai — Luma Dream Machine</option>
+                       <option value="fal-kling">Fal.ai — Kling Video</option>
+                       <option value="fal-minimax">Fal.ai — MiniMax</option>
+                       <optgroup label="Simulated — no API key configured">
+                         <option value="gemini-veo">Google Gemini / Veo</option>
+                         <option value="runway-gen3">Runway Gen-3</option>
+                       </optgroup>
+                     </select>
+                     <p className="text-[10px] text-ed-text-faint mt-1">Used by &ldquo;Generate All&rdquo; and as the fallback for scenes with no model set.</p>
+                   </div>
+                   <div>
+                     <label className="block text-xs font-bold text-ed-text-dim mb-1.5">Resolution</label>
+                     <select 
+                       value={exportResolution}
+                       onChange={(e: any) => setExportResolution(e.target.value)}
+                       className="w-full bg-ed-surface border border-ed-border rounded-lg p-2.5 text-sm text-ed-text outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border shadow-sm font-medium"
+                     >
+                       <option value="1080x1920">1080x1920 (9:16 Shorts)</option>
+                       <option value="1920x1080">1920x1080 (16:9 Landscape)</option>
+                       <option value="1080x1080">1080x1080 (1:1 Square)</option>
+                     </select>
+                   </div>
+                   <div>
+                     <label className="block text-xs font-bold text-ed-text-dim mb-1.5">Quality</label>
+                     <select 
+                       value={exportQuality}
+                       onChange={(e: any) => setExportQuality(e.target.value)}
+                       className="w-full bg-ed-surface border border-ed-border rounded-lg p-2.5 text-sm text-ed-text outline-none focus:border-ed-accent-border focus:ring-4 focus:ring-ed-accent-border shadow-sm font-medium"
+                     >
+                       <option value="High">High (1080p, 60fps)</option>
+                       <option value="Standard">Standard (1080p, 30fps)</option>
+                       <option value="Draft">Draft (720p, 30fps)</option>
+                     </select>
+                   </div>
+                   
+                   <div className="pt-6 mt-4 border-t border-ed-border">
+                     {renderOutputPath ? (
+                        <div className="flex flex-col gap-3">
+                          <a
+                            href={renderOutputPath}
+                            download={toExportFileName(initialProject.topic)}
+                            className="w-full py-3 bg-ed-ok hover:bg-ed-ok text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                          >
+                            <Download size={18} /> Download Video
+                          </a>
+                        </div>
+                     ) : (
+                       <button 
+                         onClick={handleRenderVideo}
+                         disabled={isRendering}
+                         className="w-full py-3 bg-ed-accent hover:bg-ed-accent-hover disabled:opacity-50 text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                       >
+                         {isRendering ? (
+                           <>
+                             <Loader2 size={18} className="animate-spin" /> Rendering Video...
+                           </>
+                         ) : (
+                           <>
+                             <Download size={18} /> Render & Export Video
+                           </>
+                         )}
+                       </button>
+                     )}
+                     
+                     {renderStatusMessage && !renderOutputPath && (
+                        <div className="mt-4 p-4 rounded-xl border text-xs font-medium break-all bg-ed-well border-ed-border text-ed-text-dim">
+                          {renderStatusMessage}
+                        </div>
+                      )}
+
+                     <p className="text-center text-[10px] text-ed-text-dim font-medium mt-3">Estimated cloud render time: 5-15 seconds</p>
+                   </div>
+                </div>
+              </div>
+            )}
+
+          </div>
+        </div>
+
+        {/* Middle Panel (Main Video Preview — Remotion Player) */}
+        <div className="flex-1 bg-ed-raised relative flex items-center justify-center p-4 lg:p-8 border-l border-r border-ed-border shadow-inner overflow-hidden">
+           
+           {/* Maximized player container that respects aspect ratio */}
+           <div className="w-full h-full flex flex-col items-center justify-center pb-4">
+             <div 
+               className="bg-ed-media rounded-2xl overflow-hidden shadow-2xl relative flex flex-col items-center justify-center border border-ed-border-strong transition-all duration-300 w-full max-h-full"
+               style={{ 
+                 aspectRatio: getAspectRatioStyle(),
+                 maxWidth: aspectRatio === '16:9' ? '100%' : 'min(100%, 80vh)'
+               }}
+             >
+               
+               {/* Media Asset Preview (when an asset is explicitly selected from the media panel) */}
+               {selectedAsset ? (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-ed-media">
+                     {selectedAsset.type === 'video' ? (
+                        <video src={selectedAsset.url} controls playsInline className="w-full h-full object-contain" autoPlay />
+                     ) : selectedAsset.type === 'image' ? (
+                        <img src={selectedAsset.url} className="w-full h-full object-contain" alt="Asset Preview" />
+                     ) : (
+                        <div className="flex flex-col items-center text-ed-text-faint bg-ed-surface w-full h-full justify-center">
+                           <Music size={64} className="mb-6 opacity-50 text-ed-accent-text" />
+                           <p className="text-sm font-bold mb-4">{selectedAsset.name}</p>
+                           <audio src={selectedAsset.url} controls className="w-3/4 max-w-sm outline-none" autoPlay />
+                        </div>
+                     )}
+                  </div>
+               ) : scenes.length > 0 ? (
+                  /* Remotion Player — renders the full composition with all scenes and overlays */
+                  <div className="absolute inset-0" ref={playerStageRef}>
+                    {isolatedScene && (
+                      <div className="absolute top-3 left-3 right-3 z-30 flex items-center justify-between gap-3 bg-ed-accent/95 backdrop-blur-sm text-ed-base rounded-lg px-3 py-2 shadow-lg">
+                        <span className="text-[11px] font-bold flex items-center gap-2 min-w-0">
+                          <Repeat size={13} className="shrink-0" />
+                          <span className="truncate">
+                            Previewing scene {scenes.findIndex(s => s.id === isolatedSceneId) + 1} only — looping
+                          </span>
+                        </span>
+                        <button
+                          onClick={() => setIsolatedSceneId(null)}
+                          className="text-[11px] font-bold bg-ed-surface/20 hover:bg-ed-surface/30 px-2.5 py-1 rounded-md transition-colors shrink-0"
+                        >
+                          Exit
+                        </button>
+                      </div>
+                    )}
+                    <Player
+                      ref={remotionPlayerRef}
+                      component={VideoComposition}
+                      inputProps={remotionPreviewProps}
+                      durationInFrames={isolatedScene ? isolatedDurationInFrames : remotionTotalDurationInFrames}
+                      compositionWidth={remotionDimensions.width}
+                      compositionHeight={remotionDimensions.height}
+                      fps={remotionFps}
+                      style={{ width: '100%', height: '100%' }}
+                      controls={false}
+                      autoPlay={false}
+                      // Looping is what makes isolation useful for inspecting a single
+                      // scene; the full timeline must not loop or it would fight the
+                      // playhead's own end-of-timeline stop.
+                      loop={Boolean(isolatedScene)}
+                      // Remotion's Player has no `muted` prop — only `initiallyMuted`,
+                      // plus imperative mute()/unmute() applied in the sync effect.
+                      // The Player supplies V1 scene-video audio only (narration is
+                      // stripped from remotionPreviewProps), so the V1 mute button drives it.
+                      initiallyMuted={trackStates.V1.muted}
+                    />
+
+                    {/* ── Drag-to-position layer ──
+                        Only mounted while an overlay clip is selected, and sized
+                        to the VIDEO's letterboxed rect rather than this
+                        container, so a percentage here means the same thing it
+                        means in the render. Deliberately not shown in isolation
+                        mode, where overlay clips aren't rendered at all. */}
+                    {selectedOverlayClip && !isEnvironmentalKind(selectedOverlayClip.kind) && !isolatedScene && playerStageRect.width > 0 && (
+                      <div
+                        className="absolute z-20"
+                        style={{
+                          left: playerStageRect.left,
+                          top: playerStageRect.top,
+                          width: playerStageRect.width,
+                          height: playerStageRect.height,
+                          // The layer itself must not swallow clicks meant for the
+                          // player; only the handle below is interactive.
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        {/* Snap guides, shown only while this overlay is sitting
+                            on one — a permanent grid would just be noise. */}
+                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.xPercent)) && (
+                          <div
+                            className="absolute top-0 bottom-0 w-px bg-ed-border-strong/60"
+                            style={{ left: `${selectedOverlayClip.xPercent}%` }}
+                          />
+                        )}
+                        {SNAP_TARGETS.includes(Math.round(selectedOverlayClip.yPercent)) && (
+                          <div
+                            className="absolute left-0 right-0 h-px bg-ed-border-strong/60"
+                            style={{ top: `${selectedOverlayClip.yPercent}%` }}
+                          />
+                        )}
+
+                        {/* Invisible drag-to-reposition region, sized to roughly cover
+                            the actual rendered content (not a fixed dot at the exact
+                            centre point) so grabbing anywhere near the visible text/card
+                            works, not just one precise spot. No visible fill/border at
+                            rest — now that selecting a clip seeks the playhead into its
+                            own time range (see seekIntoOverlayClip), the real render is
+                            already on screen right here, so drawing a badge on top of it
+                            would just duplicate what's already visible. The resize handle
+                            only appears on hover, at the estimated box's corner. */}
+                        {(() => {
+                          const fontSize = selectedOverlayClip.fontSize ?? 64;
+                          const cardScale = (selectedOverlayClip.templateData as { scale?: number } | undefined)?.scale ?? 1;
+                          let boxWidth: number;
+                          let boxHeight: number;
+                          if (selectedOverlayClip.kind === 'checklist-card') {
+                            const bulletCount = ((selectedOverlayClip.templateData as ChecklistCardData)?.bullets ?? []).length;
+                            boxWidth = 420 * cardScale;
+                            boxHeight = (60 + bulletCount * 36 + 32) * cardScale;
+                          } else if (selectedOverlayClip.kind === 'title-cutout-card') {
+                            boxWidth = 400 * cardScale;
+                            boxHeight = 500 * cardScale;
+                          } else {
+                            boxWidth = Math.max(80, selectedOverlayClip.text.length * fontSize * 0.55);
+                            boxHeight = fontSize * 1.4;
+                          }
+                          // These widths/heights are real-composition pixels (e.g. against a
+                          // 1080-wide export); scale them down to the preview's on-screen size.
+                          const scaleX = remotionDimensions.width > 0 ? playerStageRect.width / remotionDimensions.width : 1;
+                          const scaleY = remotionDimensions.height > 0 ? playerStageRect.height / remotionDimensions.height : 1;
+                          const widthPx = boxWidth * scaleX;
+                          const heightPx = boxHeight * scaleY;
+
+                          return (
+                            <div
+                              onPointerDown={(e) => handleOverlayPositionDragStart(e, selectedOverlayClip)}
+                              className="absolute group cursor-move select-none"
+                              style={{
+                                left: `${selectedOverlayClip.xPercent}%`,
+                                top: `${selectedOverlayClip.yPercent}%`,
+                                width: widthPx,
+                                height: heightPx,
+                                transform: 'translate(-50%, -50%)',
+                                pointerEvents: 'auto',
+                              }}
+                              title="Drag to reposition this overlay"
+                            >
+                              {/* Resize handle — drag to grow/shrink this overlay directly on
+                                  the preview, instead of only via the properties panel slider
+                                  (font size for plain text, card scale for a graphic card — see
+                                  handleOverlayResizeDragStart). Hidden until hover so it isn't
+                                  visual noise at rest. Its own onPointerDown stops propagation
+                                  (first line of handleOverlayResizeDragStart) so it doesn't also
+                                  start the parent region's move-drag. */}
+                              <div
+                                onPointerDown={(e) => handleOverlayResizeDragStart(e, selectedOverlayClip)}
+                                className="absolute -right-1 -bottom-1 w-3 h-3 rounded-full bg-ed-surface border-2 border-ed-border-strong shadow-sm cursor-nwse-resize opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Drag to resize"
+                              />
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    )}
+                  </div>
+               ) : (
+                  <div className="absolute inset-0 flex flex-col items-center justify-center text-ed-text-dim bg-ed-surface">
+                     <MonitorPlay size={48} className="mb-4 opacity-50" />
+                     <p className="font-medium text-sm">Select a scene to preview</p>
+                  </div>
+               )}
+
+             </div>
+           </div>
+        </div>
+
+
+        {/* Right Panel (CapCut-style File Details / Properties) */}
+        {selectedScene && (!selectedTimelineClip || (selectedSceneTrack !== 'A1' && selectedSceneTrack !== 'A2')) && activeTab === 'scene' && (
+           <div className="w-[300px] lg:w-[320px] bg-ed-surface flex flex-col flex-none shadow-[-2px_0_10px_rgba(0,0,0,0.05)] z-10 h-full">
+              {/* Tab Header */}
+              <div className="flex items-center border-b border-ed-border p-2 gap-1 bg-ed-raised">
+                 <div className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold bg-ed-surface text-ed-text shadow-sm border border-ed-border">
+                    <Info size={14} className="text-ed-text-dim" /> Details
+                 </div>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-4 custom-scrollbar">
+                 <div className="space-y-5">
+                    {/* Thumbnail Preview */}
+                    <div className="rounded-xl overflow-hidden border border-ed-border shadow-sm bg-ed-media aspect-video relative">
+                       {pendingPickFor(selectedScene.id) ? (
+                         pendingPickFor(selectedScene.id)!.type === 'video' ? (
+                           <video src={pendingPickFor(selectedScene.id)!.mediaUrl} className="w-full h-full object-contain" muted preload="metadata" />
+                         ) : (
+                           <img src={pendingPickFor(selectedScene.id)!.mediaUrl} className="w-full h-full object-contain" alt="Pending scene pick" />
+                         )
+                       ) : selectedScene.custom_media_url ? (
+                         selectedScene.custom_media_type === 'video' ? (
+                           <video src={selectedScene.custom_media_url} className="w-full h-full object-contain" muted preload="metadata" />
+                         ) : (
+                           <img src={selectedScene.custom_media_url} className="w-full h-full object-contain" alt="Scene thumbnail" />
+                         )
+                       ) : (
+                         <div className="w-full h-full flex flex-col items-center justify-center text-ed-text-dim bg-ed-surface">
+                           <Film size={32} className="opacity-40 mb-2" />
+                           <span className="text-[10px] font-medium opacity-60">No media yet</span>
+                         </div>
+                       )}
+                       <div className="absolute top-2 left-2 px-2 py-0.5 bg-ed-media/60 backdrop-blur-sm rounded text-[9px] text-white font-mono font-bold">
+                         Scene {selectedScene.sequence_number}
+                       </div>
+                       {pendingPickFor(selectedScene.id) && (
+                         <div className="absolute bottom-2 left-2 px-2 py-0.5 bg-ed-warn/90 backdrop-blur-sm rounded text-[9px] text-ed-base font-bold">
+                           Preview — not saved yet
+                         </div>
+                       )}
+                    </div>
+
+                    {/* Properties Table */}
+                    <div className="space-y-0 border border-ed-border rounded-lg overflow-hidden">
+                       {/* Name */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Name</span>
+                         <span className="text-[11px] font-semibold text-ed-text text-right truncate max-w-[160px]" title={selectedScene.voice_over_beat}>
+                           {selectedScene.custom_media_url ? (selectedScene.voice_over_beat?.substring(0, 30) || 'Scene ' + selectedScene.sequence_number) : 'Scene ' + selectedScene.sequence_number}
+                         </span>
+                       </div>
+                       {/* Source */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-surface border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Source</span>
+                         <span className="text-[11px] font-semibold text-ed-text">
+                           {selectedScene.generation_status === 'Simulated'
+                             ? 'Simulated Placeholder'
+                             : selectedScene.custom_media_url
+                               ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
+                               : 'Draft (No Media)'}
+                         </span>
+                       </div>
+                       {/* Type */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Type</span>
+                         <span className="text-[11px] font-semibold text-ed-text capitalize">
+                           {selectedScene.custom_media_type || 'text'}
+                         </span>
+                       </div>
+                       {/* Duration */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-surface border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Duration</span>
+                         <span className="text-[11px] font-bold text-ed-text font-mono">
+                           {(selectedScene.video_duration || 5).toFixed(1)}s
+                         </span>
+                       </div>
+                       {/* Resolution */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Resolution</span>
+                         <span className="text-[11px] font-semibold text-ed-text">
+                           {aspectRatio === '9:16' ? '1080 × 1920' : aspectRatio === '1:1' ? '1080 × 1080' : '1920 × 1080'}
+                         </span>
+                       </div>
+                       {/* FPS */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-surface border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Frame Rate</span>
+                         <span className="text-[11px] font-semibold text-ed-text">
+                           {exportQuality === 'High' ? '60 fps' : '30 fps'}
+                         </span>
+                       </div>
+                       {/* Track */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Track</span>
+                         <span className="text-[11px] font-bold text-ed-accent-text bg-ed-accent-soft px-2 py-0.5 rounded border border-ed-accent-border">
+                           V1 — Video
+                         </span>
+                       </div>
+                       {/* Status */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-surface">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Status</span>
+                         <span className={`text-[10px] font-bold px-2 py-0.5 rounded-md border ${
+                           selectedScene.generation_status === 'Completed' ? 'bg-ed-ok-soft text-ed-ok border-ed-ok-border' :
+                           selectedScene.generation_status === 'Simulated' ? 'bg-ed-warn-soft text-ed-warn border-ed-warn-border' :
+                           selectedScene.generation_status === 'Rendering' ? 'bg-ed-info-soft text-ed-info border-ed-info-border animate-pulse' :
+                           'bg-ed-raised text-ed-text-dim border-ed-border'
+                         }`}>
+                           {selectedScene.generation_status || 'Pending'}
+                         </span>
+                       </div>
+                    </div>
+
+                    {/* Audio Info (if narration exists) */}
+                    {(selectedScene.audio_url || masterAudioUrl) && (
+                      <div className="border border-ed-border rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-ed-well border-b border-ed-border">
+                          <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider flex items-center gap-1.5">
+                            <Volume2 size={12} className="text-ed-ok" /> Audio
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-3 py-2.5 bg-ed-surface border-b border-ed-border">
+                          <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Type</span>
+                          <span className="text-[11px] font-semibold text-ed-text">
+                            {masterAudioUrl ? 'Full Narration' : 'Per-Scene TTS'}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well">
+                          <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Track</span>
+                          <span className="text-[11px] font-bold text-ed-ok bg-ed-ok-soft px-2 py-0.5 rounded border border-ed-ok-border">
+                            A1 — Audio
+                          </span>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Scene ID */}
+                    <div className="text-center pt-2 border-t border-ed-border">
+                       <span className="text-[9px] font-mono text-ed-text-faint">ID: {selectedScene.id}</span>
+                    </div>
+                 </div>
+              </div>
+           </div>
+        )}
+      </div>
+
+      {/* Resizer Handle */}
+      <div 
+        className="h-1.5 w-full bg-ed-hover border-y border-ed-border-strong cursor-row-resize hover:bg-ed-accent-soft transition-colors flex items-center justify-center flex-none z-20"
+        onMouseDown={() => setIsResizingPanel(true)}
+      >
+        <div className="w-12 h-0.5 rounded-full bg-ed-text-faint"></div>
+      </div>
+
+      {/* Bottom Horizontal Timeline (Light Theme) */}
+      <div 
+        className="bg-ed-surface overflow-hidden flex flex-col flex-none relative z-10"
+        style={{ height: `${timelineHeight}px` }}
+      >
+        {/* Timeline Toolbar */}
+        <div className="bg-ed-well px-4 py-2 border-b border-ed-border flex items-center justify-between shadow-sm relative z-40">
+          <div className="flex items-center gap-4">
+             <span className="text-[10px] font-bold text-ed-text-dim tracking-widest uppercase">Timeline Editor</span>
+             <div className="h-4 w-px bg-ed-border-strong"></div>
+             {/* NOTE: an "Undo" button used to sit here with no onClick handler.
+                 Removed rather than faked — real undo needs an inverse-operation log
+                 (a delete must be re-inserted into Supabase, not just restored in
+                 React state), which is a feature in its own right, not a wiring fix.
+                 A button that looks live and does nothing is worse than no button. */}
+             <button
+                onClick={() => {
+                  const allKeys: string[] = [
+                    ...scenes.map(s => `${s.id}_V1`),
+                    ...scenes.map(s => `${s.id}_A1`),
+                    ...timelineClips.map(c => `${c.id}_${c.trackId}`)
+                  ];
+                  setSelectedSceneKeys(allKeys);
+                }}
+                className="text-ed-text-dim hover:text-ed-accent-text transition-colors flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded hover:bg-ed-accent-soft"
+                title="Select All items across V1, A1, A2 (Ctrl+A)"
+              >
+                <Layers size={13} /> Select All
+              </button>
+             {/* Destructive actions deliberately do NOT live in the toolbar. A delete
+                 button that appears on selection is easy to hit by accident and is
+                 detached from the thing it deletes; deletion belongs on the item's own
+                 right-click menu (and the Delete key). What the toolbar shows instead
+                 is a passive selection count, which is information, not a hazard. */}
+             {selectedSceneKeys.length > 0 && (
+               <span className="flex items-center gap-1.5 text-[11px] font-semibold text-ed-accent-text bg-ed-accent-soft border border-ed-accent-border px-2.5 py-1 rounded-md animate-in fade-in duration-150">
+                 <Layers size={12} />
+                 {selectedSceneKeys.length} selected
+                 <span className="text-ed-accent-text font-medium">— right-click to delete</span>
+               </span>
+             )}
+          </div>
+
+          {/* Centered Play Button & Skip to Start */}
+          <div className="absolute left-1/2 -translate-x-1/2 flex items-center gap-1.5">
+             <button 
+                onClick={() => {
+                   setCursorPosition(0);
+                   setSelectedAsset(null);
+                }}
+                className="w-8 h-8 flex items-center justify-center rounded-md shadow-sm transition-colors border bg-ed-surface text-ed-text-dim hover:text-ed-accent-text border-ed-border"
+                title="Skip to Beginning (0s)"
+             >
+                <SkipBack size={14} />
+             </button>
+             <button 
+                onClick={() => {
+                   setSelectedAsset(null);
+                   setIsPlaying(!isPlaying);
+                }}
+                className={`w-8 h-8 flex items-center justify-center rounded-md shadow-sm transition-colors border ${isPlaying ? 'bg-ed-accent-soft text-ed-accent-text border-ed-accent-border' : 'bg-ed-surface text-ed-text-dim hover:text-ed-accent-text border-ed-border'}`}
+                title={isPlaying ? "Pause" : "Play"}
+             >
+                {isPlaying ? <Pause size={14} className="fill-current" /> : <Play size={14} className="fill-current ml-0.5" />}
+             </button>
+          </div>
+
+          <div className="flex items-center gap-4">
+             {/* Ratio selector relocated to Timeline Toolbar */}
+             <div className="relative">
+               <button 
+                 onClick={() => setShowRatioMenu(!showRatioMenu)}
+                 className="flex items-center gap-1.5 text-xs font-bold text-ed-text-dim hover:text-ed-accent-text bg-ed-surface border border-ed-border px-2.5 py-1.5 rounded-md shadow-sm transition-colors"
+               >
+                 <LayoutTemplate size={14} />
+                 {aspectRatio}
+                 <ChevronDown size={14} className="ml-0.5 text-ed-text-faint" />
+               </button>
+               
+               {showRatioMenu && (
+                 <div className="absolute top-full left-0 mt-1 w-24 bg-ed-surface border border-ed-border rounded-lg shadow-xl py-1 z-50">
+                   {(['16:9', '9:16', '1:1'] as AspectRatio[]).map((ratio) => (
+                     <button
+                       key={ratio}
+                       onClick={() => {
+                         setAspectRatio(ratio);
+                         setShowRatioMenu(false);
+                       }}
+                       className={`w-full text-left px-3 py-2 text-xs font-semibold hover:bg-ed-well transition-colors ${aspectRatio === ratio ? 'text-ed-accent-text bg-ed-accent-soft/50' : 'text-ed-text-dim'}`}
+                     >
+                       {ratio}
+                     </button>
+                   ))}
+                 </div>
+               )}
+             </div>
+
+             {/* Zoom Controls */}
+             <div className="flex items-center gap-2 bg-ed-surface border border-ed-border rounded-md px-2 py-1 shadow-sm">
+                <button 
+                  onClick={() => setScale(Math.max(10, scale - 10))}
+                  className="text-ed-text-dim hover:text-ed-text font-bold px-1"
+                >-</button>
+                <div className="w-24 h-1.5 bg-ed-raised rounded-full overflow-hidden relative border border-ed-border">
+                   <div className="absolute left-0 top-0 h-full bg-ed-text-faint rounded-full" style={{ width: `${(scale/100)*100}%`}}></div>
+                </div>
+                <button 
+                  onClick={() => setScale(Math.min(100, scale + 10))}
+                  className="text-ed-text-dim hover:text-ed-text font-bold px-1"
+                >+</button>
+             </div>
+          </div>
+        </div>
+
+        {/* Timeline Track Area */}
+        <div className="flex-1 overflow-x-auto overflow-y-auto relative pb-6 pt-1 custom-scrollbar bg-ed-base z-10"
+           ref={trackScrollRef}
+           onKeyDown={(e) => { if (e.key === 'Backspace' || e.key === 'Delete') handleDeleteSelectedScenes(); }}>
+           
+           <div className="min-w-max relative">
+              {/* Playhead Vertical Line */}
+              <div
+                className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
+                // `left` is a layout property — recalculating it 60x/sec during playback
+                // forces the browser to re-layout this whole track (250+ siblings) every
+                // frame, which is what made the line itself judder instead of gliding.
+                // The base 8rem offset is static now; only `transform` (compositor-only,
+                // no layout/paint) carries the animated position. `willChange` promotes
+                // this to its own GPU layer so the browser stops repainting it together
+                // with the 200+ scene blocks it passes over — without this hint a
+                // compositor-only transform can still get swept into a shared repaint
+                // of everything nearby on a long-form project's crowded track.
+                style={{ left: '8rem', transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
+              >
+                 <div className="w-px h-full bg-ed-media shadow-[0_0_8px_rgba(0,0,0,0.3)]"></div>
+              </div>
+
+              {/* OV-to-V1 alignment guide — CapCut-style: while dragging or
+                  trimming an overlay clip, if either of its edges lands within
+                  snapping distance of a V1 scene boundary, that edge snaps to
+                  it and this line lights up at that exact time, spanning every
+                  track so it's obvious the two are lined up. */}
+              {overlaySnapGuideTime !== null && (
+                <div
+                  className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
+                  style={{ left: `calc(8rem + ${overlaySnapGuideTime * scale}px)`, transform: 'translateX(-50%)' }}
+                >
+                  <div className="w-px h-full bg-ed-border-strong/80 shadow-[0_0_6px_rgba(0,0,0,0.15)]"></div>
+                </div>
+              )}
+
+              {/* Ruler Track */}
+              <div className="flex items-end mb-1 relative group w-max">
+                 <div className="w-32 shrink-0 sticky left-0 z-50 bg-ed-surface h-6 border-b border-ed-border pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] before:absolute before:-inset-y-4 before:inset-x-0 before:bg-ed-surface before:-z-10 before:border-r before:border-ed-border"></div>
+                 <div 
+                    className="relative h-6 border-b border-ed-border cursor-pointer"
+                    style={{ width: `${timelineDuration * scale}px` }}
+                    onClick={(e) => {
+                       const rect = e.currentTarget.getBoundingClientRect();
+                       setCursorPosition(e.clientX - rect.left);
+                       setSelectedAsset(null);
+                       setSelectedSceneKeys([]);
+                    }}
+                 >
+                    {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => {
+                       // Every-second labels ("917s 918s 919s…") only stayed readable for
+                       // the first minute — past that a long-form timeline turned into an
+                       // unreadable wall of consecutive numbers. The interval now widens
+                       // as you zoom out, same as any real editor's ruler, so there's
+                       // always a sane number of labels regardless of how long the video is.
+                       const labelIntervalSeconds =
+                         scale >= 40 ? 1 : scale >= 15 ? 5 : scale >= 6 ? 10 : scale >= 2 ? 30 : 60;
+                       const showLabel = i % labelIntervalSeconds === 0;
+                       return (
+                         <div key={i} className="absolute flex flex-col items-center" style={{ left: `${i * scale}px` }}>
+                            {showLabel && <span className="text-[9px] text-ed-text-dim font-mono font-medium mb-1">{formatRulerTimestamp(i)}</span>}
+                            <div className={`w-px ${showLabel ? 'h-2 bg-ed-text-faint' : 'h-1 bg-ed-border-strong'}`}></div>
+                         </div>
+                       )
+                    })}
+
+                    {/* Playhead / Cursor - Changed to Purple */}
+                    <div
+                      className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
+                      // Same compositor-only fix as the vertical line above — see that comment.
+                      style={{ left: 0, transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
+                    >
+                       <div className="w-3 h-3 bg-ed-media rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
+                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-black"></div>
+                       </div>
+                    </div>
+                 </div>
+              </div>
+
+              {/* ── Overlay Track (OV) ──
+                  Above V1 because overlays paint on top of everything, matching
+                  the V2-above-V1 convention every NLE uses. Unlike V1/A1/A2 this
+                  is a track GROUP: it grows extra lanes on its own whenever two
+                  clips overlap in time (see packOverlayLanes), so simultaneous
+                  overlays never render stacked on one another. */}
+              <div className="flex items-stretch group relative">
+                 <div className="w-32 shrink-0 sticky left-0 z-[52] bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint">
+                    <span
+                      className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
+                      title="Text overlay track"
+                    >
+                      OV
+                    </span>
+                    <div className="relative">
+                      <button
+                        ref={addOverlayButtonRef}
+                        onClick={() => {
+                          if (!showAddOverlayMenu && addOverlayButtonRef.current) {
+                            const rect = addOverlayButtonRef.current.getBoundingClientRect();
+                            const GAP = 4;
+                            const spaceBelow = window.innerHeight - rect.bottom - GAP;
+                            const spaceAbove = rect.top - GAP;
+                            // The OV row sits low in the timeline, so in practice
+                            // there is never room below and this always flips up —
+                            // but it's measured rather than hard-coded so the menu
+                            // still behaves on a short viewport or if the track
+                            // moves. Whichever side wins, `maxHeight` keeps the menu
+                            // inside the viewport instead of letting the last items
+                            // fall off the edge unreachable.
+                            const openUpward = spaceBelow < Math.min(spaceAbove, 260);
+                            setAddOverlayMenuPos({
+                              left: rect.left,
+                              ...(openUpward
+                                ? { bottom: window.innerHeight - rect.top + GAP }
+                                : { top: rect.bottom + GAP }),
+                              maxHeight: Math.max(120, (openUpward ? spaceAbove : spaceBelow) - GAP),
+                            });
+                          }
+                          setShowAddOverlayMenu(prev => !prev);
+                        }}
+                        className="flex items-center gap-0.5 text-[10px] font-bold text-ed-text-dim hover:text-ed-accent-text transition-colors"
+                        title="Add an overlay at the playhead"
+                      >
+                        <Type size={14} /> Add <ChevronDown size={10} />
+                      </button>
+                      {showAddOverlayMenu && addOverlayMenuPos && createPortal(
+                        <>
+                          {/* Full-screen click-catcher, closes the menu on outside click —
+                              needed now that the menu itself is fixed/detached from this
+                              button's own DOM subtree, so it no longer sits "inside" the
+                              button's hover/click area. */}
+                          <div className="fixed inset-0 z-[59]" onClick={() => setShowAddOverlayMenu(false)} />
+                          <div
+                            className="fixed w-48 bg-ed-surface border border-ed-border rounded-lg shadow-xl py-1 z-[60] overflow-y-auto"
+                            style={{
+                              top: addOverlayMenuPos.top,
+                              bottom: addOverlayMenuPos.bottom,
+                              left: addOverlayMenuPos.left,
+                              maxHeight: addOverlayMenuPos.maxHeight,
+                            }}
+                          >
+                            <button
+                              onClick={() => { handleAddOverlayClip('text'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <Type size={13} className="text-ed-text-faint" /> Add Text
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('checklist-card'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <CheckCircle2 size={13} className="text-ed-text-faint" /> Add Checklist Card
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('title-cutout-card'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <ImageIcon size={13} className="text-ed-text-faint" /> Add Title Card
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('dim-scrim'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <Contrast size={13} className="text-ed-text-faint" /> Add Dim Scrim
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('particles'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <Sparkles size={13} className="text-ed-text-faint" /> Add Particles
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('light-beam'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <Sunrise size={13} className="text-ed-text-faint" /> Add Light Beam
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('light-sweep'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <ArrowRightLeft size={13} className="text-ed-text-faint" /> Add Light Sweep
+                            </button>
+                            <button
+                              onClick={() => { handleAddOverlayClip('film-damage'); setShowAddOverlayMenu(false); }}
+                              className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors flex items-center gap-2"
+                            >
+                              <Film size={13} className="text-ed-text-faint" /> Add Old Film
+                            </button>
+                          </div>
+                        </>,
+                        document.body
+                      )}
+                    </div>
+                 </div>
+                 <div
+                   className="flex flex-1 relative rounded-r-md border border-dashed border-ed-border bg-ed-well transition-colors"
+                   style={{
+                     width: `${timelineDuration * scale}px`,
+                     // One lane is 40px; the row grows as lanes are added rather
+                     // than squeezing clips into a fixed height.
+                     height: `${overlayLaneCount * 40}px`,
+                   }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                     setSelectedOverlayClipId(null);
+                   }}
+                 >
+                    {overlayClips.length === 0 && (
+                      <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50">
+                        <Type size={12} className="mr-2 text-ed-text-dim" />
+                        <span className="text-[10px] text-ed-text-dim font-bold italic">
+                          Add a text overlay — it can sit anywhere, across any scene
+                        </span>
+                      </div>
+                    )}
+
+                    {overlayClips.map((clip) => {
+                      const lane = overlayLaneByClipId[clip.id] ?? 0;
+                      const isSelected = selectedOverlayClipId === clip.id;
+                      const accent = OVERLAY_KIND_ACCENT[clip.kind] ?? OVERLAY_KIND_ACCENT.text;
+                      return (
+                        <Rnd
+                          key={clip.id}
+                          bounds="parent"
+                          dragAxis="x"
+                          minWidth={0.5 * scale}
+                          enableResizing={false}
+                          disableDragging={true}
+                          size={{ width: clip.duration * scale, height: 32 }}
+                          position={{ x: clip.startTime * scale, y: lane * 40 + 4 }}
+                          className={`rounded-md border overflow-hidden shadow-sm px-1 transition-[filter,background-color,border-color] ${
+                            isSelected
+                              ? 'border-ed-border ring-2 ring-ed-border/80 ring-offset-1 ring-offset-gray-900 bg-ed-raised/45 z-30'
+                              : 'border-ed-border-strong bg-ed-surface/30 hover:bg-ed-surface/45 z-20'
+                          }`}
+                          onClick={(e: any) => {
+                            e.stopPropagation();
+                            setSelectedOverlayClipId(clip.id);
+                            // An overlay clip isn't a scene or an A1/A2 clip, so clear
+                            // both — otherwise the right panel would still be showing
+                            // whichever of those was last selected.
+                            setSelectedScene(null);
+                            setSelectedTimelineClip(null);
+                            setSelectedSceneKeys([]);
+                            setSelectedAsset(null);
+                            setActiveTab('scene');
+                            // So the <Player> is actually showing this clip's real
+                            // render (not just the drag badge) the moment its panel
+                            // opens for editing.
+                            seekIntoOverlayClip(clip);
+                          }}
+                          onContextMenu={(e: any) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setSelectedOverlayClipId(clip.id);
+                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'overlay', id: clip.id });
+                          }}
+                        >
+                          {/* Move handle. Same split as A1/A2 clips: the label drags
+                              the clip, the edge handles trim it. */}
+                          <div
+                            className="flex items-center gap-1 h-full cursor-move text-ed-text-faint overflow-hidden"
+                            onPointerDown={(e) => handleOverlayDragStart(e, clip)}
+                          >
+                            {clip.kind === 'dim-scrim' ? (
+                              <Contrast size={10} className={`shrink-0 ${accent.icon}`} />
+                            ) : clip.kind === 'particles' ? (
+                              <Sparkles size={10} className={`shrink-0 ${accent.icon}`} />
+                            ) : clip.kind === 'light-beam' ? (
+                              <Sunrise size={10} className={`shrink-0 ${accent.icon}`} />
+                            ) : clip.kind === 'light-sweep' ? (
+                              <ArrowRightLeft size={10} className={`shrink-0 ${accent.icon}`} />
+                            ) : clip.kind === 'film-damage' ? (
+                              <Film size={10} className={`shrink-0 ${accent.icon}`} />
+                            ) : (
+                              <Type size={10} className={`shrink-0 ${accent.icon}`} />
+                            )}
+                            <span className="text-[9px] font-bold truncate">
+                              {/* The environmental kinds carry no text, so they're
+                                  labelled by what they ARE — a `clip.text` fallback
+                                  would label all three "Text". */}
+                              {OVERLAY_KIND_BLOCK_LABEL[clip.kind] ?? (clip.text || 'Text')}
+                            </span>
+                          </div>
+
+                          {/* Trim handles double as the kind's color identity — tinted
+                              with this clip's accent instead of a flat gray, since they're
+                              already visible at rest at both ends of every clip regardless
+                              of kind. */}
+                          <div
+                            className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize ${accent.stripe} opacity-80 hover:opacity-100 z-50 rounded-l-md flex items-center justify-center`}
+                            title="Drag to change when this overlay starts"
+                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'left')}
+                          >
+                            <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full" />
+                          </div>
+                          <div
+                            className={`absolute right-0 top-0 bottom-0 w-2 cursor-ew-resize ${accent.stripe} opacity-80 hover:opacity-100 z-50 rounded-r-md flex items-center justify-center`}
+                            title="Drag to change how long this overlay lasts"
+                            onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'right')}
+                          >
+                            <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full" />
+                          </div>
+                        </Rnd>
+                      );
+                    })}
+                 </div>
+              </div>
+
+              {/* Video Track (V1) */}
+              <div className="flex items-stretch group relative">
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-[52]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
+                    <span 
+                      className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
+                      onClick={() => {
+                        const allV1Keys = [
+                          ...scenes.map(s => `${s.id}_V1`),
+                          ...timelineClips.filter(c => c.trackId === 'V1').map(c => `${c.id}_V1`)
+                        ];
+                        setSelectedSceneKeys(allV1Keys);
+                        setSelectedScene(null);
+                        setSelectedTimelineClip(null);
+                        setSelectedSceneTrack(null);
+                      }}
+                      title="Select all on V1"
+                    >
+                      V1
+                    </span>
+                    <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.V1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                       {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                    </button>
+                    <div className="relative">
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'V1' ? null : 'V1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.V1.muted || trackStates.V1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                         {trackStates.V1.muted || trackStates.V1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                      </button>
+                      {activeVolumePopup === 'V1' && (
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-ed-accent-text">{Math.round((trackStates.V1.volume ?? 1) * 100)}</span>
+                          <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
+                             <input 
+                               type="range" min="0" max="1" step="0.05" 
+                               value={trackStates.V1.volume ?? 1} 
+                               onChange={e => {
+                                  const vol = parseFloat(e.target.value);
+                                  setTrackVolume('V1', vol);
+                               }} 
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-ed-accent-hover rounded-full outline-none accent-ed-accent-text -rotate-90 origin-center cursor-pointer"
+                             />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                 </div>
+                 <div 
+                   className={`flex flex-1 relative h-16 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.V1.locked ? 'bg-ed-raised border-ed-border cursor-not-allowed opacity-60 grayscale' : 'bg-ed-surface border-ed-border cursor-pointer'}`}
+                   style={{ width: `${timelineDuration * scale}px` }}
+                   onClick={(e) => {
+                     const rect = e.currentTarget.getBoundingClientRect();
+                     setCursorPosition(e.clientX - rect.left);
+                     setSelectedAsset(null);
+                     setSelectedSceneKeys([]);
+                   }}
+                   onDragOver={(e) => {
+                     if (trackStates.V1.locked) return;
+                     handleDragOver(e);
+                     if ((draggingAsset && (draggingAsset.type === 'video' || draggingAsset.type === 'image')) || (draggingScene && draggingScene.track === 'V1')) {
+                        const rect = e.currentTarget.getBoundingClientRect();
+                        const dropX = e.clientX - rect.left;
+                        let insertIdx = scenes.length;
+                        
+                        for (let i = 0; i < scenes.length; i++) {
+                           const sceneDuration = getSceneDuration(scenes[i]);
+                           const sceneLeft = getSceneLeftPosition('V1', i);
+                           const sceneMidpoint = sceneLeft + (sceneDuration * scale / 2);
+                           if (dropX < sceneMidpoint) {
+                              insertIdx = i;
+                              break;
+                           }
+                        }
+                        if (v1DragInsertIndex !== insertIdx) {
+                           setV1DragInsertIndex(insertIdx);
+                        }
+                     }
+                   }}
+                   onDrop={(e) => {
+                     if (trackStates.V1.locked) return;
+                     handleDrop(e, 'V1')
+                   }}
+                 >
+                    {/* Scene Blocks (AI Generated) */}
+                    {v1SceneBlocks}
+
+                    {/* Collapsed stand-ins for acts with no narration yet. One block
+                        per act instead of one per scene: those scenes still hold the
+                        Slicer's estimated durations, so drawing them individually
+                        would render ~25 blocks per act at widths that change the
+                        moment the act is narrated. Clicking records the act, matching
+                        the A1 placeholder's behaviour. */}
+                    {collapsedActBlocks.map(({ actNumber, leftPx, rightPx, sceneCount }) => {
+                      const isBusy = regeneratingActNumber === actNumber;
+                      return (
+                        <div
+                          key={`v1-collapsed-act-${actNumber}`}
+                          onClick={() => {
+                            if (isBusy) return;
+                            // Selects the act rather than generating on the spot — a
+                            // stray click here used to immediately start recording
+                            // real narration with no way to back out. Generation now
+                            // needs the explicit button in the Act inspector.
+                            setSelectedActNumber(actNumber);
+                            setSelectedScene(null);
+                            setSelectedSceneTrack(null);
+                            setSelectedSceneKeys([]);
+                            setActiveTab('scene');
+                          }}
+                          title={`Act ${actNumber} — ${sceneCount} scene${sceneCount === 1 ? '' : 's'} waiting on narration. Click to select it.`}
+                          className={`absolute rounded-md border-2 border-dashed overflow-hidden cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
+                            isBusy
+                              ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text animate-pulse'
+                              : 'border-ed-border-strong bg-ed-well text-ed-text-faint hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
+                          }`}
+                          style={{
+                            transform: `translateX(${leftPx}px)`,
+                            width: Math.max(2, rightPx - leftPx - 1),
+                            top: '10%',
+                            height: '80%',
+                          }}
+                        >
+                          {isBusy
+                            ? <Loader2 size={11} className="flex-none animate-spin" />
+                            : <Mic size={11} className="flex-none" />}
+                          <span className="text-[8px] font-bold truncate">
+                            {isBusy
+                              ? `Recording Act ${actNumber}…`
+                              : `Act ${actNumber} · ${sceneCount} scenes · narrate to unlock visuals`}
+                          </span>
+                        </div>
+                      );
                     })}
 
                     {v1DragInsertIndex !== null && (draggingAsset || (draggingScene && draggingScene.track === 'V1')) && (
                         <div 
-                           className="h-[80%] absolute top-[10%] left-0 rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
+                           className="h-[80%] absolute top-[10%] left-0 rounded-md border-2 border-dashed border-ed-accent-border bg-ed-accent-soft/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
                            style={{
                               // Slides between slots on the same curve as the blocks it
                               // sits among — a teleporting ghost among sliding blocks
@@ -7675,7 +8221,7 @@ export default function TimelineEditor({
                               transition: REORDER_SLIDE
                            }}
                         >
-                           <div className="flex items-center text-purple-400 opacity-50 gap-2">
+                           <div className="flex items-center text-ed-accent-text opacity-50 gap-2">
                               {draggingAsset?.type === 'video' ? <Film size={16} /> : draggingAsset?.type === 'image' ? <ImageIcon size={16} /> : <LayoutTemplate size={16} />}
                               <span className="text-xs font-bold">Insert Here</span>
                            </div>
@@ -7715,7 +8261,7 @@ export default function TimelineEditor({
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, duration: finalDuration, startTime: newStartTime, trimStart: newTrimStart } : c));
                         }}
                         style={{ top: '10%' }}
-                        className="rounded-md border border-blue-400 bg-blue-100/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-[filter,background-color,border-color]"
+                        className="rounded-md border border-ed-info-border bg-ed-info-soft/90 cursor-grab active:cursor-grabbing overflow-hidden z-20 shadow-sm hover:brightness-95 transition-[filter,background-color,border-color]"
                         onClick={(e: any) => {
                           if (trackStates.V1.locked) return;
                           setSelectedAsset(null);
@@ -7729,7 +8275,7 @@ export default function TimelineEditor({
                         }}
                       >
                          <div className="w-full h-full p-1.5 flex flex-col relative pointer-events-none">
-                            <div className="flex items-center gap-1.5 mb-1 opacity-90 text-blue-900">
+                            <div className="flex items-center gap-1.5 mb-1 opacity-90 text-ed-info">
                                {clip.asset.type === 'video' ? <Film size={10} /> : clip.asset.type === 'image' ? <ImageIcon size={10} /> : <Music size={10} />}
                                <span className="text-[9px] font-bold truncate">{clip.asset.name}</span>
                             </div>
@@ -7741,9 +8287,9 @@ export default function TimelineEditor({
 
               {/* Audio Track (A1) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-[51]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-[51]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
                     <span 
-                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
                         const allA1Keys = [
                           ...scenes.map(s => `${s.id}_A1`),
@@ -7758,18 +8304,18 @@ export default function TimelineEditor({
                     >
                       A1
                     </span>
-                    <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                    <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                        {trackStates.A1.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
                     <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A1' ? null : 'A1'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A1.muted || trackStates.A1.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A1' ? null : 'A1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A1.muted || trackStates.A1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                          {trackStates.A1.muted || trackStates.A1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
                       </button>
                       {activeVolumePopup === 'A1' && (
-                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
-                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.A1.volume ?? 1) * 100)}</span>
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-ed-accent-text">{Math.round((trackStates.A1.volume ?? 1) * 100)}</span>
                           <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
                              <input 
                                type="range" min="0" max="1" step="0.05" 
@@ -7778,7 +8324,7 @@ export default function TimelineEditor({
                                   const vol = parseFloat(e.target.value);
                                   setTrackVolume('A1', vol);
                                }} 
-                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-ed-accent-hover rounded-full outline-none accent-ed-accent-text -rotate-90 origin-center cursor-pointer"
                              />
                           </div>
                         </div>
@@ -7786,7 +8332,7 @@ export default function TimelineEditor({
                     </div>
                  </div>
                  <div 
-                   className={`flex flex-1 relative h-14 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.A1.locked ? 'bg-gray-100 border-gray-200 cursor-not-allowed opacity-60 grayscale' : 'bg-white border-gray-100 cursor-pointer'}`}
+                   className={`flex flex-1 relative h-14 rounded-r-md items-center border-y border-r shadow-sm transition-colors ${trackStates.A1.locked ? 'bg-ed-raised border-ed-border cursor-not-allowed opacity-60 grayscale' : 'bg-ed-surface border-ed-border cursor-pointer'}`}
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -7849,8 +8395,8 @@ export default function TimelineEditor({
                              title={`Act ${outline.actNumber} — ${narration.durationSeconds.toFixed(1)}s. Click to select, double-click to jump here.`}
                              className={`absolute rounded-md border overflow-hidden shadow-sm cursor-pointer transition-all ${
                                isSelected
-                                 ? 'border-purple-600 ring-2 ring-purple-400 bg-gradient-to-r from-purple-200 to-purple-100 text-purple-900'
-                                 : 'border-purple-500 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 hover:from-purple-150'
+                                 ? 'border-ed-accent ring-2 ring-ed-accent/40 bg-ed-accent/25 text-ed-accent'
+                                 : 'border-ed-accent/50 bg-ed-accent/15 text-ed-accent hover:bg-ed-accent/25'
                              } ${isBusy ? 'opacity-60 animate-pulse' : ''}`}
                              style={{
                                left: narration.startSeconds * scale,
@@ -7876,7 +8422,7 @@ export default function TimelineEditor({
                                <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                                  <path suppressHydrationWarning
                                    d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin((i + outline.actNumber * 7) * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                                   stroke="#9333ea" strokeWidth="2.5" strokeLinecap="round"
+                                   stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
                                  />
                                </svg>
                              </div>
@@ -7900,13 +8446,21 @@ export default function TimelineEditor({
                            key={`act-block-${outline.actNumber}`}
                            onClick={() => {
                              if (isBusy) return;
-                             void handleRegenerateAct(outline.actNumber);
+                             // Same reasoning as the V1 collapsed block: select, don't
+                             // generate. A plain click used to fire real TTS synthesis
+                             // immediately, with no confirmation and no way to undo it
+                             // if it was an accidental click on the wrong act.
+                             setSelectedActNumber(outline.actNumber);
+                             setSelectedScene(null);
+                             setSelectedSceneTrack(null);
+                             setSelectedSceneKeys([]);
+                             setActiveTab('scene');
                            }}
-                           title={`Act ${outline.actNumber}: ${outline.title} — click to generate this act's audio`}
+                           title={`Act ${outline.actNumber}: ${outline.title} — click to select it`}
                            className={`absolute rounded-md border-2 border-dashed overflow-hidden cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                              isBusy
-                               ? 'border-purple-400 bg-purple-50 text-purple-500 animate-pulse'
-                               : 'border-gray-300 bg-gray-50 text-gray-400 hover:border-purple-300 hover:text-purple-500 hover:bg-purple-50/40'
+                               ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text animate-pulse'
+                               : 'border-ed-border-strong bg-ed-well text-ed-text-faint hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
                            }`}
                            style={{
                              left: placeholderStart * scale,
@@ -7947,7 +8501,7 @@ export default function TimelineEditor({
                          masterNarrationRndRef.current?.updatePosition({ x: 0, y: 0 });
                        }}
                        style={{ top: '15%' }}
-                       className={`rounded-md border border-purple-600 bg-gradient-to-r from-purple-100 to-purple-50 text-purple-900 overflow-hidden shadow-sm transition-transform ${
+                       className={`rounded-md border border-ed-accent/50 bg-ed-accent/15 text-ed-accent overflow-hidden shadow-sm transition-transform ${
                          trackStates.A1.locked ? '' : 'cursor-grab active:cursor-grabbing'
                        }`}
                        title="The full narration is anchored to the start of the timeline"
@@ -7970,14 +8524,14 @@ export default function TimelineEditor({
                          <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                            <path suppressHydrationWarning
                              d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin(i * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                             stroke="#9333ea" strokeWidth="2.5" strokeLinecap="round"
+                             stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
                            />
                          </svg>
                        </div>
                        <button
                          onClick={() => setMasterAudioUrl(null)}
                          title="Remove master narration"
-                         className="absolute right-1 top-1 text-purple-400 hover:text-red-500 transition-colors z-10"
+                         className="absolute right-1 top-1 text-ed-accent-text hover:text-ed-danger transition-colors z-10"
                        >
                          <Trash2 size={10} />
                        </button>
@@ -7985,73 +8539,18 @@ export default function TimelineEditor({
                    ) : (
                      /* ─ PER-SCENE clips (shown only when no master narration) ─ */
                      <>
-                     {scenes.map((scene, idx) => {
-                        const leftPx = getSceneLeftPosition('A1', idx);
-                        const isSelected = selectedSceneKeys.includes(`${scene.id}_A1`)
-                          || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0);
-                        return (
-                        <div
-                          key={`audio-${scene.id}`}
-                          ref={el => { blockRefs.current[`${scene.id}_A1`] = el; }}
-                          data-base-left={leftPx}
-                          data-scaled={isSelected ? '1' : '0'}
-                          draggable={!trackStates.A1.locked}
-                          onDragStart={(e) => {
-                             if (trackStates.A1.locked) { e.preventDefault(); return; }
-                             e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', track: 'A1', sceneId: scene.id, index: idx }));
-                             setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
-                             e.dataTransfer.effectAllowed = 'copyMove';
-                          }}
-                          onDragEnd={() => { setDraggingScene(null); setA1DragInsertIndex(null); }}
-                          onClick={(e) => { if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1', idx); }}
-                          onContextMenu={(e) => {
-                            e.preventDefault();
-                            if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
-                          }}
-                          className={`h-[70%] absolute top-[15%] left-0 rounded-md border border-gray-800 bg-purple-50 text-purple-800 cursor-pointer transition-colors overflow-hidden p-1 shadow-sm ${
-                            isSelected
-                              ? 'ring-2 ring-gray-900 ring-offset-1 z-20 bg-purple-200'
-                              : 'hover:bg-purple-100 z-10'
-                          }`}
-                          style={{
-                            transform: blockTransform(leftPx, isSelected),
-                            width: `${(scene.video_duration || 5) * scale}px`,
-                            opacity: draggingScene?.id === scene.id ? 0.001 : 1,
-                            transition: isReordering && draggingScene?.id !== scene.id ? REORDER_SLIDE : undefined
-                          }}
-                        >
-                          <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
-                             <Volume2 size={9} />
-                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{scene.voice_over_beat}</span>
-                          </div>
-                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
-                              <path suppressHydrationWarning
-                                d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                                stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} strokeWidth="2.5" strokeLinecap="round"
-                              />
-                            </svg>
-                          </div>
-                          {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
-                            <>
-                              <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5, scene.trim_start || 0)} />
-                              <div className="absolute right-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-purple-500/80 hover:bg-purple-400 z-50 rounded-r-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'right', scene.video_duration || 5, scene.trim_start || 0)} />
-                            </>
-                          )}
-                        </div>
-                        );
-                     })}
+                     {a1SceneBlocks}
 
                      {a1DragInsertIndex !== null && draggingScene?.track === 'A1' && (
                         <div 
-                           className="h-[70%] absolute top-[15%] left-0 rounded-md border-2 border-dashed border-purple-400 bg-purple-100/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
+                           className="h-[70%] absolute top-[15%] left-0 rounded-md border-2 border-dashed border-ed-accent-border bg-ed-accent-soft/50 z-0 pointer-events-none flex items-center justify-center overflow-hidden"
                            style={{
                               transform: blockTransform(getUnshiftedLeftPosition('A1', a1DragInsertIndex), false),
                               width: `${(draggingScene.duration || 5) * scale}px`,
                               transition: REORDER_SLIDE
                            }}
                         >
-                           <div className="flex items-center text-purple-400 opacity-50 gap-2">
+                           <div className="flex items-center text-ed-accent-text opacity-50 gap-2">
                               <Volume2 size={16} />
                               <span className="text-xs font-bold">Move Here</span>
                            </div>
@@ -8097,10 +8596,10 @@ export default function TimelineEditor({
                            persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
-                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
+                        className={`rounded-md border border-ed-info-border cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A1') || selectedSceneKeys.includes(`${clip.id}_A1`)
-                            ? 'ring-2 ring-blue-600 ring-offset-1 z-30 scale-[1.02] bg-blue-200'
-                            : 'bg-blue-100/90 z-20'
+                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 scale-[1.02] bg-ed-info-soft'
+                            : 'bg-ed-info-soft/90 z-20'
                         }`}
                         onClick={(e: any) => {
                           e.stopPropagation();
@@ -8126,7 +8625,7 @@ export default function TimelineEditor({
                         }}
                       >
                          <div 
-                           className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 relative z-20 cursor-move"
+                           className="flex items-center gap-1.5 opacity-90 mb-0.5 text-ed-info relative z-20 cursor-move"
                            draggable={!trackStates.A1.locked}
                            onDragStart={(e) => {
                              e.stopPropagation();
@@ -8155,7 +8654,7 @@ export default function TimelineEditor({
                                     const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
                                     return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
                                  }).join(' ')}
-                                 stroke="#3b82f6" 
+                                 stroke="currentColor" 
                                  strokeWidth="2.5" 
                                  strokeLinecap="round"
                               />
@@ -8164,20 +8663,20 @@ export default function TimelineEditor({
 
                          {/* Visible Left Drag Handle (Trim Start / Left-to-Right decrease) */}
                          <div 
-                           className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-600/80 hover:bg-blue-500 z-50 rounded-l-md transition-colors flex items-center justify-center group/handle shadow-sm"
+                           className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-ed-info/80 hover:bg-ed-info z-50 rounded-l-md transition-colors flex items-center justify-center group/handle shadow-sm"
                            title="Drag left/right to trim start of audio"
                            onPointerDown={(e) => handleResizeStart(e, clip.id, 'A1_clip', 'left', clip.duration, clip.trimStart || 0)}
                          >
-                           <div className="w-0.5 h-3 bg-white/80 rounded-full"></div>
+                           <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full"></div>
                          </div>
 
                          {/* Visible Right Drag Handle (Duration / Right-to-Left decrease) */}
                          <div 
-                           className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-600/80 hover:bg-blue-500 z-50 rounded-r-md transition-colors flex items-center justify-center group/handle shadow-sm"
+                           className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-ed-info/80 hover:bg-ed-info z-50 rounded-r-md transition-colors flex items-center justify-center group/handle shadow-sm"
                            title="Drag left/right to decrease/increase duration"
                            onPointerDown={(e) => handleResizeStart(e, clip.id, 'A1_clip', 'right', clip.duration, clip.trimStart || 0)}
                          >
-                           <div className="w-0.5 h-3 bg-white/80 rounded-full"></div>
+                           <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full"></div>
                          </div>
                       </Rnd>
                     ))}
@@ -8188,9 +8687,9 @@ export default function TimelineEditor({
 
               {/* Music Track (A2) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-[50]'} bg-white px-5 flex items-center justify-between border-r border-gray-200 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-gray-400`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-[50]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
                     <span 
-                      className="text-[13px] font-bold text-gray-600 cursor-pointer hover:text-purple-600 transition-colors"
+                      className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
                         const allA2Keys = timelineClips.filter(c => c.trackId === 'A2').map(c => `${c.id}_A2`);
                         setSelectedSceneKeys(allA2Keys);
@@ -8202,18 +8701,18 @@ export default function TimelineEditor({
                     >
                       A2
                     </span>
-                    <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.locked ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                    <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A2.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                        {trackStates.A2.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
                     <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A2' ? null : 'A2'); }} className={`group/mute relative flex items-center justify-center hover:text-gray-700 transition-colors ${trackStates.A2.muted || trackStates.A2.volume === 0 ? 'text-purple-600 hover:text-purple-700' : ''}`}>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A2' ? null : 'A2'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A2.muted || trackStates.A2.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                          {trackStates.A2.muted || trackStates.A2.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-gray-800 text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
                       </button>
                       {activeVolumePopup === 'A2' && (
-                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-purple-900 border border-purple-700/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
-                          <span className="text-[10px] font-bold text-purple-100">{Math.round((trackStates.A2.volume ?? 1) * 100)}</span>
+                        <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
+                          <span className="text-[10px] font-bold text-ed-accent-text">{Math.round((trackStates.A2.volume ?? 1) * 100)}</span>
                           <div className="relative flex-1 w-full h-full flex justify-center overflow-hidden">
                              <input 
                                type="range" min="0" max="1" step="0.05" 
@@ -8222,7 +8721,7 @@ export default function TimelineEditor({
                                   const vol = parseFloat(e.target.value);
                                   setTrackVolume('A2', vol);
                                }} 
-                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-purple-950 rounded-full outline-none accent-purple-400 -rotate-90 origin-center cursor-pointer"
+                               className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[90px] h-1.5 appearance-none bg-ed-accent-hover rounded-full outline-none accent-ed-accent-text -rotate-90 origin-center cursor-pointer"
                              />
                           </div>
                         </div>
@@ -8230,7 +8729,7 @@ export default function TimelineEditor({
                     </div>
                  </div>
                  <div 
-                   className={`flex flex-1 relative h-12 rounded-r-md items-center border transition-colors ${trackStates.A2.locked ? 'bg-gray-100 border-gray-200 border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-gray-50 border-gray-200 border-dashed hover:bg-gray-100 cursor-pointer'}`}
+                   className={`flex flex-1 relative h-12 rounded-r-md items-center border transition-colors ${trackStates.A2.locked ? 'bg-ed-raised border-ed-border border-solid cursor-not-allowed opacity-60 grayscale' : 'bg-ed-well border-ed-border border-dashed hover:bg-ed-raised cursor-pointer'}`}
                    style={{ width: `${timelineDuration * scale}px` }}
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
@@ -8268,8 +8767,8 @@ export default function TimelineEditor({
                    }}
                  >
                     <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50 z-0">
-                       <Music size={12} className="mr-2 text-gray-500"/>
-                       <span className="text-[10px] text-gray-500 font-bold italic">Drop audio here...</span>
+                       <Music size={12} className="mr-2 text-ed-text-dim"/>
+                       <span className="text-[10px] text-ed-text-dim font-bold italic">Drop audio here...</span>
                     </div>
 
                     {/* Scene-boundary guide lines — only while a transition-music card
@@ -8282,8 +8781,8 @@ export default function TimelineEditor({
                              key={`music-guide-${boundaryIdx}`}
                              className={`absolute top-0 bottom-0 w-0.5 pointer-events-none z-20 transition-colors ${
                                 musicDragNearestBoundaryIdx === boundaryIdx
-                                   ? 'bg-amber-400 shadow-[0_0_10px_3px_rgba(251,191,36,0.9)]'
-                                   : 'bg-purple-300/50'
+                                   ? 'bg-ed-warn shadow-[0_0_10px_3px_rgba(251,191,36,0.9)]'
+                                   : 'bg-ed-accent/50'
                              }`}
                              style={{ left: `${sceneOffsets[boundaryIdx] * scale}px` }}
                           />
@@ -8331,10 +8830,10 @@ export default function TimelineEditor({
                            persistTimelineItemFields(clip.id, { duration: finalDuration, start_time: newStartTime, trim_start: newTrimStart });
                         }}
                         style={{ top: '15%' }}
-                        className={`rounded-md border border-blue-400 cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
+                        className={`rounded-md border border-ed-info-border cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A2') || selectedSceneKeys.includes(`${clip.id}_A2`)
-                            ? 'ring-2 ring-blue-600 ring-offset-1 z-30 scale-[1.02] bg-blue-200'
-                            : 'bg-blue-100/90 z-20'
+                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 scale-[1.02] bg-ed-info-soft'
+                            : 'bg-ed-info-soft/90 z-20'
                         } ${
                           // Brief "yes, that landed" confirmation right after a
                           // transition-music preset is dropped — same 900ms pulse
@@ -8368,24 +8867,24 @@ export default function TimelineEditor({
                       >
                          {/* Visible Left Drag Handle (Trim Start / Left-to-Right decrease) */}
                          <div 
-                           className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-600/80 hover:bg-blue-500 z-50 rounded-l-md transition-colors flex items-center justify-center group/handle shadow-sm"
+                           className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-ed-info/80 hover:bg-ed-info z-50 rounded-l-md transition-colors flex items-center justify-center group/handle shadow-sm"
                            title="Drag left/right to trim start of audio"
                            onPointerDown={(e) => handleResizeStart(e, clip.id, 'A2_clip', 'left', clip.duration, clip.trimStart || 0)}
                          >
-                           <div className="w-0.5 h-3 bg-white/80 rounded-full"></div>
+                           <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full"></div>
                          </div>
 
                          {/* Visible Right Drag Handle (Duration / Right-to-Left decrease) */}
                          <div 
-                           className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-blue-600/80 hover:bg-blue-500 z-50 rounded-r-md transition-colors flex items-center justify-center group/handle shadow-sm"
+                           className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize bg-ed-info/80 hover:bg-ed-info z-50 rounded-r-md transition-colors flex items-center justify-center group/handle shadow-sm"
                            title="Drag left/right to decrease/increase duration"
                            onPointerDown={(e) => handleResizeStart(e, clip.id, 'A2_clip', 'right', clip.duration, clip.trimStart || 0)}
                          >
-                           <div className="w-0.5 h-3 bg-white/80 rounded-full"></div>
+                           <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full"></div>
                          </div>
 
                          <div 
-                           className="flex items-center gap-1.5 opacity-90 mb-0.5 text-blue-900 relative z-20 cursor-move"
+                           className="flex items-center gap-1.5 opacity-90 mb-0.5 text-ed-info relative z-20 cursor-move"
                            draggable={!trackStates.A2.locked}
                            onDragStart={(e) => {
                              e.stopPropagation();
@@ -8414,7 +8913,7 @@ export default function TimelineEditor({
                                     const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
                                     return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
                                  }).join(' ')}
-                                 stroke="#3b82f6" 
+                                 stroke="currentColor" 
                                  strokeWidth="2.5" 
                                  strokeLinecap="round"
                               />
@@ -8491,12 +8990,13 @@ export default function TimelineEditor({
         const estimatedMenuHeight =
           MENU_VERTICAL_PADDING +
           MENU_ITEM_HEIGHT +
-          (isSingleV1Scene ? MENU_ITEM_HEIGHT * 2 + MENU_SEPARATOR_HEIGHT : 0) +
+          // Three items for a single V1 scene now: Replace media, Preview, Clear visual.
+          (isSingleV1Scene ? MENU_ITEM_HEIGHT * 3 + MENU_SEPARATOR_HEIGHT : 0) +
           (isNarrationRow ? MENU_ITEM_HEIGHT + MENU_SEPARATOR_HEIGHT : 0);
 
         return (
           <div
-            className="fixed bg-white border border-gray-200 shadow-xl rounded-lg py-1 z-[9999] min-w-[190px] animate-in fade-in zoom-in-95 duration-100"
+            className="fixed bg-ed-surface border border-ed-border shadow-xl rounded-lg py-1 z-[9999] min-w-[190px] animate-in fade-in zoom-in-95 duration-100"
             style={{
               top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - estimatedMenuHeight - 8)),
               left: Math.min(contextMenu.x, window.innerWidth - 200),
@@ -8505,7 +9005,7 @@ export default function TimelineEditor({
             {isNarrationRow && (
               <>
                 <button
-                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-ed-text-dim hover:bg-ed-raised flex items-center gap-2.5 transition-colors"
                   onClick={(e) => {
                     // A global window click listener closes this menu, so every item
                     // has to stop propagation or it unmounts before its own handler runs.
@@ -8513,43 +9013,57 @@ export default function TimelineEditor({
                     openSceneBoard();
                   }}
                 >
-                  <Clapperboard size={15} className="text-purple-600" />
+                  <Clapperboard size={15} className="text-ed-accent-text" />
                   <span className="flex-1">Open Scene Board</span>
                 </button>
-                <div className="h-px bg-gray-100 mx-1 my-1" />
+                <div className="h-px bg-ed-raised mx-1 my-1" />
               </>
             )}
             {isSingleV1Scene && (
               <>
                 <button
-                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-ed-text-dim hover:bg-ed-raised flex items-center gap-2.5 transition-colors"
                   onClick={(e) => {
                     e.stopPropagation();
                     focusSceneVisualGeneration(contextMenu.id);
                     setContextMenu(null);
                   }}
                 >
-                  <ImageIcon size={15} className="text-blue-500" />
+                  <ImageIcon size={15} className="text-ed-info" />
                   <span className="flex-1">Replace media</span>
                 </button>
                 <button
-                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-gray-700 hover:bg-gray-100 flex items-center gap-2.5 transition-colors"
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-ed-text-dim hover:bg-ed-raised flex items-center gap-2.5 transition-colors"
                   onClick={(e) => {
                     e.stopPropagation();
                     setIsolatedSceneId(isCurrentlyIsolated ? null : contextMenu.id);
                     setContextMenu(null);
                   }}
                 >
-                  <Repeat size={15} className="text-purple-500" />
+                  <Repeat size={15} className="text-ed-accent-text" />
                   <span className="flex-1">
                     {isCurrentlyIsolated ? 'Exit scene preview' : 'Preview this scene only'}
                   </span>
                 </button>
-                <div className="h-px bg-gray-100 mx-1 my-1" />
+                {/* Sits directly above the red Delete entry on purpose: these are the
+                    two "get rid of what's here" actions, and the whole point is that
+                    the non-destructive one is the easier of the two to reach. */}
+                <button
+                  className="w-full text-left px-3 py-2 text-[13px] font-semibold text-ed-text-dim hover:bg-ed-raised flex items-center gap-2.5 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleClearSceneVisuals([contextMenu.id]);
+                    setContextMenu(null);
+                  }}
+                >
+                  <RefreshCw size={15} className="text-ed-warn" />
+                  <span className="flex-1">Clear visual</span>
+                </button>
+                <div className="h-px bg-ed-raised mx-1 my-1" />
               </>
             )}
             <button
-              className="w-full text-left px-3 py-2 text-[13px] font-semibold text-red-600 hover:bg-red-50 hover:text-red-700 flex items-center gap-2.5 transition-colors"
+              className="w-full text-left px-3 py-2 text-[13px] font-semibold text-ed-danger hover:bg-ed-danger-soft hover:text-ed-danger flex items-center gap-2.5 transition-colors"
               onClick={(e) => {
                 e.stopPropagation();
                 if (isBulk) {
@@ -8562,87 +9076,11 @@ export default function TimelineEditor({
             >
               <Trash2 size={15} />
               <span className="flex-1">{label}</span>
-              <kbd className="text-[10px] font-sans font-medium text-gray-400 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5">Del</kbd>
+              <kbd className="text-[10px] font-sans font-medium text-ed-text-faint bg-ed-raised border border-ed-border rounded px-1.5 py-0.5">Del</kbd>
             </button>
           </div>
         );
       })()}
-
-      {/* ── Scene Board modal ──
-          Sits below the context menu (z-[9999]) and the export overlay (z-[10000]),
-          above everything else. Backdrop click and Escape both close it; unlike the
-          export overlay there is nothing irreversible running behind it, so it is
-          freely dismissible. */}
-      {isSceneBoardOpen && (
-        <div
-          className="fixed inset-0 z-[9990] flex items-start justify-center bg-black/60 backdrop-blur-sm p-4 sm:p-8 overflow-y-auto"
-          onClick={() => setIsSceneBoardOpen(false)}
-        >
-          <div
-            className="bg-gray-50 rounded-2xl shadow-2xl w-full max-w-4xl my-auto overflow-hidden"
-            /* The board is full of buttons and textareas; without this every click
-               inside it would bubble to the backdrop and close the modal. */
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="flex items-center justify-between px-5 py-3 bg-white border-b border-gray-200 sticky top-0 z-10">
-              <div className="flex items-center gap-2 min-w-0">
-                <Clapperboard size={16} className="text-purple-600 shrink-0" />
-                <h2 className="text-sm font-bold text-gray-900 truncate">Scene Board</h2>
-              </div>
-              <button
-                onClick={() => setIsSceneBoardOpen(false)}
-                className="p-1.5 rounded-md text-gray-400 hover:text-gray-900 hover:bg-gray-100 transition-colors shrink-0"
-                title="Close (Esc)"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="p-4 sm:p-6">
-              {isLoadingSceneBoard ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-3">
-                  <Loader2 size={22} className="animate-spin text-purple-600" />
-                  <p className="text-xs font-medium text-gray-500">Loading the Scene Board…</p>
-                </div>
-              ) : sceneBoardError ? (
-                <div className="flex flex-col items-center justify-center py-20 gap-3 text-center px-6">
-                  <AlertTriangle size={22} className="text-amber-500" />
-                  <p className="text-xs font-medium text-gray-600">{sceneBoardError}</p>
-                  <button
-                    onClick={() => { setSceneBoardError(null); openSceneBoard(); }}
-                    className="text-xs font-bold text-purple-600 hover:text-purple-700"
-                  >
-                    Try again
-                  </button>
-                </div>
-              ) : sceneBoardData ? (
-                <SceneBoard
-                  projectId={sceneBoardData.projectId}
-                  workspaceId={sceneBoardData.workspaceId}
-                  acts={sceneBoardData.acts.map((act) => act.outline)}
-                  workspaceTheme={sceneBoardData.workspaceTheme}
-                  topic={sceneBoardData.topic}
-                  narrativeArc={sceneBoardData.narrativeArc}
-                  scriptHook={sceneBoardData.scriptHook}
-                  visualAesthetic={sceneBoardData.visualAesthetic}
-                  targetDuration={sceneBoardData.targetDuration}
-                  isSinglePass={sceneBoardData.isSinglePass}
-                  resumedActs={sceneBoardData.acts}
-                  /* Approving here must not push to the Timeline route — we are
-                     already on it. Close instead, drop the cached payload so a
-                     reopen refetches, and refresh so the editor's server-loaded
-                     scenes reflect what was just approved. */
-                  onFinalized={() => {
-                    setIsSceneBoardOpen(false);
-                    setSceneBoardData(null);
-                    router.refresh();
-                  }}
-                />
-              ) : null}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Blocking export overlay.
           Rendered last and at z-[10000] so it sits above every other layer in this
@@ -8655,28 +9093,28 @@ export default function TimelineEditor({
           cannot be cancelled server-side, so offering a dismiss would only hide
           progress for work that is still running. */}
       {isRendering && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/70 backdrop-blur-sm">
-          <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center">
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-ed-media/70 backdrop-blur-sm">
+          <div className="bg-ed-surface rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center">
             <div className="flex items-center justify-center gap-2.5 mb-5">
-              <Loader2 size={18} className="animate-spin text-purple-600" />
-              <h2 className="text-sm font-bold text-gray-900">Exporting video</h2>
+              <Loader2 size={18} className="animate-spin text-ed-accent-text" />
+              <h2 className="text-sm font-bold text-ed-text">Exporting video</h2>
             </div>
 
-            <div className="text-5xl font-extrabold text-gray-900 tabular-nums mb-1">
+            <div className="text-5xl font-extrabold text-ed-text tabular-nums mb-1">
               {Math.round(renderProgress * 100)}%
             </div>
-            <p className="text-xs font-medium text-gray-500 mb-5">
+            <p className="text-xs font-medium text-ed-text-dim mb-5">
               {humanizeRenderStage(renderStage)}
             </p>
 
-            <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden mb-5">
+            <div className="h-2 w-full bg-ed-raised rounded-full overflow-hidden mb-5">
               <div
-                className="h-full bg-gradient-to-r from-purple-500 to-indigo-600 transition-all duration-300"
+                className="h-full bg-gradient-to-r from-ed-accent to-ed-accent transition-all duration-300"
                 style={{ width: `${Math.max(2, Math.round(renderProgress * 100))}%` }}
               />
             </div>
 
-            <p className="text-[11px] text-gray-400 leading-relaxed">
+            <p className="text-[11px] text-ed-text-faint leading-relaxed">
               Please keep this window open until the export finishes.
             </p>
           </div>

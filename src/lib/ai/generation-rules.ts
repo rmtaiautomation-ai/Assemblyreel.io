@@ -62,7 +62,7 @@ export interface NicheProfile {
   preferredSceneTypes: readonly SceneType[];
 }
 
-const NICHE_PROFILES: Record<NicheKey, NicheProfile> = {
+export const NICHE_PROFILES: Record<NicheKey, NicheProfile> = {
   mythology: {
     key: "mythology",
     scriptTone: "Epic, NLT Bible style, grandiose, and poetic scale.",

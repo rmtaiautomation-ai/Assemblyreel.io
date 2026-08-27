@@ -14,6 +14,16 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
     .eq('id', videoId)
     .single();
 
+  // The channel's saved narration voice, read separately rather than joined onto the
+  // project query above: `video_projects` carries no workspace columns, and this is a
+  // read-only display value for the Voiceover panel, not something the editor's project
+  // state needs to react to.
+  const { data: workspaceVoice } = await supabase
+    .from('workspaces')
+    .select('narration_voice_id')
+    .eq('id', workspaceId)
+    .single();
+
   const { data: dbScenes } = await supabase
     .from('scenes')
     .select('*')
@@ -41,8 +51,8 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
   if (!project) {
     return (
       <div className="flex flex-col items-center justify-center h-[50vh]">
-        <h2 className="text-xl font-bold text-gray-800 mb-4">Project not found</h2>
-        <Link href={`/workspaces/${workspaceId}`} className="text-purple-600 hover:underline">
+        <h2 className="text-xl font-bold text-ed-text mb-4">Project not found</h2>
+        <Link href={`/workspaces/${workspaceId}`} className="text-ed-accent-text hover:underline">
           Return to Workspace
         </Link>
       </div>
@@ -88,7 +98,7 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
   // handler and "Sync Data" needed client state, and neither is reachable from a
   // server component. Moving it into the client tree is what makes them real.
   return (
-    <div className="fixed inset-0 z-50 w-screen h-screen flex flex-col overflow-hidden bg-gray-50 text-gray-900">
+    <div className="fixed inset-0 z-50 w-screen h-screen flex flex-col overflow-hidden bg-ed-base text-ed-text">
       <div className="flex-1 flex flex-col min-h-0 relative">
          <TimelineEditor
            workspaceId={workspaceId}
@@ -97,6 +107,7 @@ export default async function TimelineEditorPage({ params }: { params: { slug: s
            initialMedia={media || []}
            initialTimelineItems={timelineItems || []}
            initialOverlayClips={overlayClips || []}
+           channelVoiceId={workspaceVoice?.narration_voice_id || ""}
          />
       </div>
     </div>

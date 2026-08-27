@@ -3,6 +3,7 @@ import { designSceneVisuals } from "./agents/visual-architect";
 import { assembleVideoPrompt } from "./agents/prompt-assembler";
 import { reviewPromptsSafety } from "./agents/safety-officer";
 import type { SceneType } from "./generation-rules";
+import type { FormatProfile } from "./format-profile";
 
 /**
  * The 7-Agent orchestrator.
@@ -39,6 +40,13 @@ export interface OrchestrationParams {
   visualAesthetic: string;
   nicheTheme?: string;
   /**
+   * The channel's resolved format spec, threaded to agents 3-6.
+   *
+   * Optional for the same reason it is optional on the text agents: absent, each agent
+   * falls back to keyword resolution from `nicheTheme` and behaves exactly as before.
+   */
+  formatProfile?: FormatProfile;
+  /**
    * Pre-computed character blueprints, cast once across the whole project.
    *
    * The Casting Director is documented as "the only agent that needs to see every
@@ -67,6 +75,7 @@ export async function enrichScenesWithVisualPrompts({
   topic,
   visualAesthetic,
   nicheTheme,
+  formatProfile,
   blueprints: providedBlueprints,
 }: OrchestrationParams): Promise<OrchestrationResult> {
   const warnings: string[] = [];
@@ -87,6 +96,7 @@ export async function enrichScenesWithVisualPrompts({
       topic,
       visualAesthetic,
       nicheTheme,
+      formatProfile,
     });
 
     blueprints = casting.blueprints ?? {};
@@ -105,6 +115,7 @@ export async function enrichScenesWithVisualPrompts({
     topic,
     visualAesthetic,
     nicheTheme,
+    formatProfile,
   });
 
   const failedVisualCount = visualResults.filter((result) => !result.visuals).length;
@@ -126,6 +137,7 @@ export async function enrichScenesWithVisualPrompts({
       blueprints,
       visualAesthetic,
       nicheTheme,
+      formatProfile,
     });
   });
 
