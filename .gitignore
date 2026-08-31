@@ -60,3 +60,8 @@ next-env.d.ts
 # repo at build time. Without this carve-out these ship on disk locally but
 # silently vanish for anyone who clones the repo fresh or deploys it.
 !/public/audio/transitions/
+
+# scratch / working files that must never be committed
+*_tmp.txt
+*.tmp
+/scratch/

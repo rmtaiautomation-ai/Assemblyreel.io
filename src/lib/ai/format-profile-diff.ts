@@ -15,8 +15,21 @@
 
 import type { FormatProfile, FormatProfileOverride } from "./format-profile";
 
-function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
-  return a.length === b.length && a.every((v, i) => v === b[i]);
+function arraysEqual(a: readonly unknown[], b: readonly unknown[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((value, i) => {
+    const other = b[i];
+    // Object entries — `arcBeats` and `beatSheet` — are compared by VALUE, not identity.
+    // The settings form binds to a deep clone of the resolved profile, so every object in
+    // it is a fresh reference and an identity check reported "modified from preset" on a
+    // beat sheet nobody had touched. That badge is also what decides whether the array is
+    // written into the workspace override, so an untouched preset was being frozen into the
+    // database and would then stop tracking later edits to the preset itself.
+    if (value !== null && typeof value === "object") {
+      return JSON.stringify(value) === JSON.stringify(other);
+    }
+    return value === other;
+  });
 }
 
 /**
@@ -27,7 +40,7 @@ function arraysEqual(a: readonly string[], b: readonly string[]): boolean {
  */
 export function isFieldModified<T>(value: T, presetValue: T): boolean {
   if (Array.isArray(value) && Array.isArray(presetValue)) {
-    return !arraysEqual(value as readonly string[], presetValue as readonly string[]);
+    return !arraysEqual(value as readonly unknown[], presetValue as readonly unknown[]);
   }
   return value !== presetValue;
 }
@@ -58,6 +71,12 @@ export function diffFormatProfile(
   }
   if (isFieldModified(current.identity.audienceStance, preset.identity.audienceStance)) {
     identity.audienceStance = current.identity.audienceStance;
+  }
+  if (isFieldModified(current.identity.sourceRegister, preset.identity.sourceRegister)) {
+    identity.sourceRegister = current.identity.sourceRegister;
+  }
+  if (isFieldModified(current.identity.characterRule, preset.identity.characterRule)) {
+    identity.characterRule = current.identity.characterRule;
   }
   if (Object.keys(identity).length) override.identity = identity;
 
@@ -120,6 +139,9 @@ export function diffFormatProfile(
   ) {
     coldOpen.bannedOpenings = current.structure.coldOpen.bannedOpenings;
   }
+  if (isFieldModified(current.structure.coldOpen.sequence, preset.structure.coldOpen.sequence)) {
+    coldOpen.sequence = current.structure.coldOpen.sequence;
+  }
 
   const structure: NonNullable<FormatProfileOverride["structure"]> = {};
   if (isFieldModified(current.structure.actCycle, preset.structure.actCycle)) {
@@ -127,6 +149,9 @@ export function diffFormatProfile(
   }
   if (isFieldModified(current.structure.arcBeats, preset.structure.arcBeats)) {
     structure.arcBeats = current.structure.arcBeats;
+  }
+  if (isFieldModified(current.structure.beatSheet, preset.structure.beatSheet)) {
+    structure.beatSheet = current.structure.beatSheet;
   }
   if (
     isFieldModified(current.structure.terminalRevelation, preset.structure.terminalRevelation)
@@ -162,6 +187,21 @@ export function diffFormatProfile(
   }
   if (isFieldModified(current.content.rotatingDevices, preset.content.rotatingDevices)) {
     content.rotatingDevices = current.content.rotatingDevices;
+  }
+  if (isFieldModified(current.content.apparatusRule, preset.content.apparatusRule)) {
+    content.apparatusRule = current.content.apparatusRule;
+  }
+  if (isFieldModified(current.content.sensoryRule, preset.content.sensoryRule)) {
+    content.sensoryRule = current.content.sensoryRule;
+  }
+  if (isFieldModified(current.content.fragmentRule, preset.content.fragmentRule)) {
+    content.fragmentRule = current.content.fragmentRule;
+  }
+  if (isFieldModified(current.content.scaleRule, preset.content.scaleRule)) {
+    content.scaleRule = current.content.scaleRule;
+  }
+  if (isFieldModified(current.content.transitionPhrases, preset.content.transitionPhrases)) {
+    content.transitionPhrases = current.content.transitionPhrases;
   }
   if (Object.keys(content).length) override.content = content;
 

@@ -46,3 +46,68 @@ The user has already: created an AWS account (Paid plan, so the account has full
 - This plan intentionally covers architecture and phasing only — no code has been written yet. Confirm scope with the user before starting Phase 1.
 - The media-sync step (Phase 2) is new; it does not yet exist anywhere in the codebase, unlike the remote→local caching it mirrors.
 - `renderPollRef` cleanup (Phase 4) should be fixed regardless of whether Lambda work has started, since it's a pre-existing gap independent of this migration.
+
+## Implementation Status (2026-08-30)
+Phases 2–5 are **coded and gated behind config** — nothing here changes local-render
+behavior until AWS credentials are set. Only Phase 1's account-side steps remain.
+
+- **Phase 1 — not done.** `@remotion/lambda` (and `@aws-sdk/client-s3` +
+  `@aws-sdk/s3-request-presigner` for the sync step) are installed, but the user
+  still needs to: set the AWS budget alert, create the IAM user via
+  `npx remotion lambda policies validate` + the console, run
+  `npx remotion lambda functions deploy` and `npx remotion lambda sites create`,
+  then fill in the six `REMOTION_*` vars appended to `.env.local` (currently blank).
+- **Phase 2 — done.** [`src/lib/render/s3-sync.ts`](../src/lib/render/s3-sync.ts)
+  (`syncPayloadMediaToS3`) uploads local + still-remote scene/audio media to S3 and
+  returns presigned GET URLs (6h expiry), deduping via `HeadObject` so re-renders
+  don't re-upload unchanged assets. [`lambda-config.ts`](../src/lib/render/lambda-config.ts)
+  holds `isLambdaConfigured()` / `getLambdaConfig()`.
+- **Phase 3 — done.** [`src/lib/render/lambda-render.ts`](../src/lib/render/lambda-render.ts)
+  wraps `renderMediaOnLambda`/`getRenderProgress`.
+  [`src/app/api/render-remotion/route.ts`](../src/app/api/render-remotion/route.ts)'s
+  POST branches on `isLambdaConfigured()`: false → unchanged local `renderMedia` path;
+  true → S3 sync (Phase 2) then submits to Lambda and returns immediately with
+  `{mode: "lambda", renderId}`.
+- **Phase 4 — done.** GET now pulls live progress from AWS on each poll for
+  in-flight Lambda renders (local renders still get pushed progress via
+  `onProgress`, as before) and returns `{mode, outputUrl, error}` alongside
+  `progress`/`stage`. `TimelineEditor.tsx`'s `handleRenderVideo` re-arms the poll
+  with `completeOnDone: true` once a Lambda submission is confirmed, and reads
+  `outputUrl` from the poll response (an S3 URL) instead of assuming the local
+  `final_exports/{id}.mp4` path. Added a real unmount-cleanup `useEffect` for
+  `renderPollRef` (previously only cleared on explicit stop, never on unmount).
+- **Phase 5 — done (basic).** The in-flight lock is the progress map itself — a
+  project is "in flight" whenever its entry exists and isn't `done`/`error`
+  (40-min staleness ceiling so a crashed dev server can't wedge it permanently);
+  a second POST for the same `projectId` gets a 409. S3 sync and the Lambda
+  submission call are wrapped in a 5-min / 60s timeout respectively.
+
+**Not done / deliberately deferred:** the CLI test render and the
+GB-seconds-per-render measurement in Verification — both require the Phase 1
+credentials to exist first. `REMOTION_S3_BUCKET_NAME` and `REMOTION_SERVE_URL`
+come straight out of the `sites create` output; no separate manual bucket
+creation step is needed despite Phase 2's original "create an S3 bucket" framing.
+
+## Verified Working (2026-08-31)
+Phase 1 finished and a real 53s test render succeeded end-to-end through the
+app UI: media synced to S3 → Lambda rendered → progress polled to completion →
+downloaded from the resulting S3 URL. Two real bugs were caught and fixed
+during that first test (both already applied, see git history):
+- `s3-sync.ts`'s `S3Client` had no explicit credentials, so every upload
+  silently failed and fell back to an unreachable `localhost` URL — fixed by
+  passing `REMOTION_AWS_ACCESS_KEY_ID`/`REMOTION_AWS_SECRET_ACCESS_KEY`
+  explicitly (the default AWS SDK credential chain doesn't know that naming).
+- That same fallback-to-original-URL behavior for a *local* asset was itself
+  wrong regardless of the cause — a `localhost` URL can never be reached by a
+  Lambda worker, so it now throws immediately with a clear message instead of
+  deferring to a confusing failure deep inside Remotion's image loader.
+
+**Known follow-up, not yet done:** this AWS account's default Lambda
+"Concurrent executions" quota is only 10, well under what `renderMediaOnLambda`
+wants for fast parallel chunk rendering — the first render hit "Rate Exceeded"
+until `concurrency` was capped to 6 (`lambda-render.ts`, overridable via
+`REMOTION_LAMBDA_CONCURRENCY` in `.env.local`). A quota increase to 1000 was
+requested via Service Quotas (pending AWS approval as of this writing). Once
+approved, raise `REMOTION_LAMBDA_CONCURRENCY` accordingly before attempting a
+long-form (10-30 min) render — at the current cap of 6, a long-form render
+would likely take well over the plan's original <5min target.

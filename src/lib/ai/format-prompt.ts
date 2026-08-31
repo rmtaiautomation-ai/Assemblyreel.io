@@ -18,7 +18,12 @@
  */
 
 import { WORDS_PER_NARRATION_LINE } from "./generation-rules";
-import { assignArcBeats, type FormatProfile } from "./format-profile";
+import {
+  assignArcBeats,
+  assignBeatSheet,
+  type Beat,
+  type FormatProfile,
+} from "./format-profile";
 import {
   formatFactForPrompt,
   groupFactsByKind,
@@ -182,6 +187,105 @@ ${
 }
 
 /**
+ * A beat's first sentence, for the "already spent" and "still to come" lists.
+ *
+ * Those lists exist to stop an Act writing another Act's material, which only needs enough
+ * text to recognise the beat by. Sending all seventeen instructions in full to all
+ * seventeen Acts would trade the repetition problem for a prompt in which the Act's OWN
+ * beats are a twentieth of what it is reading. Ids are deliberately not used — they are
+ * internal identifiers, and a model shown "live-suppression" will write the words back.
+ */
+function beatGist(beat: Beat): string {
+  const trimmed = beat.instruction.trim();
+  const stop = trimmed.indexOf(". ");
+  const first = stop === -1 ? trimmed : trimmed.slice(0, stop + 1);
+  return first.length > 140 ? `${first.slice(0, 137).trimEnd()}...` : first;
+}
+
+/**
+ * THIS ACT'S BEATS — the block that replaces ACT CYCLE and THIS ACT'S PLACE IN THE VIDEO.
+ *
+ * The three blocks are mutually exclusive by construction: this one returns "" for an empty
+ * `beatSheet`, and the caller suppresses the other two whenever this one produces anything.
+ * Handing a model both a cycle to repeat and a spine to advance is worse than either alone
+ * — it satisfies the cycle, which is concrete and per-Act, and treats the spine as flavour.
+ *
+ * Each beat carries its own apparatus verdict rather than relying on the global
+ * `apparatusRule` alone, for the same reason `WORDS_PER_NARRATION_LINE` is a number: a
+ * channel-wide budget ("under a fifth of the lines") is invisible from inside a single Act,
+ * which is how a 9-Act script ran ~42% apparatus in every Act while each Act individually
+ * believed it was being restrained.
+ */
+function beatSheetBlock(
+  profile: FormatProfile,
+  options: { actNumber?: number; actCount?: number }
+): string {
+  const { actNumber, actCount } = options;
+  const sheet = profile.structure.beatSheet;
+  if (!actNumber || !actCount || !sheet.length) return "";
+
+  const assignments = assignBeatSheet(profile, actCount);
+  const mine = assignments.get(actNumber) ?? [];
+  if (!mine.length) return "";
+
+  const indexOf = new Map(sheet.map((beat, index) => [beat.id, index + 1]));
+  const numbers = mine.map((beat) => indexOf.get(beat.id) ?? 0);
+  const first = Math.min(...numbers);
+  const last = Math.max(...numbers);
+
+  const body = mine.map((beat) => {
+    const lines = [`BEAT ${indexOf.get(beat.id)} of ${sheet.length}`];
+
+    if (beat.signpost) {
+      // Verbatim, not paraphrased. These recur near word-for-word across every episode of
+      // the reference format and are most of what makes narration sound spoken rather than
+      // written; a model asked to "use a phrase like this" will smooth it into prose.
+      lines.push(
+        `Open this beat with exactly this line, word for word: "${beat.signpost}"`
+      );
+    }
+
+    lines.push(beat.instruction);
+    lines.push(
+      beat.apparatus
+        ? "Apparatus is permitted in this beat — manuscripts, editions, fragment numbers and translators belong here."
+        : "NO apparatus in this beat. Do not describe a manuscript, a parchment, a folio, a catalogue or a fragment number. Write what the text says, not what it is written on."
+    );
+
+    return lines.join("\n");
+  });
+
+  const spent = sheet
+    .slice(0, first - 1)
+    .map((beat, index) => `- Beat ${index + 1}: ${beatGist(beat)}`);
+  const upcoming = sheet
+    .slice(last)
+    .map((beat, index) => `- Beat ${last + index + 1}: ${beatGist(beat)}`);
+
+  const sections = [
+    `This is Act ${actNumber} of ${actCount}. The video is ONE continuous ${sheet.length}-beat argument, not ${actCount} variations on a shape. This Act carries ${
+      first === last ? `beat ${first}` : `beats ${first} to ${last}`
+    }, and nothing else.`,
+    `Write them in this order as one unbroken stretch of narration. Do not label them, do not number them and do not announce them to the viewer.`,
+    body.join("\n\n"),
+  ];
+
+  if (spent.length) {
+    sections.push(
+      `Earlier Acts have already spent the following. They are finished. Do not repeat them, do not re-establish them, and do not summarise them:\n${spent.join("\n")}`
+    );
+  }
+
+  if (upcoming.length) {
+    sections.push(
+      `The following belong to LATER Acts. Do not write them here, do not preview them, and do not refer to them in passing:\n${upcoming.join("\n")}`
+    );
+  }
+
+  return block("THIS ACT'S BEATS", sections.join("\n\n"));
+}
+
+/**
  * The Script Writer's system instruction.
  *
  * `lengthRule` stays a caller-supplied string because it is derived from the DurationProfile,
@@ -262,6 +366,17 @@ ${identity.explanatoryMethod}`
       : ""
   );
 
+  // Immediately after HOW THIS NARRATOR EXPLAINS and before anything about the viewer,
+  // because it qualifies the register the model has just been given: `register` says the
+  // narrator is urgent, and without this the model applies that urgency to the ancient
+  // author too and writes him as awed. He is the one person in the script who is calm.
+  const sourceVoice = block("HOW THE SOURCE SOUNDS", identity.sourceRegister);
+
+  // Next to the source's voice on purpose: both answer "who is speaking, and what are they
+  // like". Without it a channel with a fact ledger produces a bibliography — every name
+  // correct, no name doing anything.
+  const character = block("EVERY NAME IS A CHARACTER", identity.characterRule);
+
   // Placed right after HOW THIS NARRATOR EXPLAINS, because the two are easy to satisfy
   // independently and still produce a report: a narrator can reason exactly the right way
   // about every claim and never once speak TO the person listening. The fixed frequency
@@ -284,6 +399,10 @@ Concretely, in EVERY Act: address the viewer directly as "you" at least twice, a
       ? `The narration must never read as any of the following:\n${bullets(identity.forbiddenRegisters)}`
       : ""
   );
+
+  // Supersedes ACT CYCLE and THIS ACT'S PLACE IN THE VIDEO when a profile declares a beat
+  // sheet; empty for every profile that does not, which is every migrated preset.
+  const spine = beatSheetBlock(profile, options);
 
   const cycle = block(
     "ACT CYCLE",
@@ -340,12 +459,58 @@ Concretely, in EVERY Act: address the viewer directly as "you" at least twice, a
     })()
   );
 
+  // `bannedOpenings` alone can only say what the opening must not be. A channel whose
+  // opening is a fixed module — reproduced near-verbatim in every reference episode — needs
+  // the positive half too, so `sequence` is emitted alongside it. Both empty (every migrated
+  // preset) still produces no block at all.
   const coldOpen = block(
     "COLD OPEN",
-    structure.coldOpen.bannedOpenings.length
-      ? `The opening runs at most ${structure.coldOpen.maxSeconds} seconds and must deliver one concrete, specific payoff within the first ${structure.coldOpen.payoffDeadlineSeconds} seconds — a promise with no payoff reads as bait and is where viewers leave.\nNever open with any of the following:\n${bullets(
-          structure.coldOpen.bannedOpenings
-        )}`
+    ((): string => {
+      const { maxSeconds, payoffDeadlineSeconds, bannedOpenings, sequence } =
+        structure.coldOpen;
+      if (!bannedOpenings.length && !sequence.length) return "";
+
+      // A video has one opening, and under a beat sheet it belongs to whichever Act holds
+      // the cold-open beat. Sending this block to all nine Acts is how a six-step opening
+      // module becomes a six-step module the writer tries to run nine times. Suppressed only
+      // when a beat sheet is actually driving the structure — without one there is no Act
+      // that "owns" the opening, so every Act keeps receiving it exactly as before.
+      if (structure.beatSheet.length && (options.actNumber ?? 1) > 1) return "";
+
+      const parts = [
+        `The opening runs at most ${maxSeconds} seconds and must deliver one concrete, specific payoff within the first ${payoffDeadlineSeconds} seconds — a promise with no payoff reads as bait and is where viewers leave.`,
+      ];
+
+      if (sequence.length) {
+        parts.push(
+          `Run these steps in this order. This is the channel's opening and it is the same every episode — do not reorder it, do not merge steps, and do not skip one because it feels repetitive:\n${sequence
+            .map((step, index) => `${index + 1}. ${step}`)
+            .join("\n")}`
+        );
+      }
+
+      if (bannedOpenings.length) {
+        parts.push(`Never open with any of the following:\n${bullets(bannedOpenings)}`);
+      }
+
+      return parts.join("\n\n");
+    })()
+  );
+
+  const apparatus = block("WHERE EVIDENCE TALK BELONGS", content.apparatusRule);
+  const sensory = block("WHAT THE LISTENER FEELS", content.sensoryRule);
+  const fragments = block("RHYTHM", content.fragmentRule);
+  const scale = block("NUMBERS", content.scaleRule);
+
+  // Separate from the per-beat `signpost`, which is bound to one beat and spent there.
+  // These are the Act-to-Act handoffs, and the no-repeat rule is the whole point: a pool
+  // used without one becomes a tic faster than having no pool at all.
+  const transitions = block(
+    "TRANSITIONS",
+    content.transitionPhrases.length
+      ? `When this Act turns from one idea to a worse one, use one of the following, word for word. Use at most one per Act, and never the same one twice in a video:\n${bullets(
+          content.transitionPhrases
+        )}\nNever hand off to the next Act with a neutral question. The listener must be told the next thing is worse than the last thing.`
       : ""
   );
 
@@ -391,15 +556,25 @@ Concretely, in EVERY Act: address the viewer directly as "you" at least twice, a
     core +
     persona +
     method +
+    sourceVoice +
+    character +
     audience +
     avoid +
-    cycle +
-    arc +
-    // After the arc block on purpose: the two are read together — "this beat is Act 8's"
-    // lands harder immediately alongside "and Laodicea was already named in Act 7".
+    // The spine REPLACES the cycle/arc pair rather than joining it. Sending both would hand
+    // the model a shape to repeat and a shape to advance, and the repeatable one always
+    // wins — it is concrete and scoped to this Act, while the spine is neither.
+    // A profile with no beat sheet falls straight through to what it emitted before.
+    (spine || cycle + arc) +
+    // After whichever of those ran, on purpose: the two are read together — "this beat is
+    // Act 8's" lands harder immediately alongside "and Laodicea was already named in Act 7".
     continuityBlock(options.continuity ?? []) +
     coldOpen +
     beats +
+    apparatus +
+    sensory +
+    fragments +
+    scale +
+    transitions +
     reHook +
     sourcing +
     namedSources +
@@ -425,6 +600,33 @@ export function buildActStructureRules(
   profile: FormatProfile,
   actCount: number
 ): string {
+  // The outliner has to see the same cut of the spine the Script Writer will, or it plans
+  // N interchangeable chapters and each Act then discovers its real assignment on its own.
+  // That is how a 9-Act outline ended up with the whole suppression chronology arriving in
+  // Act 8 as a surprise, with no room budgeted for it.
+  if (profile.structure.beatSheet.length) {
+    const assignments = assignBeatSheet(profile, actCount);
+    const sheet = profile.structure.beatSheet;
+    const indexOf = new Map(sheet.map((beat, index) => [beat.id, index + 1]));
+
+    const rows = Array.from({ length: actCount }, (_, i) => i + 1).map((act) => {
+      const beats = assignments.get(act) ?? [];
+      if (!beats.length) {
+        // Reachable only for a sheet with fewer beats than Acts. Say so rather than
+        // printing a bare Act number the outliner will pad with invented material.
+        return `- Act ${act}: no beat of its own — fold it into the neighbouring Act rather than inventing content for it.`;
+      }
+      return `- Act ${act} carries ${beats
+        .map((beat) => `beat ${indexOf.get(beat.id)}`)
+        .join(" and ")}:\n${beats.map((beat) => `  - ${beatGist(beat)}`).join("\n")}`;
+    });
+
+    return `- This video is ONE continuous argument of ${sheet.length} beats, cut across ${actCount} Acts. It is NOT ${actCount} variations on a single shape, and no Act repeats another Act's structural move.
+- Every Act does something the others do not. Write each Act's description around the specific beats it carries, and give a heavier Act more room in its description than a lighter one.
+${rows.join("\n")}
+- Do not plan a beat into an Act it was not assigned to, and do not have an Act preview or summarise another Act's beat.`;
+  }
+
   if (!profile.structure.actCycle.length) {
     return `- Act 1: The "Curiosity Gap" / The Hook (Tell them what they will learn, withhold the answer).
 - Act 2: The Setup / Context (Introduce players/conflict without infodumping).

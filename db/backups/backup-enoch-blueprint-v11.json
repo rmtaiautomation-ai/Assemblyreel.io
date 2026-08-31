@@ -1,0 +1,97 @@
+{
+  "visual": {
+    "visualBias": "Favor manuscript surfaces, parchment fragments, carved stone, old maps, archive shelving, sealed cases and locked rooms — the object itself, held still, never a dramatic re-enactment. When a place is named, show the place as it is now, not as it was. Display the foreign word itself on screen when unpacked. Display the year or catalogue number on screen when spoken. The images carry the archive; the narration carries the argument.",
+    "promptStyleTag": "desaturated, low warm key light, deep shadow, aged paper texture, visible grain",
+    "stillTreatment": "Desaturated, low warm key light against deep shadow, aged paper texture, visible grain. Five to eight seconds per image, slow push in or slow drift, no fast cuts and no whip transitions.",
+    "preferredSceneTypes": [
+      "CLOSEUP",
+      "MACRO",
+      "ESTABLISH",
+      "WIDE"
+    ]
+  },
+  "content": {
+    "readingLevel": "Twelfth-grade reading level. Use the real vocabulary of the subject and define a term in the same breath only when it genuinely is obscure. Prioritize proper-noun density for sophistication.",
+    "sourcingRule": "Characterise authorities by stating what the scholar did not say, then what they did, to grant claims weight without asserting them in the narrator's voice. Never claim proof; lay facts adjacent and let the viewer draw the line. Never assert that something has been demonstrated, confirmed or established. Never invent a scientific finding, a study, a survey, or a scholar's opinion.",
+    "requiredBeats": [
+      "Include a single first-person disclaimer immediately before the finale, conceding the maximalist reading in order to earn the real one.",
+      "Close on a list of things that remain — the manuscript still in its church, the fragment still under glass, the archive still closed — with one item in that list turning to face the viewer's own present.",
+      "End on waiting, not on a call to action, and return to the object the video opened on."
+    ],
+    "lineComposition": "documentary",
+    "rotatingDevices": [
+      "A canon list that omits the text",
+      "A translation that softens or drops a specific phrase",
+      "A fragment surviving in only one collection",
+      "A manuscript never photographed or published",
+      "A council that declined to include it",
+      "A language in which the text stayed canonical",
+      "A passage quoted by an early writer but missing from later copies",
+      "An access request that was made and declined"
+    ]
+  },
+  "identity": {
+    "register": "Serious, controlled and unhurried. State extraordinary claims flatly — the weight comes from the specificity, never from adjectives or from raising the voice. Roughly twelfth-grade reading level. Use the real vocabulary of the subject — corpus, canon, scribal tradition, redaction, provenance, adjudicated — and define a term in the same breath only when it genuinely is obscure. Build rhythm on violent length contrast: a long sentence carrying two nested clauses, then a fragment of three or four words landing alone. Use triads for weight.",
+    "audienceStance": "This is an investigation the narrator and the viewer are running together, not a lecture. Speak to the viewer directly as \"you\" throughout, and frame the shared work as \"we\" — what we have to confront, what we are being shown. When a claim would make a skeptical viewer doubt it, meet that doubt head-on before they can voice it: state the claim's truth plainly rather than only presenting evidence and moving on.\n",
+    "narratorPersona": "An archivist working through recovered documents, reading the record aloud and showing the viewer what it actually says. Not a preacher, not a prophet, not a conspiracy host, not a storyteller. Treats the viewer as a fellow researcher who is capable of drawing their own conclusion, never as a congregation who needs to be told one. The narrator has no personal stake and never testifies — they present. First person appears at most once in an entire script, and only to concede a limit (\"I am not saying this is a literal floor plan\"), never to assert.",
+    "explanatoryMethod": "Explain every claim by pointing at a physical object or a specific passage, saying plainly what it contains, naming who removed or restricted it and when, then showing what it resembles today — framed as resemblance, never as proof. Clear away the expected reading with negation before assertion, then land the real one. Unpack one foreign or technical word per beat against expectation, giving its literal meaning and showing that the meaning is more specific and stranger than the translation implies. Characterise authorities by stating what the scholar did not say, then what they did. Ground every abstraction in an occupational analogy: building inspector, geologist's field notes, librarian, government guarding classified intelligence.",
+    "forbiddenRegisters": [
+      "Sermonising or altar-call language, Sunday-school gentleness, moral instruction addressed to the viewer",
+      "Claiming proof, asserting that something has been demonstrated, confirmed or established",
+      "Accusing a living institution or a named living person of concealment",
+      "Hype or clickbait phrasing — \"you won't believe\", \"shocking\", \"they don't want you to know\", \"mind-blowing\"",
+      "Inventing a scientific finding, a study, a survey, or a scholar's opinion",
+      "Writing uniform medium-length sentences"
+    ]
+  },
+  "structure": {
+    "closer": "open-door",
+    "actCycle": [
+      "Open on a physical artifact you can point at.",
+      "State plainly what it contains, and unpack ONE specific detail — a single word in the original language, a measurement, a material — against what the reader expects it to mean.",
+      "Close on a door that stays shut, and name the question the next chapter answers."
+    ],
+    "arcBeats": [
+      {
+        "id": "vindication",
+        "position": 0.05,
+        "instruction": "Spend the vindication beat: the suppressed text is better attested than the canon that excluded it. Give the manuscript count and compare it directly to books that were kept — the comparison is the point, not the number."
+      },
+      {
+        "id": "personal-stake",
+        "position": 0.2,
+        "instruction": "Convert the historical claim into a statement about what the viewer is, or what is true of them right now. Once, plainly, without addressing them as an audience."
+      },
+      {
+        "id": "modern-echo",
+        "position": 0.7,
+        "instruction": "Spend the video's ONE modern-parallel beat here: a documented, named, contemporary finding that resembles what the text describes. Give the researcher, the institution, the publication and the year. Frame it as resemblance, never as confirmation. This beat appears nowhere else in the video."
+      },
+      {
+        "id": "suppression-chronology",
+        "position": 0.8,
+        "instruction": "Spend the video's ONE suppression beat here, as a chronology in fixed order: the council that excluded the text and when, the figures who argued against it afterwards and what each actually said, the tradition that preserved it anyway, and its re-emergence. Name no council or figure that any earlier Act already named."
+      },
+      {
+        "id": "live-suppression",
+        "position": 0.88,
+        "instruction": "Show that the restriction is still unresolved today: an access request, a review period, a stated reason, and the absence of a timeline. Report the facts adjacent to one another and draw no conclusion from them."
+      },
+      {
+        "id": "disclaimer",
+        "position": 0.95,
+        "instruction": "Concede the maximalist reading once, in the first person — the only first-person moment in the video. Grant that the text passed through centuries of transmission. Then state what the text nevertheless says. Do not use this concession in any other Act."
+      }
+    ],
+    "coldOpen": {
+      "bannedOpenings": [
+        "A rhetorical question",
+        "A dictionary definition",
+        "\"imagine a world where\""
+      ],
+      "payoffDeadlineSeconds": 20
+    },
+    "reHookIntervalSeconds": 100
+  },
+  "sourceBrief": "# Channel brief — Enoch\n\nPaste everything below the line into **Settings → Format → \"Build this channel's format\"**.\n\nIt is written as prose on purpose: the Format Analyst extracts structure from paragraphs,\nand asking a model for a filled-in form invites it to invent field names. It answers all\nsix boxes, so it should come back with few or no gaps.\n\nDerived from three transcripts of an existing channel in this niche — the repeating\nmachine, not that channel's content. Every episode-specific detail (four chambers, seven\nheavens, the Antarctic structure) is deliberately absent; what is here is what recurred\nacross all three.\n\n---\n\n**1. Who is narrating.**\n\nAn archivist working through recovered documents, reading the record aloud and showing the\nviewer what it actually says. Not a preacher, not a prophet, not a conspiracy host, not a\nstoryteller. Treats the viewer as a fellow researcher who is capable of drawing their own\nconclusion, never as a congregation who needs to be told one. The narrator has no personal\nstake and never testifies — they present. First person appears at most once in an entire\nscript, and only to concede a limit (\"I am not saying this is a literal floor plan\"), never\nto assert.\n\n**2. How this narrator reasons.**\n\nEvery claim is unpacked by the same move, without exception: point at a physical object or\na specific passage, say plainly what it contains, name who removed or restricted it and\nwhen, then show what it resembles today — framed as resemblance, never as proof.\n\nTwo techniques carry that reasoning, and both are non-negotiable.\n\nThe first is **negation before assertion**. Clear away the expected reading, then land the\nreal one. \"Not paradise, not reward. Rest and brightness.\" \"Architecture, not vision, not\nsymbol.\" \"Interpreted rather than translated.\" \"Too precise, not too vague.\" This is the\ndefault shape of any sentence that carries a claim.\n\nThe second is **one foreign or technical word per beat, unpacked against expectation**. Take\na single term from the source language, give its literal meaning, and show that the meaning\nis more specific and stranger than the translation implies — the word for a cistern rather\nthan a prison, the word for water that cannot stop rather than crying, \"dim\" rather than\n\"dark\". One word, opened up, does the emotional work of a whole paragraph of description.\n\nAuthorities are always characterised, never used to prove. The formula is: state what the\nscholar did not say, then what they did. \"He did not say it was false, he said it was\nexplosive.\" \"Neither said it was untrue. Both said it was inconvenient.\" This grants the\nclaim weight without ever asserting it in the narrator's own voice.\n\nEvery abstraction is grounded in an occupational analogy — mundane, bureaucratic, physical.\nThe way a building inspector describes a building. The way a geologist's field notes read.\nThe way a librarian maintains a collection that was complete before they arrived. The way\ngovernments guard classified intelligence. Cosmic material is always brought down to\nsomebody's job.\n\n**3. Register and reading level.**\n\nSerious, controlled and unhurried. Extraordinary claims are stated flatly — the weight comes\nfrom the specificity, never from adjectives or from raising the voice.\n\nRoughly twelfth-grade reading level. NOT eighth grade. Use the real vocabulary of the\nsubject — corpus, canon, scribal tradition, redaction, provenance, adjudicated — and define\na term in the same breath only when it genuinely is obscure. The felt sophistication comes\nfrom proper-noun density more than from long words: name the exact catalogue number, the\nexact year, the exact institution, and let those do the work.\n\nRhythm matters as much as vocabulary, and it is built on violent length contrast. A long\nsentence carrying two nested clauses, then a fragment of three or four words landing alone.\n\"The case is open.\" \"The prison is occupied.\" \"The equipment was functioning.\" Never write\nparagraph after paragraph of even, medium-length sentences — that flatness is the single\nmost recognisable failure in this genre.\n\nUse triads for weight: \"no administrative function, no prison, no garden.\" \"Real dimensions,\nreal materials, real structure.\"\n\n**4. What the narration must never do.**\n\n- Never sermonise. No altar-call language, no \"brothers and sisters\", no Sunday-school\n  gentleness, no moral instruction addressed to the viewer.\n- Never claim proof. Say what the text says and lay facts adjacent; let the viewer draw the\n  line. Never assert that something has been demonstrated, confirmed or established.\n- Never accuse a living institution or a named living person of concealment. State what is\n  restricted and state what it contains, next to each other, and stop there.\n- Never use hype or clickbait phrasing — \"you won't believe\", \"shocking\", \"they don't want\n  you to know\", \"mind-blowing\".\n- Never invent a scientific finding, a study, a survey, or a scholar's opinion.\n- Never write uniform medium-length sentences. See the rhythm rule above.\n- Never open with a rhetorical question, a dictionary definition, or \"imagine a world\n  where\".\n\n**5. What every chapter does, in the same order, every time.**\n\n1. Open on one physical thing the viewer could in principle stand in front of — a fragment,\n   a manuscript page, a carved block, a sealed case. Say where it is and how big it is.\n2. State plainly what it contains, in the flattest possible language.\n3. Name who removed, restricted, softened or omitted it, and when. A body and a year.\n4. Open the one word this chapter turns on, and show the gap between the translation and\n   the original.\n5. Show the modern echo — as resemblance only, never as corroboration — then close on a\n   door that stays shut, and name the question the next chapter answers.\n\nAcross the whole video: the cold open runs under forty-five seconds and must pay off\nsomething concrete within the first twenty. A new loop opens roughly every hundred seconds,\nbefore the previous one has fully closed. The largest revelation is held back for the final\nchapter and must be planned from the first — the video knows its ending before it starts.\nThe single first-person disclaimer goes immediately before the finale, conceding the\nmaximalist reading in order to earn the real one.\n\nThe video closes on a list of things that remain — the manuscript still in its church, the\nfragment still under glass, the archive still closed — with one item in that list turning to\nface the viewer's own present. Then it ends on waiting, not on a call to action, and it\nreturns to the object it opened on.\n\n**6. What is on screen, and how it is treated.**\n\nManuscript surfaces, parchment fragments, carved stone, old maps, archive shelving, sealed\ncases and locked rooms — the object itself, held still, never a dramatic re-enactment of the\nevent being described. When a place is named, show the place as it is now, not as it was.\n\nDesaturated, low warm key light against deep shadow, aged paper texture, visible grain. Five\nto eight seconds per image, slow push in or slow drift, no fast cuts and no whip transitions.\n\nWhen a foreign word is unpacked, the word itself is on screen. When a year or a catalogue\nnumber is spoken, it is on screen. The images carry the archive; the narration carries the\nargument.\n\nAdditional detail:\n\nWhat are five to eight interchangeable variations of the recurring claim this channel makes every episode?\nA canon list that omits the text. A translation that softens or drops a specific phrase. A fragment surviving in only one collection. A manuscript never photographed or published. A council that declined to include it. A language in which the text stayed canonical. A passage quoted by an early writer but missing from later copies. An access request that was made and declined."
+}

@@ -3240,17 +3240,22 @@ export default function TimelineEditor({
   // after a render finishes — it keeps {progress: 1, stage: 'done'} for that project
   // indefinitely. So a stale 'done' is a real possibility on the FIRST poll tick.
   //
-  //   - handleRenderVideo passes false: its POST response is the authoritative
-  //     completion signal, and trusting a 'done' reading here would let a leftover
-  //     entry from a PREVIOUS render close the modal moments after a new one started.
+  //   - handleRenderVideo passes false while the POST is still in flight: for a
+  //     local render, that POST response is the authoritative completion signal,
+  //     and trusting a 'done'/'error' reading here would let a leftover entry from
+  //     a PREVIOUS render close the modal moments after a new one started. For a
+  //     Lambda render, handleRenderVideo re-invokes this with `true` the moment the
+  //     POST confirms the job was submitted — see the Lambda branch below.
   //   - The resume-on-reload effect passes true: it has no POST response to wait on,
-  //     so a 'done' reading is the only way it can ever learn the render finished —
-  //     and there, 'done' genuinely means this render, since the page only resumes
-  //     when the project row already says 'rendering'.
+  //     so a 'done'/'error' reading is the only way it can ever learn the render
+  //     finished — and there, that reading genuinely means this render, since the
+  //     page only resumes when the project row already says 'rendering'.
   //
-  // The output path is reconstructed from projectId rather than read from a response,
-  // since the render route always writes to public/media/final_exports/{id}.mp4 — the
-  // resume flow has no response to read it from.
+  // `outputUrl` comes straight from the GET response for both render modes: a local
+  // render always writes to the same predictable path, but a Lambda render's output
+  // lives at whatever S3 URL AWS assigned, which has no fixed convention to
+  // reconstruct client-side — the local-path fallback below only applies when the
+  // server genuinely didn't send one (i.e. an old/local-only entry).
   const startRenderProgressPolling = (projectId: string, completeOnDone: boolean) => {
     stopRenderProgressPolling();
     renderPollRef.current = window.setInterval(async () => {
@@ -3266,8 +3271,13 @@ export default function TimelineEditor({
           stopRenderProgressPolling();
           setIsRendering(false);
           setRenderStatusMessage("Render completed!");
-          setRenderOutputPath(`/media/final_exports/${projectId}.mp4`);
+          setRenderOutputPath(data.outputUrl ?? `/media/final_exports/${projectId}.mp4`);
           await markStatus('exported');
+        } else if (completeOnDone && data.stage === 'error') {
+          stopRenderProgressPolling();
+          setIsRendering(false);
+          setRenderStatusMessage("Render Error: " + (data.error || "Render failed."));
+          await markStatus('failed');
         }
       } catch {
         // Transient poll failure — the next tick tries again; not worth surfacing.
@@ -3300,6 +3310,12 @@ export default function TimelineEditor({
 
     startRenderProgressPolling(initialProject.id, false);
 
+    // Set once the POST hands off to a Lambda render still running server-side —
+    // the finally block below must NOT stop polling or clear isRendering in that
+    // case, since completion hasn't happened yet and only the poll will ever learn
+    // about it (see startRenderProgressPolling's Lambda branch below).
+    let handedOffToLambda = false;
+
     try {
       // Inside the try: a throw here (offline, action error) previously escaped the
       // handler entirely, so `finally` never ran and the button stayed spinning.
@@ -3326,8 +3342,8 @@ export default function TimelineEditor({
       }
 
       if (data.success) {
-        await markStatus('exported');
         if (data.mode === "local-remotion") {
+          await markStatus('exported');
           setRenderStatusMessage("Render completed!");
           // `data.outputPath` is the SERVER's absolute filesystem path — meaningless
           // to the browser, and rejected by /api/render/download, whose security check
@@ -3335,6 +3351,14 @@ export default function TimelineEditor({
           // `public/media/final_exports/`, so `publicUrl` is already directly servable
           // and needs no download proxy at all.
           setRenderOutputPath(data.publicUrl);
+        } else if (data.mode === "lambda") {
+          // The POST only submitted the job to AWS — it's still rendering. Re-arm the
+          // poll to treat GET's 'done'/'error' as authoritative now that we know this
+          // IS the current render (see the completeOnDone comment above), and leave
+          // isRendering/the interval alone so the UI keeps tracking it in the background.
+          handedOffToLambda = true;
+          setRenderStatusMessage(`Render submitted to AWS Lambda (ID: ${data.renderId}). Rendering in the cloud…`);
+          startRenderProgressPolling(initialProject.id, true);
         } else {
           setRenderStatusMessage(`Render Job Queued! (ID: ${data.jobId}) Ready for serverless cloud execution.`);
         }
@@ -3346,8 +3370,10 @@ export default function TimelineEditor({
       await markStatus('failed');
       setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
     } finally {
-      stopRenderProgressPolling();
-      setIsRendering(false);
+      if (!handedOffToLambda) {
+        stopRenderProgressPolling();
+        setIsRendering(false);
+      }
     }
   };
 
@@ -3369,6 +3395,20 @@ export default function TimelineEditor({
     // effect (e.g. React re-rendering the tree) should not silently drop progress
     // visibility for a render that is still genuinely running.
     // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Unmount safety net: if the editor unmounts while a render poll is still active
+  // (e.g. the user navigates away mid-render), stop the interval so it doesn't keep
+  // firing fetches and setState calls against an unmounted component forever.
+  // Deliberately separate from the resume-effect above, which intentionally has NO
+  // cleanup because it must keep polling across re-renders — this only fires once,
+  // on actual unmount, via the empty dependency array.
+  useEffect(() => {
+    return () => {
+      if (renderPollRef.current !== null) {
+        window.clearInterval(renderPollRef.current);
+      }
+    };
   }, []);
 
   // Warns on tab close/refresh/typing a new URL while a render is in flight. This is

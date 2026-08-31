@@ -77,6 +77,33 @@ export interface FormatIdentity {
    * Empty on every migrated preset, so their prompts stay byte-identical.
    */
   audienceStance: string;
+  /**
+   * How the SOURCE sounds, as distinct from how the narrator sounds.
+   *
+   * `register` describes the narrator. This describes the voice the narrator is quoting —
+   * and collapsing the two is a real failure mode, not a hypothetical one. This preset's
+   * `register` was first drafted as "the tone used to write a property deed" and correctly
+   * rejected as too flat for a narrator. The reference channel uses that exact simile, but
+   * about the ancient author: "He recorded it with the same matter-of-fact tone you'd use
+   * writing a property deed." An urgent narrator quoting a deadpan source is where the
+   * format's weight comes from; one voice doing both loses it in either direction.
+   *
+   * Empty on every migrated preset, so their prompts stay byte-identical.
+   */
+  sourceRegister: string;
+  /**
+   * What a named person is FOR.
+   *
+   * Without this a channel with a fact ledger produces a bibliography: nine Acts naming
+   * Knibb, VanderKam, Nickelsburg and Isaac, none of whom wants anything, hides anything
+   * or pays a price. Every scholar in the reference episodes has a choice attached —
+   * Charles softened three passages his own footnotes admit were deliberate, Milik sat on
+   * the fragments for 29 years, Bechtel walked out with the master negatives. Those are the
+   * characters; there are no others in this format.
+   *
+   * Empty on every migrated preset, so their prompts stay byte-identical.
+   */
+  characterRule: string;
 }
 
 /**
@@ -144,6 +171,48 @@ export interface ArcBeat {
   position: number;
 }
 
+/**
+ * One step of the video's fixed spine. See `FormatStructure.beatSheet`.
+ *
+ * Ordered by array position, not by a fractional `position` like `ArcBeat` — the whole
+ * point of a spine is that beat 12 follows beat 11, and a set of independent fractions
+ * cannot express "these two are adjacent" without the author hand-tuning numbers that
+ * then break at a different Act count.
+ */
+export interface Beat {
+  /** Stable identifier. Not shown to the model; used in logs and tests. */
+  id: string;
+  /** The instruction handed to whichever Act this beat lands in. */
+  instruction: string;
+  /**
+   * Share of runtime relative to the other beats. Defaults to 1.
+   *
+   * Unequal weighting is a finding, not a nicety: the reference format compresses three
+   * of the seven heavens into a single paragraph and then spends four sentences turning
+   * over one detail about a door. Equal weight across beats is what makes a script read as
+   * an itinerary rather than an argument.
+   */
+  weight?: number;
+  /**
+   * The verbatim line that opens this beat, where the channel has one.
+   *
+   * Bound to the beat rather than pooled, because that is how the reference channel
+   * actually uses them: "Now, here's where it gets active" introduces the still-restricted
+   * beat in all three episodes analysed, never anything else. A free-floating pool would
+   * let the model spend the phrase in the wrong place, which is worse than not having it.
+   */
+  signpost?: string;
+  /**
+   * Whether manuscript / edition / translator / fragment-number talk is allowed here.
+   *
+   * Defaults to false. Apparatus is the format's credibility layer and also the thing that
+   * kills it when spread evenly: a generated 9-Act script ran ~42% apparatus in EVERY Act,
+   * while the reference concentrates it in the opening and the suppression block and runs
+   * near zero through the middle. See `FormatContent.apparatusRule`.
+   */
+  apparatus?: boolean;
+}
+
 export interface FormatStructure {
   /**
    * The beats EVERY Act must contain, in order.
@@ -160,11 +229,37 @@ export interface FormatStructure {
   actCycle: readonly string[];
   /** Video-level beats, each spent once, placed by `assignArcBeats`. */
   arcBeats: readonly ArcBeat[];
+  /**
+   * The ordered beat sheet for the WHOLE video — the successor to `actCycle` + `arcBeats`.
+   *
+   * When this is non-empty it REPLACES both of them: `assignBeatSheet` cuts it into
+   * contiguous runs and hands each Act its own slice, so Act 4 and Act 8 are given
+   * genuinely different work. When it is empty nothing changes, which is what keeps every
+   * migrated preset byte-identical.
+   *
+   * Why it had to exist: `actCycle` can only express "repeat this shape N times", and a
+   * 9-Act generation of the forensic format therefore opened all nine Acts on a manuscript
+   * and closed seven of them on a door slamming shut. It did exactly as instructed. Research
+   * across three episodes of the reference channel found no repeating per-Act shape at all —
+   * one fixed ~17-beat spine, run once, no structural move used twice. `arcBeats` was an
+   * attempt at that spine, but as a sparse overlay on a cycle it could only ever say "this
+   * one thing also happens here" while the cycle kept driving the Act's actual shape.
+   */
+  beatSheet: readonly Beat[];
   coldOpen: {
     maxSeconds: number;
     /** The hook must pay off something concrete by this mark, or the promise reads as bait. */
     payoffDeadlineSeconds: number;
     bannedOpenings: readonly string[];
+    /**
+     * The opening's ordered steps, stated as instructions.
+     *
+     * `bannedOpenings` is the negative half and was all that existed: it can stop the
+     * writer opening with a greeting, but it cannot produce the reference channel's actual
+     * opening, which is a fixed six-step module reproduced almost verbatim every episode.
+     * Emitted only when non-empty, so a preset without one keeps the old behaviour.
+     */
+    sequence: readonly string[];
   };
   /** Withhold the largest reveal until the final Act. */
   terminalRevelation: boolean;
@@ -195,6 +290,59 @@ export interface FormatContent {
    * round-robin cursor in `selectRotatingDevice` / `consumeRotationCursor`.
    */
   rotatingDevices: readonly string[];
+  /**
+   * Where manuscript / edition / translator talk is allowed, and where it is not.
+   *
+   * The single largest difference measured between a generated script and the reference.
+   * Act 3 of a generated 9-Act video spent its first eight scenes of nineteen on the
+   * manuscript, the Greek word and the translation history before anything happened; the
+   * reference reaches "It is described as a prison" in one sentence and drops the Ge'ez
+   * term in mid-paragraph as garnish. Same beat, same research, opposite ordering — and it
+   * is the ordering the ear hears as "documentary" rather than "story".
+   *
+   * Stated as its own rule rather than folded into `sourcingRule` because the two say
+   * opposite-facing things: sourcing is about what may be NAMED, this is about where naming
+   * may HAPPEN. A script can satisfy sourcing perfectly and still be unlistenable.
+   */
+  apparatusRule: string;
+  /**
+   * Physical sensation in the spoken line, not only in the image prompt.
+   *
+   * Found by listening rather than reading: a generated script's Visual Prompts were full
+   * of texture — frost, basalt, candlelight — while its narration described documents for
+   * 141 consecutive lines. On a page the scene reads as rich. Through headphones the
+   * listener gets nothing to feel, because the only channel they have is the voice.
+   */
+  sensoryRule: string;
+  /**
+   * How line length is broken.
+   *
+   * `lineComposition` already asks for varied length and is routinely ignored, because
+   * "vary your rhythm" is a vibe and the word-count target beside it is a number. This
+   * names the specific short form the reference actually uses — antithesis, "not X, Y" —
+   * which is concrete enough to be obeyed and, unlike a bare fragment, still survives
+   * becoming one scene with one image behind it.
+   */
+  fragmentRule: string;
+  /**
+   * Turning figures into something a listener can picture.
+   *
+   * The reference never states a measurement without converting it in the same breath —
+   * "30 cubits. A cubit is roughly 18 in. 30 cubits is 45 ft." The generated script's
+   * equivalent beat said "over one hundred surviving Geez manuscripts" against "a minimal
+   * fraction", which is the same claim with nothing for the ear to hold on to.
+   */
+  scaleRule: string;
+  /**
+   * Handoff lines between Acts, drawn from without repetition.
+   *
+   * Distinct from `Beat.signpost`, which is bound to one beat and spent there. These float:
+   * they mark that the next thing is worse than the last thing, which is how the reference
+   * escalates. A generated script's Act transitions were all neutral questions ("Where are
+   * the vast agricultural resources...?"), so nothing ever told the listener it was getting
+   * worse — the difference between an argument and an itinerary.
+   */
+  transitionPhrases: readonly string[];
 }
 
 export interface FormatVisual {
@@ -309,7 +457,8 @@ const LEGACY_STRUCTURE: FormatStructure = {
   // Empty for the same reason every other new field is: the prompt builder emits the block
   // only when this is populated, so migrated presets stay byte-identical.
   arcBeats: [],
-  coldOpen: { maxSeconds: 5, payoffDeadlineSeconds: 5, bannedOpenings: [] },
+  beatSheet: [],
+  coldOpen: { maxSeconds: 5, payoffDeadlineSeconds: 5, bannedOpenings: [], sequence: [] },
   terminalRevelation: true,
   reHookIntervalSeconds: 0,
   closer: "cta",
@@ -324,6 +473,11 @@ const LEGACY_CONTENT: Omit<FormatContent, "lineComposition"> & {
   requiredBeats: [],
   sourcingRule: "",
   rotatingDevices: [],
+  apparatusRule: "",
+  sensoryRule: "",
+  fragmentRule: "",
+  scaleRule: "",
+  transitionPhrases: [],
 };
 
 /** Lifts a legacy NicheProfile into the visual half of a FormatProfile. */
@@ -365,6 +519,8 @@ function migratedPreset(
       register: niche.scriptTone,
       forbiddenRegisters: [],
       audienceStance: "",
+      sourceRegister: "",
+      characterRule: "",
     },
     delivery: LEGACY_DELIVERY,
     structure: LEGACY_STRUCTURE,
@@ -418,6 +574,10 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
     ],
     audienceStance:
       "This is an investigation the narrator and the viewer are running together, not a lecture. Speak to the viewer directly as \"you\" throughout, and frame the shared work as \"we\" — what we have to confront, what we are being shown. When a claim would make a skeptical viewer doubt it, meet that doubt head-on before they can voice it: state the claim's truth plainly rather than only presenting evidence and moving on. The viewer should feel told something real, not informed of something interesting.",
+    sourceRegister:
+      "The narrator is urgent. The ancient author is not. Whenever you describe what he wrote, note his flatness: he records what he saw and does not explain it, the way a first responder writes down what was in the room, or the way anyone writes a property deed. He is never awed, never poetic, never reverent. The gap between an urgent narrator and a deadpan source is where this format's weight comes from.",
+    characterRule:
+      "Every named person is a character, not a citation. Each one gets a choice, a motive or a consequence attached: what they decided, what they left out, what it cost them, what they would not explain. A translator who softened three passages his own footnotes admit were deliberate. An editor who held the fragments for twenty-nine years. A scholar whose edition was never reprinted. Never introduce a name without saying what that person DID about it — a name that only supports a claim has been wasted.",
   },
   delivery: {
     wordsPerMinute: 135,
@@ -427,59 +587,129 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
     quotationStyle: "spoken-marker",
   },
   structure: {
-    // Three beats, not five. The suppression beat and the modern-echo beat used to live
-    // here; see the ArcBeat doc comment for what that produced across nine Acts.
-    actCycle: [
-      "Open on a physical artifact — an object, a fragment, a place that can be pointed at.",
-      "State plainly what it says or contains, and unpack ONE specific detail — a single word in the original language, a measurement, a material — against what the reader expects it to mean.",
-      "Close the Act on a door that stays shut, and name the question the next Act answers.",
-    ],
-    arcBeats: [
+    // Both empty on purpose, and both superseded by `beatSheet` below.
+    //
+    // `actCycle` held three beats that every Act repeated. That is what a 9-Act generation
+    // did with it: nine Acts opened on a manuscript page, eight unpacked a foreign word
+    // against "what you expect it to mean", and seven closed on a literal door sealing
+    // shut — the metaphor in "close on a door that stays shut" rendered as bronze hinges,
+    // every time. `arcBeats` could not fix that, because a sparse overlay of once-only
+    // beats still leaves the cycle driving each Act's actual shape.
+    actCycle: [],
+    arcBeats: [],
+    // The spine, in order. Derived beat by beat from three full transcripts of the
+    // reference channel; every beat below appears in all three, in this sequence, and no
+    // structural move is used twice. `assignBeatSheet` slices it across whatever Act count
+    // the runtime tier asks for.
+    beatSheet: [
       {
-        id: "vindication",
-        // The reversal that earns the text its authority, and the reason the cold open
-        // is not merely a curiosity. Stating the copy count without the comparison is
-        // what makes it land as trivia instead.
+        id: "cold-open-artifact",
         instruction:
-          "Spend the vindication beat: the suppressed text is better attested than the canon that excluded it. Give the manuscript count and compare it directly to books that were kept — the comparison is the point, not the number.",
-        position: 0.05,
+          "Open on ONE physical object, in ONE named building, with one tactile detail — what condition it is in, what it is kept in, how large it is. Then state, in the next breath, that what it contains contradicts what the viewer was taught. No greeting, no preamble, no statement of intent.",
+        apparatus: true,
       },
       {
-        id: "personal-stake",
+        id: "canon-removal",
         instruction:
-          "Convert the historical claim into a statement about what the viewer is, or what is true of them right now. Once, plainly, without addressing them as an audience.",
-        position: 0.2,
+          "The removal, then the reversal, in that order and without pausing between them: the council or authority that excluded the text and the year, how long it stayed that way, and then how many copies of it actually survive — compared BY NAME to specific books that stayed in the canon. The named comparison is the beat; the raw count alone is trivia.",
+        apparatus: true,
+      },
+      {
+        id: "promise-and-cta",
+        instruction:
+          "Make the promise as a list of three: 'In the next several minutes, you will see' — what the text says, the modern parallel, and why access is still restricted today. Then the channel's subscribe line, framed as something the viewer already is rather than a favour asked of them. Then move straight on: no thanks, no lingering.",
+        signpost: "But here's what makes this stranger.",
+      },
+      {
+        id: "sourcing-frame",
+        instruction:
+          "Where the text physically survives, briefly: the fragment and its catalogue number, the museum holding it, the approximate date, the language tradition that preserved it complete, and the standard scholarly edition. Four or five lines. This is the last apparatus-heavy beat until the suppression block.",
+        apparatus: true,
+      },
+      {
+        id: "impossible-knowledge",
+        instruction:
+          "The single fact the author should not have been able to know. State the modern established fact, state the year it was established, state when the text was written, and state the gap in years as a number. Do not soften it and do not explain it away.",
+        signpost: "And this is where it gets disturbing.",
+      },
+      {
+        id: "the-claim",
+        instruction:
+          "What the text actually says, in its own terms — the longest stretch of the video. Physical description, materials, dimensions, who is there and what they are doing. Quote the primary source verbatim at least twice, by chapter and verse. Do not talk about the manuscript here; talk about what is written in it.",
+        weight: 3,
+        signpost: "The text begins with this.",
+      },
+      {
+        id: "escalation",
+        instruction:
+          "The second thing, and it must be worse than the first. Say so explicitly — name it as darker, stranger, or more dangerous than what came before — then deliver it. Compress anything that does not earn its runtime: a section that is merely interesting gets one sentence so the section that is alarming can have ten.",
+        weight: 2,
+        signpost: "But the text doesn't stop there. What follows is stranger still.",
+      },
+      {
+        id: "killer-detail",
+        instruction:
+          "One small detail, and then STOP MOVING. Three to five lines turning it over: what it implies, what it rules out, what it would mean if it were meant literally. Reach a reading, state it plainly, and do not hedge it. This is the only beat in the video that is allowed to dwell, and a script that states a hundred things and lingers on none has failed here.",
+        weight: 2,
+        signpost: "This is worth slowing down on.",
+      },
+      {
+        id: "philology",
+        instruction:
+          "One word in the original language, unpacked against the received translation — delivered as a clause in mid-flow, never as its own scene and never as an Act's opening move. Give the word, give what the standard English renders it as, give what it actually denotes, and move on within two lines.",
+        apparatus: true,
+        signpost: "What modern readers don't realize is this.",
+      },
+      {
+        id: "translator-omission",
+        instruction:
+          "What the standard English translation left out or softened, and WHO made that decision. Name the translator, the year of the edition, the specific passage, and what the original says instead. Give the translator a motive or an admission — this is a person making a choice, not an error in a book.",
+        apparatus: true,
+        signpost: "And then comes the part the translators removed.",
       },
       {
         id: "modern-echo",
-        // Exactly one. Nine of these is what a five-beat cycle produced, and two of the
-        // nine duplicated each other because no Act can see what the others wrote.
         instruction:
-          "Spend the video's ONE modern-parallel beat here: a documented, named, contemporary finding that resembles what the text describes. Give the researcher, the institution, the publication and the year. Frame it as resemblance, never as confirmation. This beat appears nowhere else in the video.",
-        position: 0.7,
+          "One documented contemporary finding that resembles what the text describes, with the researcher, the institution, the publication and the year. A second, later finding may follow it only if it escalates the first. Frame both as resemblance, never as confirmation, and never claim the ancient author possessed modern science.",
+        signpost: "The part that shouldn't be possible is this.",
       },
       {
         id: "suppression-chronology",
         instruction:
-          "Spend the video's ONE suppression beat here, as a chronology in fixed order: the council or authority that excluded the text and when, the figures who argued against it afterwards and what each actually said, the tradition that preserved it anyway, and its eventual re-emergence. Name no council or figure that any earlier Act already named.",
-        position: 0.8,
+          "The suppression, as a chronology in fixed order: the council and its year, then each later figure who argued against the text and what each one actually said, then the reversal — neither of them called it false, they called it inconvenient. Name no council or figure that an earlier Act already named.",
+        weight: 2,
+        apparatus: true,
+      },
+      {
+        id: "preservation",
+        instruction:
+          "The tradition that kept the text anyway while the West set it aside — where, in what language, for how many centuries, and the fact that it is still being copied and read there now. One further layer of restriction most people miss may follow: a publication order, an embargo, a priority list that buried it.",
+        apparatus: true,
+        signpost: "There is one more layer to the suppression that most researchers miss.",
       },
       {
         id: "live-suppression",
-        // The beat that moves the argument from history into the present tense, and the
-        // single strongest retention device in the reference format.
         instruction:
-          "Show that the restriction is still unresolved today: an access request, a review period, a stated reason, and the absence of a timeline. Report the facts adjacent to one another and draw no conclusion from them.",
-        position: 0.88,
+          "Show the restriction is unresolved in the present tense: who applied, to which institution, in which year, how long the review took, the reason given, and the absence of any timeline. Report the facts adjacent to one another and draw no conclusion from them — the sequence is the argument.",
+        apparatus: true,
+        signpost: "Now, here's where it gets active.",
       },
       {
         id: "disclaimer",
-        // The credibility firewall. Conceding the maximalist reading is what buys
-        // permission for the actual one — but only if it happens once. Four uses across
-        // six Acts, three of them sharing the phrase "a literal blueprint", read as a tic.
         instruction:
-          "Concede the maximalist reading once, in the first person — the only first-person moment in the video. Grant that the text passed through centuries of transmission and that what its author meant may exceed recovery. Then state what the text nevertheless says. Do not use this concession in any other Act.",
-        position: 0.95,
+          "Concede the maximalist reading once, in the first person — the only first-person moment in the video. Name the wildest version of the claim and disown it. Grant that the text crossed centuries of transmission and that what its author meant may exceed recovery. Then state what the text nevertheless says, and hit harder than before the concession.",
+        signpost: "Now, let me be clear. I am not saying",
+      },
+      {
+        id: "synthesis",
+        instruction:
+          "Lay the pieces side by side as a conditional chain — if this, and this, and this, then the conclusion is not what we were told. Draw the line the evidence supports and stop exactly there.",
+        signpost: "What we have to confront is",
+      },
+      {
+        id: "closer",
+        instruction:
+          "Close the video on two things, in this order: an inventory of where each piece of evidence physically sits right now — this manuscript in that building, that fragment under glass, that file redacted in that city. Then three or four short sentences that all begin with the word 'still': what is still there, still closed, still unexamined. End unresolved. Do not summarise and do not comfort.",
       },
     ],
     coldOpen: {
@@ -487,6 +717,16 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
       // A promise with no payoff inside 30s is the largest retention drop in this format:
       // viewers leave during the setup, not during the content.
       payoffDeadlineSeconds: 30,
+      // Six steps, in order, reproduced almost verbatim in all three reference episodes.
+      // `bannedOpenings` below is the negative half and cannot produce this on its own.
+      sequence: [
+        "A single physical object, named building, tactile detail — what state it is in, what holds it, how big it is.",
+        "In the next breath: what it contains does not match what the viewer was taught.",
+        "The exclusion — the authority, the year — and how long it held.",
+        "The reversal — the surviving copy count, compared by name to books that stayed in the canon.",
+        "'In the next several minutes, you will see' — three specific things, the last being why access is still restricted.",
+        "The subscribe line, then straight on. No thanks, no pause.",
+      ],
       bannedOpenings: [
         "greetings of any kind",
         "channel or host introductions",
@@ -520,6 +760,21 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
       "a language in which the text stayed canonical",
       "a passage quoted by an early writer but missing from later copies",
     ],
+    apparatusRule:
+      "Apparatus means manuscripts, folios, parchment, catalogue and fragment numbers, editions, translators and scribal history. It belongs ONLY in the beats marked for it. Everywhere else, write about what the text SAYS, not about the document carrying it. Never open an Act on a manuscript, a parchment, a catalogue or a folio unless this Act's beats explicitly call for it. Across the whole video apparatus must stay under a fifth of the lines — if you find yourself describing a page rather than what is written on it, you are in the wrong beat.",
+    sensoryRule:
+      "Put physical sensation into the spoken narration, not only into the imagery. Materials, temperature, sound, weight, what a surface would feel like under a hand. The listener has their eyes elsewhere and the voice is the only channel they have, so a place described only as 'vast' or 'dark' has not been described. At least one line per Act must carry a sensation rather than a fact.",
+    fragmentRule:
+      "Break the rhythm on purpose. After a long sentence, land a short one. The short form this channel uses is antithesis — 'Not a metaphor, a sealed chamber.' 'They are not worshipping, they are working.' 'Not theology, astrophysics.' 'He did not say it was false, he said it was inconvenient.' Two or three per Act. Never write three consecutive lines of similar length; uniform line length is the single loudest tell that a script was not written by a person.",
+    scaleRule:
+      "Every figure must be converted into something a listener can picture, in the same breath it is given. Not 'thirty cubits' but 'thirty cubits — a cubit is about eighteen inches, so forty-five feet'. Not 'more manuscripts than the canon' but 'more copies than Deuteronomy, more than Exodus'. A number with no comparison beside it has not been delivered, only mentioned.",
+    transitionPhrases: [
+      "But the text doesn't stop there.",
+      "What follows is stranger still.",
+      "There is one more detail here that Western editions strip out entirely.",
+      "This is not reinterpretation. This is not alternative reading.",
+      "Here's what the translators left out.",
+    ],
   },
   visual: {
     visualBias:
@@ -552,7 +807,7 @@ const CUSTOM_BASE: FormatProfile = {
     // bannedOpenings, which switches the block on and would instruct the writer that "the
     // opening runs at most 5 seconds": nonsense that would deform every script. These are
     // the durations the analyst's own schema calls typical, used when a brief is silent.
-    coldOpen: { maxSeconds: 45, payoffDeadlineSeconds: 30, bannedOpenings: [] },
+    coldOpen: { maxSeconds: 45, payoffDeadlineSeconds: 30, bannedOpenings: [], sequence: [] },
   },
 };
 
@@ -702,6 +957,65 @@ export function assignArcBeats(
     // drop the beat from every Act instead of failing visibly.
     const clamped = Math.min(Math.max(beat.position, 0), 1);
     const actNumber = Math.min(actCount, Math.floor(clamped * actCount) + 1);
+
+    const existing = assignments.get(actNumber);
+    if (existing) existing.push(beat);
+    else assignments.set(actNumber, [beat]);
+  }
+
+  return assignments;
+}
+
+/* -------------------------------------------------------------------------- */
+/*                      Beat sheet — structure.beatSheet                      */
+/* -------------------------------------------------------------------------- */
+
+/** A beat with no declared weight counts as one share. */
+function beatWeight(beat: Beat): number {
+  // Guard the data, not just the type: a hand-edited blueprint can carry 0, a negative, or
+  // NaN, any of which would corrupt the running total and silently misplace every later
+  // beat rather than failing where the bad value is.
+  const weight = Number(beat.weight ?? 1);
+  return Number.isFinite(weight) && weight > 0 ? weight : 1;
+}
+
+/**
+ * Cuts the beat sheet into one contiguous run per Act.
+ *
+ * Weighted rather than evenly counted, because unequal allocation is the point: the
+ * reference format compresses three of the seven heavens into a single paragraph and then
+ * spends four sentences on one detail about a door. `the-claim` at weight 3 therefore
+ * occupies as much runtime as three ordinary beats, and lands alone in its Act.
+ *
+ * Runs are contiguous and ordered — beat 12 always follows beat 11, and never lands in an
+ * earlier Act than it. That is the whole difference from `assignArcBeats`, which resolves
+ * each beat's fractional position independently and so cannot express adjacency.
+ *
+ * At the shipped 17-beat forensic sheet this puts the cold open, the exclusion and the
+ * promise in Act 1; the claim alone in Act 3; suppression in Act 7; and the disclaimer and
+ * closer at the end — at 9 Acts and at 7, without retuning anything.
+ *
+ * Returns a Map keyed by Act number; Acts with no beats are absent rather than empty.
+ */
+export function assignBeatSheet(
+  profile: FormatProfile,
+  actCount: number
+): Map<number, Beat[]> {
+  const assignments = new Map<number, Beat[]>();
+  const sheet = profile.structure.beatSheet;
+  if (actCount < 1 || !sheet.length) return assignments;
+
+  const totalWeight = sheet.reduce((sum, beat) => sum + beatWeight(beat), 0);
+
+  let consumed = 0;
+  for (const beat of sheet) {
+    // Placed by the weight BEFORE it, not after: a heavy beat should start where its
+    // predecessors ended rather than be pushed forward by its own size.
+    const actNumber = Math.min(
+      actCount,
+      Math.floor((consumed / totalWeight) * actCount) + 1
+    );
+    consumed += beatWeight(beat);
 
     const existing = assignments.get(actNumber);
     if (existing) existing.push(beat);

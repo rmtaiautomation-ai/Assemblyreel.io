@@ -182,18 +182,43 @@ const forensic = FORMAT_PRESETS["forensic-documentary"];
 const forensicInstruction = buildScriptWriterSystemInstruction(forensic, { lengthRule });
 const forensicRules = buildActStructureRules(forensic, 7);
 
+// The Act path, which is the only one that can emit a beat-sheet block: without an Act
+// number there is no slice of the spine to hand over. Act 5 of 9 is chosen because it is
+// mid-video — it must carry beats of its own AND be told about beats on both sides of it.
+const forensicAct5 = buildScriptWriterSystemInstruction(forensic, {
+  lengthRule,
+  actNumber: 5,
+  actCount: 9,
+});
+const forensicAct1 = buildScriptWriterSystemInstruction(forensic, {
+  lengthRule,
+  actNumber: 1,
+  actCount: 9,
+});
+
 const expectations = [
   ["drops the Camera-Ready Rule", !forensicInstruction.includes("Camera-Ready Rule")],
   ["uses the Documentary Line Rule", forensicInstruction.includes("Documentary Line Rule")],
   ["drops the Money Shot CTA closer", !forensicInstruction.includes("Money Shot Rule")],
   ["uses the Open Door closer", forensicInstruction.includes("Open Door Rule")],
   ["emits a NARRATOR block", forensicInstruction.includes("### NARRATOR:")],
-  ["emits an ACT CYCLE block", forensicInstruction.includes("### ACT CYCLE:")],
-  ["emits a COLD OPEN block", forensicInstruction.includes("### COLD OPEN:")],
+  // The cycle is gone by design — it is what made all nine Acts open on a manuscript and
+  // seven of them close on a door. Asserted absent so it cannot creep back alongside the
+  // spine: a model handed both obeys the repeatable one.
+  ["emits no ACT CYCLE block", !forensicAct5.includes("### ACT CYCLE:")],
+  ["emits a beat-sheet block on the Act path", forensicAct5.includes("### THIS ACT'S BEATS:")],
+  ["hands Act 5 of 9 its own slice", forensicAct5.includes("This Act carries beats 8 to 9")],
+  ["tells an Act what earlier Acts already spent", forensicAct5.includes("Earlier Acts have already spent")],
+  ["tells an Act what later Acts will carry", forensicAct5.includes("belong to LATER Acts")],
+  ["gives Act 1 the cold open", forensicAct1.includes("### COLD OPEN:")],
+  // One opening per video. Sending the six-step module to all nine Acts is how it becomes
+  // a module the writer tries to run nine times.
+  ["withholds the cold open from later Acts", !forensicAct5.includes("### COLD OPEN:")],
   ["emits a SOURCING block", forensicInstruction.includes("### SOURCING:")],
   ["emits a FRAMING DEVICE block", forensicInstruction.includes("### FRAMING DEVICE:")],
-  ["act rules require the cycle in every act", forensicRules.includes("EVERY Act, from 1 to 7")],
+  ["act rules cut the spine across Acts", forensicRules.includes("cut across 7 Acts")],
   ["act rules drop the single-arc escalation", !forensicRules.includes("Escalation & Value Stacking")],
+  ["act rules drop the repeating cycle", !forensicRules.includes("EVERY Act, from 1 to 7")],
 ];
 
 for (const [name, ok] of expectations) {

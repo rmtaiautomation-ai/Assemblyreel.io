@@ -66,6 +66,48 @@ function textToArcBeats(text: string): FormatProfile["structure"]["arcBeats"] {
 }
 
 /**
+ * Beats as one editable line each: `id | weight | apparatus | signpost | instruction`.
+ *
+ * Row order IS the meaning here — unlike `arcBeats`, whose fractional positions make the
+ * textarea's order a lie — so this is the one list on the page where moving a line moves
+ * the beat. Split on the first four separators only: an instruction is free prose and will
+ * contain punctuation of its own.
+ */
+function beatSheetToText(beats: FormatProfile["structure"]["beatSheet"]): string {
+  return beats
+    .map((b) =>
+      [b.id, b.weight ?? 1, b.apparatus ? "A" : "-", b.signpost ?? "", b.instruction].join(" | ")
+    )
+    .join("\n");
+}
+
+function textToBeatSheet(text: string): FormatProfile["structure"]["beatSheet"] {
+  return linesToList(text).flatMap((line) => {
+    const [rawId, rawWeight, rawApparatus, rawSignpost, ...rest] = line.split("|");
+    const instruction = rest.join("|").trim();
+    const id = rawId?.trim();
+
+    // Drop a half-typed row rather than writing an empty instruction into the profile: a
+    // beat with no instruction still consumes an Act's slot and would silently produce a
+    // stretch of narration with nothing telling it what to do.
+    if (!id || !instruction) return [];
+
+    const weight = Number(rawWeight?.trim());
+    const signpost = rawSignpost?.trim();
+
+    return [
+      {
+        id,
+        instruction,
+        weight: Number.isFinite(weight) && weight > 0 ? weight : 1,
+        apparatus: rawApparatus?.trim().toUpperCase() === "A",
+        ...(signpost ? { signpost } : {}),
+      },
+    ];
+  });
+}
+
+/**
  * The Act the read-only preview renders, and out of how many.
  *
  * Fixed rather than derived, because a format is edited here once for the whole channel
@@ -350,6 +392,36 @@ export default function ChannelFormatSection({
             />
           </Field>
           <Field
+            label="How The Source Sounds"
+            modified={isFieldModified(
+              profile.identity.sourceRegister,
+              preset.identity.sourceRegister
+            )}
+            hint="Register describes the NARRATOR. This describes the voice they are quoting. Leave blank unless the two genuinely differ — but an urgent narrator reading a deadpan source is a different thing from one voice doing both, and without this the model writes the source with the narrator's urgency."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.identity.sourceRegister}
+              onChange={(e) => update((d) => (d.identity.sourceRegister = e.target.value))}
+            />
+          </Field>
+          <Field
+            label="What A Named Person Is For"
+            modified={isFieldModified(
+              profile.identity.characterRule,
+              preset.identity.characterRule
+            )}
+            hint="Without this a channel with a source ledger produces a bibliography: every name correct, no name doing anything. State what a name must carry — a choice, a motive, a consequence."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.identity.characterRule}
+              onChange={(e) => update((d) => (d.identity.characterRule = e.target.value))}
+            />
+          </Field>
+          <Field
             label="Registers To Avoid"
             modified={isFieldModified(
               profile.identity.forbiddenRegisters,
@@ -458,6 +530,20 @@ export default function ChannelFormatSection({
           </summary>
           <div className={`${groupClass} mt-5`}>
           <Field
+            label="Beat Sheet"
+            modified={isFieldModified(profile.structure.beatSheet, preset.structure.beatSheet)}
+            hint="The video's spine, in order — one beat per line as: id | weight | apparatus | signpost | instruction. Weight is that beat's share of runtime (1 is normal, 3 is triple). Apparatus is A to allow manuscript/edition/translator talk in that beat, or - to ban it. Signpost is the verbatim line that opens the beat, and may be left blank. Beats are split across Acts in order, so each Act does something the others do not — this REPLACES the cycle and once-only beats above whenever it has any rows."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "160px" }}
+              value={beatSheetToText(profile.structure.beatSheet)}
+              onChange={(e) =>
+                update((d) => (d.structure.beatSheet = textToBeatSheet(e.target.value)))
+              }
+            />
+          </Field>
+          <Field
             label="Per-Act Cycle"
             modified={isFieldModified(profile.structure.actCycle, preset.structure.actCycle)}
             hint="One beat per line, in order — these repeat in EVERY Act. Leave empty to use one hook for the whole video instead of one per Act."
@@ -524,6 +610,23 @@ export default function ChannelFormatSection({
               />
             </Field>
           </div>
+          <Field
+            label="Cold Open — Opening Sequence"
+            modified={isFieldModified(
+              profile.structure.coldOpen.sequence,
+              preset.structure.coldOpen.sequence
+            )}
+            hint="One step per line, in order — the positive half of the cold open. Banned Openings below can only say what the opening must not be; this says what it is. Sent to the Act holding the cold-open beat and to no other."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "110px" }}
+              value={profile.structure.coldOpen.sequence.join("\n")}
+              onChange={(e) =>
+                update((d) => (d.structure.coldOpen.sequence = linesToList(e.target.value)))
+              }
+            />
+          </Field>
           <Field
             label="Banned Openings"
             modified={isFieldModified(
@@ -659,6 +762,71 @@ export default function ChannelFormatSection({
               style={{ minHeight: "70px" }}
               value={profile.content.requiredBeats.join("\n")}
               onChange={(e) => update((d) => (d.content.requiredBeats = linesToList(e.target.value)))}
+            />
+          </Field>
+          <Field
+            label="Where Evidence Talk Belongs"
+            modified={isFieldModified(profile.content.apparatusRule, preset.content.apparatusRule)}
+            hint="Manuscripts, folios, catalogue numbers, editions and translators are this format's credibility layer and also what kills it when spread evenly. Sourcing Rule below says what may be NAMED; this says where naming may HAPPEN."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.content.apparatusRule}
+              onChange={(e) => update((d) => (d.content.apparatusRule = e.target.value))}
+            />
+          </Field>
+          <Field
+            label="What The Listener Feels"
+            modified={isFieldModified(profile.content.sensoryRule, preset.content.sensoryRule)}
+            hint="Sensation in the spoken line, not only in the image prompt. A script can look rich on the page and give a listener nothing to feel, because the voice is the only channel they have."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.content.sensoryRule}
+              onChange={(e) => update((d) => (d.content.sensoryRule = e.target.value))}
+            />
+          </Field>
+          <Field
+            label="Rhythm"
+            modified={isFieldModified(profile.content.fragmentRule, preset.content.fragmentRule)}
+            hint="How line length breaks. Name the specific short form you want — uniform line length is the loudest sign a script was not written by a person, and a vague instruction to 'vary your rhythm' loses to the word-count target every time."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.content.fragmentRule}
+              onChange={(e) => update((d) => (d.content.fragmentRule = e.target.value))}
+            />
+          </Field>
+          <Field
+            label="Numbers"
+            modified={isFieldModified(profile.content.scaleRule, preset.content.scaleRule)}
+            hint="How figures are converted into something a listener can picture. A number with no comparison beside it has been mentioned, not delivered."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "70px" }}
+              value={profile.content.scaleRule}
+              onChange={(e) => update((d) => (d.content.scaleRule = e.target.value))}
+            />
+          </Field>
+          <Field
+            label="Transition Phrases"
+            modified={isFieldModified(
+              profile.content.transitionPhrases,
+              preset.content.transitionPhrases
+            )}
+            hint="One per line — the Act-to-Act handoffs, used verbatim and never twice in a video. Separate from a beat's own signpost, which is spent inside that beat. Without these, Acts hand off with neutral questions and nothing tells the listener the next thing is worse than the last."
+          >
+            <textarea
+              className={inputClass}
+              style={{ minHeight: "90px" }}
+              value={profile.content.transitionPhrases.join("\n")}
+              onChange={(e) =>
+                update((d) => (d.content.transitionPhrases = linesToList(e.target.value)))
+              }
             />
           </Field>
           <Field
