@@ -1,6 +1,7 @@
 import React from 'react';
 import { Composition } from 'remotion';
 import { VideoComposition } from './compositions/VideoComposition';
+import { StyleSheet, type StyleSheetProps } from './dev/StyleSheet';
 import type { VideoCompositionProps, CompositionScene } from './types';
 import { layoutScenes } from './timeline';
 
@@ -61,6 +62,22 @@ export const RemotionRoot: React.FC = () => {
           width: 1080,
           height: 1920,
         } satisfies VideoCompositionProps}
+      />
+
+      {/*
+        Design harness for the card style library. Not used by the app — the
+        editor only ever renders "MainVideo" — but registered here so a single
+        style can be rendered as a still at any size for review. See the
+        docstring in dev/StyleSheet.tsx.
+      */}
+      <Composition
+        id="StyleSheet"
+        component={StyleSheet}
+        durationInFrames={90}
+        fps={30}
+        width={1920}
+        height={1080}
+        defaultProps={{ styleId: 'broadcast-bar' } satisfies StyleSheetProps}
       />
     </>
   );

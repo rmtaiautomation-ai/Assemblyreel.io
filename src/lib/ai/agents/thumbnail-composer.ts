@@ -3,10 +3,11 @@ import { z } from "zod";
 import {
   AGENT_MODEL,
   CREATIVE_TEMPERATURE,
-  MISSING_GEMINI_KEY_ERROR,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import type { FormatProfile } from "../format-profile";
 import { compileThumbnailDirection } from "../format-prompt";
 import { acquireCallSlot } from "../concurrency";
@@ -67,8 +68,8 @@ export async function composeThumbnailConcept({
   formatProfile,
   sourceDescription,
 }: ThumbnailConceptInput): Promise<ComposeThumbnailResult> {
-  if (!isGeminiConfigured()) {
-    return { concept: null, error: MISSING_GEMINI_KEY_ERROR };
+  if (!isOpenAIConfigured()) {
+    return { concept: null, error: MISSING_OPENAI_KEY_ERROR };
   }
 
   const systemInstruction = `You are the Thumbnail Composer for a YouTube channel's video pipeline.
@@ -84,7 +85,8 @@ ${compileThumbnailDirection(formatProfile)}`;
   try {
     await acquireCallSlot();
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: ThumbnailConceptSchema,
       temperature: CREATIVE_TEMPERATURE,
       system: systemInstruction,

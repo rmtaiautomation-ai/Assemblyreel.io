@@ -9,6 +9,7 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronRight,
+  Clipboard,
   Copy,
   Film,
   Lightbulb,
@@ -28,6 +29,8 @@ import {
   generateAct,
   regenerateActNarration,
   regenerateActVisuals,
+  replaceActScenes,
+  rewriteActWithAI,
   updateSceneVoiceover,
 } from "@/app/actions/whiteboard-actions";
 import { getAvailableVoices } from "@/app/actions/audio-actions";
@@ -87,6 +90,34 @@ function buildActCopyText(act: SceneBoardAct): string {
   return `${header}\n\n${scenes}`;
 }
 
+/**
+ * The inverse of `buildActCopyText` — parses a pasted act back into scenes. Tolerant of
+ * an external LLM's small formatting drift (extra blank lines, re-wrapped paragraphs,
+ * a missing header) because the round trip goes through a rewrite step outside this
+ * app; it only requires each scene to still start on its own "Scene N" line and carry
+ * a "Narration:" line, matching what Copy produces.
+ *
+ * Scene numbers in the pasted text are read for splitting only, then discarded — the
+ * caller renumbers by array position, so a skipped or repeated number does not corrupt
+ * the result. A block with no narration is dropped rather than saved as a silent blank
+ * scene.
+ */
+function parseActPasteText(text: string): Array<{ voiceOverText: string; visualPrompt: string }> {
+  const body = text.replace(/^\s*Act\s+\d+[^\n]*\n+/i, "");
+  const blocks = body.split(/\n(?=\s*Scene\s+\d+\s*(?:\n|$))/i);
+
+  return blocks.flatMap((block) => {
+    const narrationMatch = block.match(/Narration:\s*([\s\S]*?)(?=\n\s*Visual Prompt:|$)/i);
+    const visualMatch = block.match(/Visual Prompt:\s*([\s\S]*)$/i);
+
+    const voiceOverText = narrationMatch?.[1]?.trim() ?? "";
+    const visualPrompt = visualMatch?.[1]?.trim() ?? "";
+
+    if (!voiceOverText || voiceOverText === "(none)") return [];
+    return [{ voiceOverText, visualPrompt: visualPrompt === "(not built yet)" ? "" : visualPrompt }];
+  });
+}
+
 function matchesFilter(scene: SceneBoardScene, filter: SceneFilter): boolean {
   switch (filter) {
     case "needs-visuals":
@@ -137,7 +168,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
   const [acts, setActs] = useState<SceneBoardAct[]>(data.acts);
   useEffect(() => setActs(data.acts), [data.acts]);
 
-  const [viewMode, setViewMode] = useState<ViewMode>("board");
+  const [viewMode, setViewMode] = useState<ViewMode>("script");
   const [filter, setFilter] = useState<SceneFilter>("all");
   const [query, setQuery] = useState("");
   const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
@@ -178,8 +209,47 @@ export default function SceneBoard({ data }: SceneBoardProps) {
     });
   };
 
+  /** Act number whose paste panel is open — null everywhere else. Only one at a time. */
+  const [pastingAct, setPastingAct] = useState<number | null>(null);
+  const [pasteDraft, setPasteDraft] = useState("");
+  const [pasteBusyAct, setPasteBusyAct] = useState<number | null>(null);
+
+  const openPasteAct = (actNumber: number) => {
+    setPastingAct(actNumber);
+    setPasteDraft("");
+  };
+
+  const handleReplaceAct = async (actNumber: number) => {
+    const scenes = parseActPasteText(pasteDraft);
+    if (scenes.length === 0) {
+      alert(
+        "Couldn't find any scenes in that text. Paste it in the same format Copy produces — each scene starting with \"Scene N\" and a \"Narration:\" line."
+      );
+      return;
+    }
+
+    setPasteBusyAct(actNumber);
+    try {
+      const res = await replaceActScenes(data.projectId, actNumber, scenes);
+      if (!res.success) {
+        alert(res.error || `Replacing Act ${actNumber} failed.`);
+        return;
+      }
+      setPastingAct(null);
+      setPasteDraft("");
+      router.refresh();
+    } finally {
+      setPasteBusyAct(null);
+    }
+  };
+
   /** Acts whose scenes are hidden from the board. Ephemeral UI state — not persisted. */
-  const [collapsedActs, setCollapsedActs] = useState<Set<number>>(new Set());
+  // Every act starts collapsed on a first visit, same as switching into Script mode —
+  // this is that same "closed list of act titles" default, just applying to Board mode
+  // too now rather than only on a mode switch.
+  const [collapsedActs, setCollapsedActs] = useState<Set<number>>(
+    () => new Set(data.acts.map((a) => a.outline.actNumber))
+  );
   const toggleActCollapsed = (actNumber: number) => {
     setCollapsedActs((prev) => {
       const next = new Set(prev);
@@ -302,6 +372,38 @@ export default function SceneBoard({ data }: SceneBoardProps) {
         visualAesthetic: data.visualAesthetic,
         targetDuration: data.targetDuration,
         startingSequenceNumber: priorScenes + 1,
+        actNumber: act.outline.actNumber,
+        ...(data.isSinglePass ? {} : { act: act.outline }),
+      })
+    );
+  };
+
+  /**
+   * Regenerates an already-written act against whatever the channel's format settings
+   * say right now — for testing a blueprint change on one act without rebuilding the
+   * whole project. `startingSequenceNumber` here is provisional; `rewriteActWithAI`
+   * computes the real one server-side and renumbers the whole project afterward, so a
+   * rewrite is safe to run even while later acts already have scenes of their own.
+   */
+  const handleRewriteAct = (act: SceneBoardAct) => {
+    if (
+      !window.confirm(
+        `Rewrite Act ${act.outline.actNumber} using the current channel format settings? This replaces its narration and visual prompts. Its audio and rendered visuals will need Re-record / Regenerate Visuals afterward.`
+      )
+    ) {
+      return;
+    }
+
+    void runWithRefresh(setScriptingAct, act.outline.actNumber, () =>
+      rewriteActWithAI({
+        projectId: data.projectId,
+        workspaceTheme: data.workspaceTheme,
+        topic: data.topic,
+        narrativeArc: data.narrativeArc,
+        scriptHook: data.scriptHook,
+        visualAesthetic: data.visualAesthetic,
+        targetDuration: data.targetDuration,
+        startingSequenceNumber: 1,
         actNumber: act.outline.actNumber,
         ...(data.isSinglePass ? {} : { act: act.outline }),
       })
@@ -536,12 +638,57 @@ export default function SceneBoard({ data }: SceneBoardProps) {
                   onApproveVisuals={() => handleApproveVisuals(act.outline.actNumber)}
                   onRegenerateVisuals={() => handleRegenerateVisuals(act.outline.actNumber)}
                   onCopyAct={() => handleCopyAct(act)}
+                  onOpenPaste={() => openPasteAct(act.outline.actNumber)}
+                  onRewriteAct={() => handleRewriteAct(act)}
                   onPlayState={(isPlaying) => {
                     setPlayingAct(isPlaying ? act.outline.actNumber : null);
                     if (!isPlaying) setPlayhead(0);
                   }}
                   onPlayhead={setPlayhead}
                 />
+
+                {pastingAct === act.outline.actNumber && (
+                  <div className="px-4 py-3 bg-ed-well border-b border-ed-border space-y-2">
+                    <p className="text-[11px] text-ed-text-dim leading-relaxed">
+                      Paste a rewritten Act {act.outline.actNumber} below, in the same format
+                      Copy produces. This replaces every scene in this act — narration and
+                      visual prompts. Other acts are untouched. Re-record and regenerate
+                      visuals afterward to hear and see the change.
+                    </p>
+                    <textarea
+                      autoFocus
+                      value={pasteDraft}
+                      onChange={(e) => setPasteDraft(e.target.value)}
+                      placeholder={`Scene 1\nNarration: ...\nVisual Prompt: ...\n\nScene 2\nNarration: ...\nVisual Prompt: ...`}
+                      rows={8}
+                      className="ed-field p-3 text-[13px] leading-relaxed font-mono resize-y w-full"
+                    />
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={() => void handleReplaceAct(act.outline.actNumber)}
+                        disabled={pasteBusyAct === act.outline.actNumber || !pasteDraft.trim()}
+                        className="flex items-center gap-1.5 text-[12px] font-bold text-ed-base bg-ed-accent hover:bg-ed-accent-hover px-3 py-1.5 rounded-md transition-colors disabled:opacity-40"
+                      >
+                        {pasteBusyAct === act.outline.actNumber ? (
+                          <Loader2 size={13} className="animate-spin" />
+                        ) : (
+                          <Clipboard size={13} />
+                        )}
+                        {pasteBusyAct === act.outline.actNumber ? "Replacing…" : `Replace Act ${act.outline.actNumber}`}
+                      </button>
+                      <button
+                        onClick={() => {
+                          setPastingAct(null);
+                          setPasteDraft("");
+                        }}
+                        disabled={pasteBusyAct === act.outline.actNumber}
+                        className="text-[12px] font-medium text-ed-text-dim hover:text-ed-text px-2 py-1.5 rounded-md transition-colors disabled:opacity-40"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {isCollapsed ? null : viewMode === "board" ? (
                   <div className="px-4 py-4">
@@ -864,6 +1011,8 @@ function ActHeader({
   onApproveVisuals,
   onRegenerateVisuals,
   onCopyAct,
+  onOpenPaste,
+  onRewriteAct,
   onPlayState,
   onPlayhead,
 }: {
@@ -881,6 +1030,8 @@ function ActHeader({
   onApproveVisuals: () => void;
   onRegenerateVisuals: () => void;
   onCopyAct: () => void;
+  onOpenPaste: () => void;
+  onRewriteAct: () => void;
   onPlayState: (isPlaying: boolean) => void;
   onPlayhead: (t: number) => void;
 }) {
@@ -905,6 +1056,38 @@ function ActHeader({
     if (el.paused) void el.play();
     else el.pause();
   };
+
+  // Local to this Act's own scrubber — separate from the parent's `playhead`, which
+  // only tracks whichever Act is currently playing and resets to 0 the moment it
+  // isn't. This one keeps its position so the bar doesn't jump to zero on pause.
+  const [scrubTime, setScrubTime] = useState(0);
+
+  // A re-record swaps the audio URL under the same Act — reset to the start rather
+  // than showing a scrub position that belonged to the narration that no longer exists.
+  useEffect(() => {
+    setScrubTime(0);
+  }, [act.narration?.audioUrl]);
+
+  const seekTo = (seconds: number) => {
+    const el = audioRef.current;
+    if (!el || !act.narration) return;
+    const clamped = Math.max(0, Math.min(seconds, act.narration.durationSeconds));
+    el.currentTime = clamped;
+    setScrubTime(clamped);
+    if (el.paused) void el.play();
+  };
+
+  // Where each scene starts within this Act's narration, walked cumulatively from each
+  // scene's own recorded duration — the same boundaries `speakingSceneId` (in the parent)
+  // derives its highlight from, so the tick marks land exactly where the highlight moves.
+  const sceneStarts = useMemo(() => {
+    let elapsed = 0;
+    return act.scenes.map((scene) => {
+      const startSeconds = elapsed;
+      elapsed += scene.durationSeconds;
+      return { id: scene.id, sequenceNumber: scene.sequenceNumber, startSeconds };
+    });
+  }, [act.scenes]);
 
   // Single-pass (short/mid-form) projects have exactly one "Script" section, so there
   // is nothing to focus on by collapsing it — the whole-row toggle stays Act-only, same
@@ -951,6 +1134,17 @@ function ActHeader({
               {copied ? "Copied" : "Copy"}
             </button>
           )}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenPaste();
+            }}
+            className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-ed-text-dim hover:text-ed-text px-1.5 py-0.5 rounded transition-colors"
+            title="Paste a rewritten version of this act back in — same Scene / Narration / Visual Prompt format Copy produces"
+          >
+            <Clipboard size={11} />
+            Paste
+          </button>
           {act.narration && (
             <span className="text-[12px] font-mono text-ed-text-dim shrink-0">
               {formatClock(act.narration.durationSeconds)}
@@ -988,6 +1182,7 @@ function ActHeader({
                 onPause={() => onPlayState(false)}
                 onEnded={() => onPlayState(false)}
                 onTimeUpdate={(e) => {
+                  setScrubTime(e.currentTarget.currentTime);
                   if (playingAct === actNumber) onPlayhead(e.currentTarget.currentTime);
                 }}
                 className="hidden"
@@ -1022,6 +1217,18 @@ function ActHeader({
             </button>
           )}
 
+          {act.scenes.length > 0 && (
+            <button
+              onClick={onRewriteAct}
+              disabled={busy}
+              className="flex items-center gap-1.5 text-[12px] font-medium text-ed-text-dim hover:text-ed-text px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-40"
+              title="Regenerate this act's script and visual prompts using the channel's current format settings"
+            >
+              {isScripting ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
+              {isScripting ? "Rewriting…" : "Rewrite with AI"}
+            </button>
+          )}
+
           {/* Visuals stay locked until narration exists, so real timing drives them. */}
           {act.narration &&
             (act.progress.isApproved ? (
@@ -1045,6 +1252,45 @@ function ActHeader({
             ))}
         </div>
       </div>
+
+      {act.narration && (
+        <div
+          className="flex items-center gap-2 mt-2"
+          onClick={(e) => e.stopPropagation()}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <span className="text-[10px] font-mono text-ed-text-dim tabular-nums w-8 text-right shrink-0">
+            {formatClock(scrubTime)}
+          </span>
+          <div className="relative flex-1 h-4 flex items-center">
+            {sceneStarts.map(({ id, sequenceNumber, startSeconds }, i) =>
+              i === 0 || !act.narration ? null : (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => seekTo(startSeconds)}
+                  title={`Jump to Scene ${sequenceNumber}`}
+                  style={{ left: `${(startSeconds / act.narration.durationSeconds) * 100}%` }}
+                  className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-[2px] h-2.5 bg-ed-text-faint hover:bg-ed-accent hover:h-3.5 transition-all z-10"
+                />
+              )
+            )}
+            <input
+              type="range"
+              min={0}
+              max={act.narration.durationSeconds}
+              step={0.01}
+              value={scrubTime}
+              onChange={(e) => seekTo(Number(e.target.value))}
+              title="Scrub this act's narration"
+              className="w-full h-1 accent-ed-accent cursor-pointer relative"
+            />
+          </div>
+          <span className="text-[10px] font-mono text-ed-text-dim tabular-nums w-8 shrink-0">
+            {formatClock(act.narration.durationSeconds)}
+          </span>
+        </div>
+      )}
 
       {act.outline.description && (
         <p className="text-[13px] leading-snug text-ed-text-dim mt-1.5 line-clamp-2">

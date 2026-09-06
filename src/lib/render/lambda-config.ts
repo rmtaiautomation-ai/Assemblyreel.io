@@ -12,6 +12,27 @@
  * it's false — this app has no AWS keys set up yet (see
  * implementation_plans/10-aws-lambda-cloud-rendering.md), so local rendering
  * stays the default until the user finishes the AWS-side setup.
+ *
+ * ── `REMOTION_SERVE_URL` IS A FROZEN BUNDLE ──────────────────────────────
+ * The two render paths do NOT stay in sync on their own:
+ *
+ *   - Local rendering calls `bundle()` per request, so it always runs the
+ *     code currently on disk.
+ *   - Lambda passes `serveUrl` straight through to `renderMediaOnLambda`. That
+ *     URL points at a site bundle uploaded by `remotion lambda sites create`.
+ *     It is NEVER rebuilt by this app.
+ *
+ * And the render route prefers Lambda whenever this config is complete. So
+ * after ANY change under `src/remotion/**` you must run:
+ *
+ *     npm run deploy:remotion
+ *
+ * Skip it and the Player shows your new work while the export silently
+ * renders the previously-deployed code — no error, no warning. Anything that
+ * degrades gracefully on unknown input (the card style registry, for one) will
+ * quietly fall back instead of failing loudly, which is exactly what makes a
+ * stale bundle so hard to spot. That is why unknown card styles render a
+ * visible marker rather than a silent substitute.
  */
 
 export interface LambdaConfig {

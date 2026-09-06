@@ -1,5 +1,6 @@
 "use server";
 
+import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/app/actions/slicer-actions";
@@ -265,3 +266,123 @@ export async function updateProjectTopic(projectId: string, topic: string) {
   return { success: true };
 }
 
+/**
+ * Permanently deletes a project and everything it owns.
+ *
+ * The library grew rows with no way to remove them: a mistyped topic, an abandoned
+ * generation or a failed render stayed in the sidebar forever, and the Production
+ * Snapshot counted them. Renaming (`updateProjectTopic`) was the only edit a project
+ * ever had.
+ *
+ * Two halves, in this order, and the order matters:
+ *
+ *   1. Read back every on-disk path the project owns BEFORE the row goes away. Every
+ *      child table cascades on `project_id` (scenes, media, timeline_items,
+ *      overlay_clips, act_narrations, thumbnails), so once the delete lands those
+ *      audio_urls are unrecoverable and the files would be orphaned in public/ with
+ *      nothing left pointing at them.
+ *   2. Delete the row, then sweep the files. Files are best-effort on purpose — this
+ *      is a prototype that writes into `public/`, so a locked handle on Windows (an
+ *      open <video> element still holding the export) must not report the delete as
+ *      failed when the database half already succeeded. The row is the source of
+ *      truth for whether the project exists.
+ *
+ * `workspaceId` is required rather than looked up: it scopes the delete to the
+ * workspace the user is actually looking at, so a stale/incorrect id can't remove a
+ * project from a different channel, and it's what `revalidatePath` needs anyway.
+ * Ownership itself is still enforced by RLS ("Users can delete own projects").
+ */
+export async function deleteVideoProject(projectId: string, workspaceId: string) {
+  const supabase = await createClient();
+
+  const { data: project, error: readError } = await supabase
+    .from('video_projects')
+    .select('id, topic, narration_url, workspace_id')
+    .eq('id', projectId)
+    .single();
+
+  if (readError || !project) {
+    return { success: false, error: readError?.message ?? "Project not found." };
+  }
+  if (project.workspace_id !== workspaceId) {
+    return { success: false, error: "That project does not belong to this workspace." };
+  }
+
+  // Narration lives flat in public/audio, one file per scene id or act, so unlike
+  // public/media/{projectId} it can't be removed by deleting a directory — the paths
+  // have to be collected while the rows still exist.
+  const audioUrls = new Set<string>();
+  if (project.narration_url) audioUrls.add(project.narration_url);
+
+  const { data: scenes } = await supabase
+    .from('scenes')
+    .select('audio_url')
+    .eq('project_id', projectId);
+  for (const scene of scenes ?? []) {
+    if (scene.audio_url) audioUrls.add(scene.audio_url);
+  }
+
+  // Missing table = migration not run on this database; that's not a reason to
+  // refuse the delete, same tolerance the editor's own loaders use.
+  const { data: actNarrations } = await supabase
+    .from('act_narrations')
+    .select('audio_url')
+    .eq('project_id', projectId);
+  for (const act of actNarrations ?? []) {
+    if (act.audio_url) audioUrls.add(act.audio_url);
+  }
+
+  const { error: deleteError } = await supabase
+    .from('video_projects')
+    .delete()
+    .eq('id', projectId);
+
+  if (deleteError) {
+    console.error("Error deleting project:", deleteError);
+    return { success: false, error: deleteError.message };
+  }
+
+  await removeProjectFiles(projectId, audioUrls);
+
+  // The hub renders the Library, the Production Snapshot and Recent Activity from
+  // this same query, so all three go stale together without this.
+  revalidatePath(`/workspaces/${workspaceId}`);
+  revalidatePath("/workspaces");
+
+  return { success: true, topic: project.topic as string | null };
+}
+
+/**
+ * Best-effort removal of a deleted project's files under `public/`.
+ *
+ * Never throws: see the ordering note on `deleteVideoProject`. A leftover file is a
+ * few megabytes of disk; a thrown error here would tell the user the delete failed
+ * after the row is already gone, and they'd have no way to retry it.
+ */
+async function removeProjectFiles(projectId: string, audioUrls: Set<string>) {
+  const fs = await import("fs/promises");
+  const path = await import("path");
+  const publicDir = path.join(process.cwd(), "public");
+
+  const remove = async (absolutePath: string) => {
+    try {
+      await fs.rm(absolutePath, { recursive: true, force: true });
+    } catch (error) {
+      console.warn(`[deleteVideoProject] Could not remove ${absolutePath}:`, error);
+    }
+  };
+
+  // Generated stills, uploads and thumbnails all land in this one per-project dir.
+  await remove(path.join(publicDir, "media", projectId));
+  await remove(path.join(publicDir, "media", "final_exports", `${projectId}.mp4`));
+
+  for (const url of audioUrls) {
+    // Only ever delete a plain filename inside public/audio. An audio_url can hold a
+    // provider URL or, in older rows, an arbitrary path — resolving those blindly
+    // would let a bad row point `rm -r` at somewhere it has no business being.
+    if (!url.startsWith("/audio/")) continue;
+    const fileName = path.basename(url);
+    if (!fileName || fileName.includes("..")) continue;
+    await remove(path.join(publicDir, "audio", fileName));
+  }
+}

@@ -398,6 +398,107 @@ export async function generateAct(params: {
 }
 
 /**
+ * Regenerates one already-written Act against the channel's CURRENT format settings —
+ * for testing a blueprint change without starting a new project. `generateAct` always
+ * inserts a fresh set of scenes and has no notion of an Act that already has some; it
+ * is the right tool while building a video top to bottom, but calling it a second time
+ * on the same Act number would leave the old scenes in place and add a duplicate set
+ * beside them.
+ *
+ * The old scenes are captured before regenerating and deleted only after the new ones
+ * exist — so a failed or rate-limited rewrite (LLM error, quota) leaves the Act exactly
+ * as it was, never half-replaced. Narration audio and rendered visuals are left alone,
+ * same policy as `replaceActScenes`: this only replaces script and prompt text, and the
+ * existing Re-record / Regenerate Visuals buttons pick up the new wording from here.
+ */
+export async function rewriteActWithAI(
+  params: Parameters<typeof generateAct>[0]
+): Promise<GenerateActResult> {
+  const { projectId, actNumber } = params;
+  const supabase = await createClient();
+
+  const { data: oldScenes, error: oldScenesError } = await supabase
+    .from("scenes")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("act_number", actNumber);
+
+  if (oldScenesError) {
+    return {
+      success: false,
+      warnings: [],
+      error: `Could not read this act's existing scenes (${oldScenesError.message}).`,
+    };
+  }
+
+  const oldSceneIds = (oldScenes ?? []).map((row) => row.id as string);
+
+  // Past the end of every existing scene in the project, not just this act's own prior
+  // count — unlike a fresh "Write this act" walking acts in order, a rewrite can run at
+  // any time, with later acts already holding scenes whose numbers must not collide.
+  const { data: maxRow } = await supabase
+    .from("scenes")
+    .select("sequence_number")
+    .eq("project_id", projectId)
+    .order("sequence_number", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  const startingSequenceNumber = (Number(maxRow?.sequence_number) || 0) + 1;
+
+  const result = await generateAct({ ...params, startingSequenceNumber });
+  if (!result.success) {
+    // Nothing was deleted yet — the act is untouched, exactly as if this were never
+    // called.
+    return result;
+  }
+
+  if (oldSceneIds.length > 0) {
+    const { error: deleteError } = await supabase.from("scenes").delete().in("id", oldSceneIds);
+    if (deleteError) {
+      console.error("[Whiteboard] Rewrite succeeded, but clearing the old scenes failed:", deleteError);
+      result.warnings.push(
+        `The act was rewritten, but its old scenes could not be removed (${deleteError.message}). Both versions are now on the board — delete the stale ones by hand.`
+      );
+      return result;
+    }
+  }
+
+  const { data: allScenes, error: fetchError } = await supabase
+    .from("scenes")
+    .select("id, sequence_number")
+    .eq("project_id", projectId)
+    .order("act_number", { ascending: true })
+    .order("sequence_number", { ascending: true });
+
+  if (fetchError) {
+    result.warnings.push(
+      `The act was rewritten, but reordering the project failed (${fetchError.message}). Reload before rewriting again.`
+    );
+    return result;
+  }
+
+  const renumbered = (allScenes ?? [])
+    .map((row, index) => ({ id: row.id as string, sequence_number: index + 1 }))
+    .filter((row, index) => row.sequence_number !== (allScenes ?? [])[index].sequence_number);
+
+  if (renumbered.length > 0) {
+    const results = await Promise.all(
+      renumbered.map((row) =>
+        supabase.from("scenes").update({ sequence_number: row.sequence_number }).eq("id", row.id)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      result.warnings.push(
+        `The act was rewritten, but reordering the project failed (${failed.error.message}). Reload before rewriting again.`
+      );
+    }
+  }
+
+  return result;
+}
+
+/**
  * Step 3 — stitch the approved Act scripts into the project's master script and hand
  * off from the Whiteboard to the Timeline Editor.
  *
@@ -513,6 +614,118 @@ export async function updateSceneVoiceover(
     return { success: false, error: error.message };
   }
   return { success: true };
+}
+
+/**
+ * Overwrites one Act's scenes wholesale — the reverse of the act-header Copy button.
+ * Lets the user round-trip an Act through an external LLM (rewrite the voice, fix a
+ * fact, tighten a line) and paste the result straight back in, without touching any
+ * other Act.
+ *
+ * Scene count is allowed to change — the paste may add or drop a scene — so every
+ * scene in the project is renumbered afterward to stay globally contiguous across
+ * Acts. Only the script and prompt text move; narration audio and rendered media are
+ * left alone, same as a single-scene edit, so the existing Re-record and Regenerate
+ * Visuals buttons pick up the new wording from here. Each pasted scene gets a
+ * word-count duration estimate so the Timeline's scrubber has real boundaries to walk
+ * immediately — Re-record still overwrites it with the actual measured timing.
+ */
+export async function replaceActScenes(
+  projectId: string,
+  actNumber: number,
+  scenes: Array<{ voiceOverText: string; visualPrompt: string }>
+): Promise<{ success: boolean; sceneCount?: number; error?: string }> {
+  if (!projectId || !actNumber) {
+    return { success: false, error: "Missing projectId or actNumber" };
+  }
+  if (!scenes || scenes.length === 0) {
+    return { success: false, error: "No scenes found in the pasted text" };
+  }
+
+  const supabase = await createClient();
+
+  const { error: deleteError } = await supabase
+    .from("scenes")
+    .delete()
+    .eq("project_id", projectId)
+    .eq("act_number", actNumber);
+
+  if (deleteError) {
+    console.error("[Whiteboard] Failed to clear the act's old scenes:", deleteError);
+    return { success: false, error: deleteError.message };
+  }
+
+  // A rough duration estimate from word count — the same method the Scene Slicer
+  // itself uses before real audio exists. Left unset (0), a pasted scene has no
+  // timing at all until the next Re-record, and the Timeline's scrubber and its
+  // "currently speaking" highlight walk scene boundaries by summing this column — so
+  // an unset one races through every scene instantly while whatever audio is playing
+  // (old or none) carries on at its own pace. This estimate closes that gap; Re-record
+  // still overwrites it with the real, measured duration once it runs.
+  const formatProfile = await resolveProjectFormatProfile(supabase, projectId);
+  const wordsPerSecond = formatProfile.delivery.wordsPerMinute / 60;
+
+  // Sequenced past nothing in particular yet — only these rows' order relative to each
+  // other matters here. The renumbering pass below fixes the whole project into one
+  // contiguous order, so a moment of collision with another Act's existing numbers
+  // (no unique constraint on this column) is harmless.
+  const toInsert = scenes.map((scene, index) => ({
+    project_id: projectId,
+    act_number: actNumber,
+    sequence_number: index + 1,
+    voice_over_beat: scene.voiceOverText,
+    final_video_prompt: scene.visualPrompt,
+    video_duration: Number(
+      Math.max(0.5, scene.voiceOverText.trim().split(/\s+/).filter(Boolean).length / wordsPerSecond).toFixed(2)
+    ),
+    generation_status: "Pending",
+  }));
+
+  const { error: insertError } = await supabase.from("scenes").insert(toInsert);
+  if (insertError) {
+    console.error("[Whiteboard] Failed to insert the pasted scenes:", insertError);
+    return { success: false, error: insertError.message };
+  }
+
+  const { data: allScenes, error: fetchError } = await supabase
+    .from("scenes")
+    .select("id, sequence_number")
+    .eq("project_id", projectId)
+    .order("act_number", { ascending: true })
+    .order("sequence_number", { ascending: true });
+
+  if (fetchError) {
+    // The paste itself succeeded; only the global renumbering pass failed. Surfaced
+    // distinctly so the caller tells the user to reload rather than paste again, which
+    // would duplicate the scenes just inserted.
+    console.error("[Whiteboard] Pasted scenes saved, but renumbering failed:", fetchError);
+    return {
+      success: false,
+      error: `Scenes were saved, but reordering the project failed (${fetchError.message}). Reload before pasting again.`,
+    };
+  }
+
+  const renumbered = (allScenes ?? [])
+    .map((row, index) => ({ id: row.id as string, sequence_number: index + 1 }))
+    .filter((row, index) => row.sequence_number !== (allScenes ?? [])[index].sequence_number);
+
+  if (renumbered.length > 0) {
+    const results = await Promise.all(
+      renumbered.map((row) =>
+        supabase.from("scenes").update({ sequence_number: row.sequence_number }).eq("id", row.id)
+      )
+    );
+    const failed = results.find((r) => r.error);
+    if (failed?.error) {
+      console.error("[Whiteboard] Pasted scenes saved, but renumbering failed:", failed.error);
+      return {
+        success: false,
+        error: `Scenes were saved, but reordering the project failed (${failed.error.message}). Reload before pasting again.`,
+      };
+    }
+  }
+
+  return { success: true, sceneCount: scenes.length };
 }
 
 export interface RegenerateActVisualsResult {

@@ -7,16 +7,19 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "deploy:remotion": "remotion lambda sites create src/remotion/index.ts --site-name=assemblyreel"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.34",
+    "@ai-sdk/openai": "^4.0.59",
     "@aws-sdk/client-s3": "^3.1121.0",
     "@aws-sdk/s3-request-presigner": "^3.1121.0",
     "@deepgram/sdk": "^3.9.0",
     "@google/genai": "^2.11.0",
     "@remotion/bundler": "^4.0.506",
     "@remotion/cli": "^4.0.506",
+    "@remotion/google-fonts": "4.0.506",
     "@remotion/lambda": "^4.0.506",
     "@remotion/player": "^4.0.506",
     "@remotion/renderer": "^4.0.506",

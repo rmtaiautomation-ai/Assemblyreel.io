@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { Easing, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 import { exitOpacity } from './kinetic-utils';
 
@@ -59,7 +60,7 @@ export const LineWipe: React.FC<LineWipeProps> = ({
           clipPath: `inset(0 ${(1 - progress) * 100}% 0 0)`,
           color,
           fontSize,
-          fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+          fontFamily: FONTS.sans,
           fontWeight: 800,
           letterSpacing: '-0.02em',
           lineHeight: 1.2,

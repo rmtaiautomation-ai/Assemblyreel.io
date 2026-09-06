@@ -6,7 +6,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import VideoTabs from "@/components/ui/VideoTabs";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices, getActNarrations, type ActNarration } from "@/app/actions/audio-actions";
 import { regenerateActNarration, approveAndGenerateVisuals, approveActVisuals, regenerateActVisuals, type ActOutline } from "@/app/actions/whiteboard-actions";
 import { getProjectFormatProfile } from "@/app/actions/format-actions";
@@ -22,12 +22,37 @@ import { Player, PlayerRef } from '@remotion/player';
 import { VideoComposition } from '@/remotion/compositions/VideoComposition';
 import type { VideoCompositionProps, CompositionScene, CompositionAudioClip, OverlayClipData, OverlayClipKind, OverlayPreset, SceneOverlay, ChecklistCardData, TitleCutoutCardData, DimScrimData, ParticleFieldData, LightBeamData, LightSweepData, FilmDamageData, TransitionType, CaptionWord } from '@/remotion/types';
 import { isEnvironmentalKind } from '@/remotion/types';
+// Geometry + metadata only — `card-registry` is deliberately React-free, so the
+// editor's sizing math never pulls the style components in through it.
+import { CARD_STYLES, cardStylesForKind, isCardKind, measureCard, readStyleId, resolveCardStyle, LEGACY_STYLE_FOR_KIND } from '@/remotion/templates/card-registry';
+import type { CardKind, CardStyleId } from '@/remotion/templates/card-registry';
 import { layoutScenes, maxTransitionSeconds } from '@/remotion/timeline';
 import { parseTrackStates, normalizeProjectStatus, type TrackStates, type TrackId, type ProjectStatus } from '@/lib/timeline-types';
 
 type TabState = 'media' | 'scene' | 'export';
 type AspectRatio = '16:9' | '9:16' | '1:1';
 type MediaType = 'image' | 'audio' | 'video';
+
+/**
+ * The composition sizes this editor can export. `exportResolution` is the ONE
+ * source of truth for frame shape — the aspect ratio shown in the toolbar is
+ * derived from it via the two maps below, so the preview letterbox, the
+ * <Player>, the render payload and AI asset generation can never disagree
+ * about what shape the video is.
+ */
+type ExportResolution = '1080x1920' | '1920x1080' | '1080x1080';
+
+const ASPECT_RATIO_FOR_RESOLUTION: Record<ExportResolution, AspectRatio> = {
+  '1080x1920': '9:16',
+  '1920x1080': '16:9',
+  '1080x1080': '1:1',
+};
+
+const RESOLUTION_FOR_ASPECT_RATIO: Record<AspectRatio, ExportResolution> = {
+  '9:16': '1080x1920',
+  '16:9': '1920x1080',
+  '1:1': '1080x1080',
+};
 
 interface MediaAsset {
   id: string;
@@ -80,8 +105,17 @@ interface OverlayClip {
   dimBackground: boolean;
   startTime: number;
   duration: number;
-  /** Kind-specific fields — see OverlayClipData in remotion/types.ts. */
-  templateData?: ChecklistCardData | TitleCutoutCardData | Record<string, never>;
+  /**
+   * Kind-specific fields, unenforced JSON — see `OverlayClipData` in
+   * remotion/types.ts, whose union this now reuses verbatim.
+   *
+   * It used to be a narrower local copy (`ChecklistCardData |
+   * TitleCutoutCardData | Record<string, never>`) that had silently drifted:
+   * it omitted all five environmental data shapes, and only type-checked
+   * because `overlayClipDefaultsForKind` returns `Record<string, any>`. Two
+   * declarations of one shape is how that drift happened, so there is now one.
+   */
+  templateData?: OverlayClipData['templateData'];
 }
 
 const overlayRowToClip = (row: any): OverlayClip => ({
@@ -311,6 +345,84 @@ function OverlayImagePicker({
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+/** One icon per shipping style, for `CardStylePicker`. A `Record` over the
+ * full `CardStyleId` union so a new style is a compile error here until it
+ * gets one — the same exhaustiveness the registry itself relies on. */
+const CARD_STYLE_ICONS: Record<CardStyleId, typeof Type> = {
+  'cutout-hero': ImageIcon,
+  'broadcast-bar': AlignLeft,
+  'dossier-stamp': FileText,
+  'serif-plate': BookOpen,
+  'stack-wipe': Layers,
+  'quote-card': Quote,
+  'ledger-classic': CheckCircle2,
+  ledger: ListChecks,
+  'numbered-stack': ListOrdered,
+  'tick-sheet': CheckSquare,
+  'side-rail': PanelRight,
+  'evidence-list': FileSearch,
+};
+
+/**
+ * Style picker for a graphic-card clip — lets the user switch which design in
+ * the registry a `checklist-card`/`title-cutout-card` clip renders as.
+ *
+ * A labelled list rather than a grid of rendered thumbnails: the registry's
+ * style components use Remotion hooks (`useCurrentFrame`, `useVideoConfig`)
+ * that throw outside a `<Player>`/composition context, so they cannot be
+ * mounted directly in this DOM panel, and mounting twelve live `<Player>`s
+ * just to preview them would be real cost for a panel that's open constantly.
+ * The label + description a `CardStyleDefinition` already carries is enough
+ * to choose from; a live-rendered thumbnail is a reasonable follow-up, not a
+ * blocker for the styles being reachable at all.
+ *
+ * Switching calls `onSelect`, which merges the new style's defaults UNDER the
+ * clip's existing data (see `switchCardStyle`) — so switching is lossless and
+ * this component only needs to name the destination style.
+ */
+function CardStylePicker({
+  kind,
+  selectedStyleId,
+  onSelect,
+}: {
+  kind: CardKind;
+  selectedStyleId?: CardStyleId;
+  onSelect: (styleId: CardStyleId) => void;
+}) {
+  const styles = cardStylesForKind(kind);
+  return (
+    <div>
+      <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1.5">Style</label>
+      <div className="space-y-1">
+        {styles.map((style) => {
+          const Icon = CARD_STYLE_ICONS[style.id];
+          const isSelected = selectedStyleId === style.id || (!selectedStyleId && style.id === LEGACY_STYLE_FOR_KIND[kind]);
+          return (
+            <button
+              key={style.id}
+              onClick={() => onSelect(style.id)}
+              className={`w-full flex items-start gap-2.5 text-left px-2.5 py-2 rounded-lg border transition-colors ${
+                isSelected
+                  ? 'border-ed-ov-border bg-ed-ov-soft'
+                  : 'border-ed-border bg-ed-surface hover:border-ed-ov-border'
+              }`}
+            >
+              <div className={`shrink-0 mt-0.5 ${isSelected ? 'text-ed-ov' : 'text-ed-text-faint'}`}>
+                <Icon size={15} />
+              </div>
+              <div className="min-w-0">
+                <div className={`text-xs font-bold ${isSelected ? 'text-ed-ov' : 'text-ed-text'}`}>{style.label}</div>
+                <div className="text-[10px] text-ed-text-faint leading-snug">{style.description}</div>
+              </div>
+              {isSelected && <Check size={14} className="text-ed-ov shrink-0 ml-auto mt-0.5" />}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -879,9 +991,28 @@ export default function TimelineEditor({
   // here — while *previewing* them is identical, which is what `pendingPickFor`
   // below unifies.
   const [pendingProjectPick, setPendingProjectPick] = useState<{ sceneId: string; asset: MediaAsset } | null>(null);
-  const [exportResolution, setExportResolution] = useState<'1080x1920' | '1920x1080' | '1080x1080'>('1080x1920');
+  const [exportResolution, setExportResolution] = useState<ExportResolution>('1080x1920');
   const [exportQuality, setExportQuality] = useState<'High' | 'Standard' | 'Draft'>('High');
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>('16:9');
+  /**
+   * DERIVED from `exportResolution`, never its own state.
+   *
+   * These were two independent `useState`s that nothing kept in sync, and they
+   * disagreed from the very first render: resolution defaulted to 1080x1920
+   * while the ratio pill said 16:9. Only `exportResolution` feeds
+   * `remotionDimensions`, which drives both the <Player> and the render
+   * payload — so the ratio control restyled the preview's letterbox and
+   * changed nothing about the actual composition, and the default project
+   * previewed a 9:16 composition pillarboxed inside a 16:9 frame.
+   *
+   * `aspectRatio` was also passed to AI asset generation (see `aspectRatio` in
+   * the generate call below), so scenes were being generated at a ratio the
+   * composition never used.
+   *
+   * One source of truth removes the whole class of bug, and is a prerequisite
+   * for frame-relative card styles — those size off composition width, so a
+   * ratio control that doesn't move composition width would look broken.
+   */
+  const aspectRatio: AspectRatio = ASPECT_RATIO_FOR_RESOLUTION[exportResolution];
   const [showRatioMenu, setShowRatioMenu] = useState(false);
   // 'narration' is the single master-narration bar on A1 — not a scene row and not a
   // library clip, so it needs its own type rather than borrowing one of theirs.
@@ -2252,21 +2383,40 @@ export default function TimelineEditor({
     updateOverlayClipField(clipId, 'templateData', nextTemplateData, 'template_data');
   };
 
+  /**
+   * Switches a card clip to a different design.
+   *
+   * Merges the new style's defaults UNDER the clip's existing data rather than
+   * replacing it — every field the clip already has (bullets, colors, text)
+   * survives the switch. That's what makes flipping between styles lossless:
+   * go Numbered → Checkmarks → back to Numbered and `startNumber` was never
+   * dropped, just ignored by the style that doesn't read it. See the
+   * `CardDataBase` note in remotion/types.ts for why the type is shaped to
+   * allow this.
+   */
+  const switchCardStyle = (clipId: string, styleId: CardStyleId) => {
+    const clip = overlayClips.find(c => c.id === clipId);
+    if (!clip) return;
+    const style = CARD_STYLES[styleId];
+    const nextTemplateData = { ...style.defaults, ...(clip.templateData || {}), styleId };
+    updateOverlayClipField(clipId, 'templateData', nextTemplateData, 'template_data');
+  };
+
   /** Per-kind defaults for a freshly created overlay clip. */
   const overlayClipDefaultsForKind = (kind: OverlayClipKind): { text: string; color: string; templateData: Record<string, any> } => {
     switch (kind) {
+      // Both card kinds take their starting content from the registry entry for
+      // their legacy style, so "what a new card contains" is stated once next
+      // to the design that draws it rather than duplicated here.
       case 'checklist-card':
+      case 'title-cutout-card': {
+        const styleId = LEGACY_STYLE_FOR_KIND[kind];
         return {
-          text: 'Checklist',
+          text: kind === 'checklist-card' ? 'Checklist' : 'Your Title',
           color: '#FFFFFF',
-          templateData: { bullets: ['First point', 'Second point', 'Third point'] } satisfies ChecklistCardData,
+          templateData: { styleId, ...CARD_STYLES[styleId].defaults },
         };
-      case 'title-cutout-card':
-        return {
-          text: 'Your Title',
-          color: '#FFFFFF',
-          templateData: {} satisfies TitleCutoutCardData,
-        };
+      }
       case 'dim-scrim':
         // `color` is this clip's scrim color, not text — white would render as
         // a wash instead of a dim, so this kind needs its own default.
@@ -2497,11 +2647,13 @@ export default function TimelineEditor({
    * written every move (debounced persist), then one un-debounced flush on
    * release so the final size can't be lost to a pending timer.
    *
-   * Branches on `kind`: for a graphic card (checklist/title-cutout), the
-   * images and layout are a fixed-size box that `fontSize` never touched —
-   * only the header/headline text did — so dragging here scales the WHOLE
-   * card via `template_data.scale` instead. Plain text has no "card" to
-   * scale, so it keeps adjusting `fontSize` as before.
+   * Branches on whether this is a graphic card: a card has a layout that
+   * `fontSize` never touched — only its header/headline text did — so dragging
+   * here scales the WHOLE card via `template_data.scale` instead. Plain text
+   * has no "card" to scale, so it keeps adjusting `fontSize` as before.
+   *
+   * Asks the registry rather than listing the card kinds, so a new style is
+   * never left with a handle that silently resizes the wrong property.
    */
   const handleOverlayResizeDragStart = (e: React.PointerEvent, clip: OverlayClip) => {
     e.preventDefault();
@@ -2509,7 +2661,7 @@ export default function TimelineEditor({
 
     const startX = e.clientX;
 
-    if (clip.kind === 'checklist-card' || clip.kind === 'title-cutout-card') {
+    if (isCardKind(clip.kind)) {
       const startScale = (clip.templateData as { scale?: number } | undefined)?.scale ?? 1;
       let latest = startScale;
 
@@ -3912,6 +4064,18 @@ export default function TimelineEditor({
   // Typed reads of the selected clip's template_data, kept here rather than
   // inline in the JSX below so the properties panel doesn't repeat the same
   // `as ChecklistCardData | undefined` cast at every field.
+  // The design the selected card clip currently renders as. `null` for a
+  // non-card clip, or for a card whose styleId this build doesn't have (see
+  // `resolveCardStyle` — realistically a stale Lambda bundle, never "fall back
+  // silently"). Read once here rather than at every field below so the panel
+  // and the picker agree on which style is active.
+  const selectedCardStyle = useMemo(
+    () => (selectedOverlayClip && isCardKind(selectedOverlayClip.kind)
+      ? resolveCardStyle(selectedOverlayClip.kind, readStyleId(selectedOverlayClip.templateData))
+      : null),
+    [selectedOverlayClip]
+  );
+
   const selectedChecklistBullets = useMemo(
     () => (selectedOverlayClip?.kind === 'checklist-card'
       ? ((selectedOverlayClip.templateData as ChecklistCardData)?.bullets ?? [])
@@ -4368,7 +4532,13 @@ export default function TimelineEditor({
                          }}
                        >
                          <div className="w-full h-full p-1.5 flex flex-col relative">
-                            <div className={`flex items-center gap-1.5 mb-1 opacity-100 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-ed-media/30 w-fit px-1.5 py-0.5 rounded-sm' : 'opacity-90'}`}>
+                            {/* Over a thumbnail the label needs its own scrim to
+                                survive a bright frame, so it keeps white + the
+                                `ed-media` chip. On a bare block it inherits the
+                                status colour from getSceneColor, which is already
+                                the quiet step — the extra `opacity-90` on top only
+                                pushed it down toward the wash sitting over it. */}
+                            <div className={`flex items-center gap-1.5 mb-1 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-ed-media/50 w-fit px-1.5 py-0.5 rounded-sm' : ''}`}>
                                {previewMediaType === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
                                <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {previewMediaUrl ? `(${scene.voice_over_beat})` : ''}</span>
                                {pendingHere && (
@@ -4462,14 +4632,20 @@ export default function TimelineEditor({
                              steals the click/drag/resize handlers above. */}
                          {isLongForm && scene.environment == null && (
                            <div
-                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-ed-text-faint/25"
+                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-ed-text-faint/15"
                              style={{
+                               // White-alpha hatching, not black. Black stripes at 6%
+                               // over a dark block are arithmetically invisible — the
+                               // "unapproved" state was reading as a plain empty block,
+                               // which is exactly the confusion this overlay exists to
+                               // prevent. The flat wash also dropped 25% → 15%: with a
+                               // hatch that actually shows, the wash only needs to tint.
                                backgroundImage:
-                                 'repeating-linear-gradient(135deg, rgba(0,0,0,0.06) 0px, rgba(0,0,0,0.06) 6px, transparent 6px, transparent 12px)',
+                                 'repeating-linear-gradient(135deg, rgba(237,237,239,0.10) 0px, rgba(237,237,239,0.10) 6px, transparent 6px, transparent 12px)',
                              }}
                            >
                              {getSceneDuration(scene) * scale > 40 && (
-                               <span className="text-[8px] font-bold text-ed-text-dim bg-ed-surface/70 px-1 py-0.5 rounded-sm whitespace-nowrap">
+                               <span className="text-[8px] font-bold text-ed-text bg-ed-surface/90 px-1 py-0.5 rounded-sm whitespace-nowrap">
                                  Awaiting visuals
                                </span>
                              )}
@@ -4531,11 +4707,18 @@ export default function TimelineEditor({
                              <Volume2 size={9} />
                              <span className="text-[8px] font-bold truncate block whitespace-nowrap">{scene.voice_over_beat}</span>
                           </div>
-                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
+                          {/* Waveform. The two strokes were hardcoded violets left
+                              over from the pre-token palette, then dimmed to 60% —
+                              so an A1 block read as neither an A1 colour nor a
+                              legible one. `ed-a1` is the track's own identity token,
+                              and the has-audio / no-audio distinction now rides on
+                              opacity instead of a second invented hex. */}
+                          <div className="absolute inset-x-1 bottom-1 top-4 flex items-center overflow-hidden pointer-events-none">
                             <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                               <path suppressHydrationWarning
                                 d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                                stroke={scene.audio_url ? '#a855f7' : '#d8b4fe'} strokeWidth="2.5" strokeLinecap="round"
+                                stroke="var(--color-ed-a1)" strokeOpacity={scene.audio_url ? 0.95 : 0.45}
+                                strokeWidth="2.5" strokeLinecap="round"
                               />
                             </svg>
                           </div>
@@ -4585,7 +4768,11 @@ export default function TimelineEditor({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-ed-text-faint mr-1">
+          {/* `ed-text-faint` measures 4.9:1 on `ed-base` but only 4.2:1 on
+              `ed-surface`, which is the header's fill — under AA. The token's own
+              note claims it clears both; it does not, so anything faint sitting on
+              a raised surface needs the dim step instead. */}
+          <span className="hidden md:flex items-center gap-1.5 text-[11px] font-medium text-ed-text-dim mr-1">
             <Clock size={12} />
             {formatDuration(contentDuration)}
           </span>
@@ -4732,7 +4919,7 @@ export default function TimelineEditor({
       <div className="flex-1 flex overflow-hidden">
         
         {/* Left Panel (Tabbed Interface) */}
-        <div className="w-[380px] lg:w-[420px] bg-ed-surface border-r border-ed-border flex flex-col flex-none shadow-[2px_0_10px_rgba(0,0,0,0.05)] z-10">
+        <div className="w-[380px] lg:w-[420px] bg-ed-surface border-r border-ed-border flex flex-col flex-none z-10">
           
           {/* Tab Headers */}
           <div className="flex items-center border-b border-ed-border p-2 gap-1 bg-ed-raised">
@@ -5072,6 +5259,14 @@ export default function TimelineEditor({
                       </button>
                     </div>
 
+                    {isCardKind(selectedOverlayClip.kind) && (
+                      <CardStylePicker
+                        kind={selectedOverlayClip.kind}
+                        selectedStyleId={readStyleId(selectedOverlayClip.templateData) as CardStyleId | undefined}
+                        onSelect={(styleId) => switchCardStyle(selectedOverlayClip.id, styleId)}
+                      />
+                    )}
+
                     {selectedOverlayClip.kind === 'checklist-card' ? (
                       <>
                         <div>
@@ -5097,7 +5292,11 @@ export default function TimelineEditor({
                               />
                               <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
                             </div>
-                            <p className="text-[9px] text-ed-text-faint mt-0.5">Header bar &amp; checkmarks</p>
+                            {/* Generic on purpose: which element this tints (a header
+                                bar, an accent rail, a numeral, a checkbox stroke) differs
+                                per list style, and `color` is the same field for all of
+                                them. */}
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Accent color for this style</p>
                           </div>
                           <div>
                             <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Text Color</label>
@@ -5186,6 +5385,62 @@ export default function TimelineEditor({
                             )}
                           </div>
                         </div>
+
+                        {/* Fields below are per-style, driven by the registry's `fields`
+                            list rather than hard-coded — a style that doesn't use a
+                            field (e.g. Ledger Classic has no `startNumber`) never shows
+                            its control, which is what stops this panel growing one arm
+                            per design. */}
+                        {selectedCardStyle?.fields.includes('startNumber') && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Start Number</label>
+                            <input
+                              type="number"
+                              min={0}
+                              className="w-24 bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-1.5 text-xs text-ed-text transition-all shadow-sm"
+                              value={(selectedOverlayClip.templateData as ChecklistCardData)?.startNumber ?? 1}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { startNumber: Math.max(0, parseInt(e.target.value, 10) || 0) })}
+                            />
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Lets a list continue across cards instead of always restarting at 1.</p>
+                          </div>
+                        )}
+
+                        {selectedCardStyle?.fields.includes('showDividers') && (
+                          <label className="flex items-center gap-2 cursor-pointer">
+                            <input
+                              type="checkbox"
+                              checked={(selectedOverlayClip.templateData as ChecklistCardData)?.showDividers ?? true}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { showDividers: e.target.checked })}
+                              className="accent-ed-ov"
+                            />
+                            <span className="text-xs font-semibold text-ed-text-dim">Hairline dividers between rows</span>
+                          </label>
+                        )}
+
+                        {selectedCardStyle?.fields.includes('edgeSide') && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Frame Edge</label>
+                            <div className="grid grid-cols-2 gap-2">
+                              {(['left', 'right'] as const).map((side) => {
+                                const isActive = ((selectedOverlayClip.templateData as ChecklistCardData)?.edgeSide ?? 'left') === side;
+                                return (
+                                  <button
+                                    key={side}
+                                    onClick={() => updateOverlayClipTemplateData(selectedOverlayClip.id, { edgeSide: side })}
+                                    className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold capitalize transition-colors ${
+                                      isActive
+                                        ? 'border-ed-ov-border bg-ed-ov-soft text-ed-ov'
+                                        : 'border-ed-border bg-ed-surface text-ed-text-dim hover:border-ed-ov-border'
+                                    }`}
+                                  >
+                                    {side}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Which frame edge this list hugs. Ignores its dragged position.</p>
+                          </div>
+                        )}
                       </>
                     ) : selectedOverlayClip.kind === 'title-cutout-card' ? (
                       <>
@@ -5200,19 +5455,69 @@ export default function TimelineEditor({
                           />
                         </div>
 
-                        <div className="grid grid-cols-2 gap-2">
+                        {/* Kicker/attribution, the animation dropdown, and which color
+                            control is shown are all driven by the active style's
+                            `fields` list rather than hard-coded to this one kind — see
+                            the same note on the checklist branch above. The animation
+                            dropdown in particular must stay gated: every style besides
+                            Cutout Hero has its own built-in reveal and never reads
+                            `clip.preset` at all, so showing it for them would offer a
+                            control that silently does nothing. */}
+                        {selectedCardStyle?.fields.includes('kicker') && (
                           <div>
-                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Animation</label>
-                            <select
-                              value={selectedOverlayClip.preset}
-                              onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
-                              className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
-                            >
-                              {OVERLAY_PRESET_OPTIONS.map(option => (
-                                <option key={option.value} value={option.value}>{option.label}</option>
-                              ))}
-                            </select>
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Kicker</label>
+                            <input
+                              type="text"
+                              className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                              value={selectedTitleCutoutData.kicker ?? ''}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { kicker: e.target.value })}
+                              placeholder="e.g. Chapter One"
+                            />
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Small label above the headline.</p>
                           </div>
+                        )}
+
+                        {selectedCardStyle?.fields.includes('attribution') && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider mb-1">Attribution</label>
+                            <input
+                              type="text"
+                              className="w-full bg-ed-surface border border-ed-border focus:border-ed-ov-border focus:ring-4 focus:ring-ed-ov-border rounded-lg p-2 text-sm text-ed-text transition-all shadow-sm"
+                              value={selectedTitleCutoutData.attribution ?? ''}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { attribution: e.target.value })}
+                              placeholder="e.g. Book of Enoch, 14:8"
+                            />
+                          </div>
+                        )}
+
+                        {selectedCardStyle?.fields.includes('animationPreset') ? (
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Animation</label>
+                              <select
+                                value={selectedOverlayClip.preset}
+                                onChange={(e: any) => updateOverlayClipField(selectedOverlayClip.id, 'preset', e.target.value, 'preset')}
+                                className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
+                              >
+                                {OVERLAY_PRESET_OPTIONS.map(option => (
+                                  <option key={option.value} value={option.value}>{option.label}</option>
+                                ))}
+                              </select>
+                            </div>
+                            <div>
+                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Text Color</label>
+                              <div className="flex items-center gap-2">
+                                <input
+                                  type="color"
+                                  value={selectedTitleCutoutData.textColor ?? '#FFFFFF'}
+                                  onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { textColor: e.target.value })}
+                                  className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                                />
+                                <span className="text-[10px] text-ed-text-dim font-mono">{selectedTitleCutoutData.textColor ?? '#FFFFFF'}</span>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
                           <div>
                             <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Text Color</label>
                             <div className="flex items-center gap-2">
@@ -5225,21 +5530,43 @@ export default function TimelineEditor({
                               <span className="text-[10px] text-ed-text-dim font-mono">{selectedTitleCutoutData.textColor ?? '#FFFFFF'}</span>
                             </div>
                           </div>
-                        </div>
+                        )}
 
-                        <div>
-                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Fallback Background Color</label>
-                          <div className="flex items-center gap-2">
-                            <input
-                              type="color"
-                              value={selectedOverlayClip.color}
-                              onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
-                              className="w-8 h-8 rounded border border-ed-border cursor-pointer"
-                            />
-                            <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                        {/* `color` means something different per style: for Cutout Hero
+                            it's the fallback fill behind a missing background image; for
+                            every other title style it's the rule/kicker/bracket ACCENT.
+                            Same underlying field, so both branches write `color` — only
+                            the label and helper text change. */}
+                        {selectedCardStyle?.fields.includes('backgroundColor') && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Fallback Background Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedOverlayClip.color}
+                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                            </div>
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Used only when no background image is set below.</p>
                           </div>
-                          <p className="text-[9px] text-ed-text-faint mt-0.5">Used only when no background image is set below.</p>
-                        </div>
+                        )}
+                        {selectedCardStyle?.fields.includes('accentColor') && (
+                          <div>
+                            <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Accent Color</label>
+                            <div className="flex items-center gap-2">
+                              <input
+                                type="color"
+                                value={selectedOverlayClip.color}
+                                onChange={(e) => updateOverlayClipField(selectedOverlayClip.id, 'color', e.target.value, 'color')}
+                                className="w-8 h-8 rounded border border-ed-border cursor-pointer"
+                              />
+                              <span className="text-[10px] text-ed-text-dim font-mono">{selectedOverlayClip.color}</span>
+                            </div>
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Rule, kicker &amp; accent marks.</p>
+                          </div>
+                        )}
 
                         <div>
                           <div className="flex justify-between items-center mb-1">
@@ -5258,35 +5585,41 @@ export default function TimelineEditor({
                           <p className="text-[9px] text-ed-text-faint mt-0.5">Sizes the headline wording only.</p>
                         </div>
 
-                        <div>
-                          <div className="flex justify-between items-center mb-1">
-                            <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Card Size</label>
-                            <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedTitleCutoutData.scale ?? 1) * 100)}%</span>
+                        {selectedCardStyle?.fields.includes('scale') && (
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Card Size</label>
+                              <span className="text-[10px] font-bold text-ed-text-dim font-mono">{Math.round((selectedTitleCutoutData.scale ?? 1) * 100)}%</span>
+                            </div>
+                            <input
+                              type="range"
+                              min={MIN_OVERLAY_CARD_SCALE}
+                              max={MAX_OVERLAY_CARD_SCALE}
+                              step={0.05}
+                              value={selectedTitleCutoutData.scale ?? 1}
+                              onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
+                              className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
+                            />
+                            <p className="text-[9px] text-ed-text-faint mt-0.5">Scales the whole card, images included. You can also drag the handle on it in the preview above.</p>
                           </div>
-                          <input
-                            type="range"
-                            min={MIN_OVERLAY_CARD_SCALE}
-                            max={MAX_OVERLAY_CARD_SCALE}
-                            step={0.05}
-                            value={selectedTitleCutoutData.scale ?? 1}
-                            onChange={(e) => updateOverlayClipTemplateData(selectedOverlayClip.id, { scale: parseFloat(e.target.value) })}
-                            className="w-full h-1.5 bg-ed-hover rounded-lg appearance-none cursor-pointer accent-ed-ov"
-                          />
-                          <p className="text-[9px] text-ed-text-faint mt-0.5">Scales the whole card, images included. You can also drag the handle on it in the preview above.</p>
-                        </div>
+                        )}
 
-                        <OverlayImagePicker
-                          label="Background Image"
-                          images={projectImageAssets}
-                          selectedUrl={selectedTitleCutoutData.backgroundImageUrl}
-                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { backgroundImageUrl: url })}
-                        />
-                        <OverlayImagePicker
-                          label="Foreground Cutout"
-                          images={projectImageAssets}
-                          selectedUrl={selectedTitleCutoutData.foregroundImageUrl}
-                          onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { foregroundImageUrl: url })}
-                        />
+                        {selectedCardStyle?.fields.includes('backgroundImage') && (
+                          <OverlayImagePicker
+                            label="Background Image"
+                            images={projectImageAssets}
+                            selectedUrl={selectedTitleCutoutData.backgroundImageUrl}
+                            onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { backgroundImageUrl: url })}
+                          />
+                        )}
+                        {selectedCardStyle?.fields.includes('foregroundImage') && (
+                          <OverlayImagePicker
+                            label="Foreground Cutout"
+                            images={projectImageAssets}
+                            selectedUrl={selectedTitleCutoutData.foregroundImageUrl}
+                            onSelect={(url) => updateOverlayClipTemplateData(selectedOverlayClip.id, { foregroundImageUrl: url })}
+                          />
+                        )}
                       </>
                     ) : selectedOverlayClip.kind === 'dim-scrim' ? (
                       <>
@@ -6275,7 +6608,7 @@ export default function TimelineEditor({
                         </div>
                         <div className="flex items-center justify-between flex-1">
                           <h3 className="font-bold text-ed-text text-sm">Scene Properties</h3>
-                          <span className="text-[10px] text-ed-text-faint font-mono bg-ed-well border border-ed-border px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
+                          <span className="text-[10px] text-ed-text-dim font-mono bg-ed-well border border-ed-border px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
                         </div>
                      </div>
                      
@@ -6481,7 +6814,13 @@ export default function TimelineEditor({
                                              </span>
                                            )}
 
-                                           <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-ed-text/80 to-transparent text-white text-[8px] font-bold truncate px-1 py-0.5 text-left">
+                                           {/* Scrim + label over a thumbnail. This read
+                                               `from-ed-text/80` with `text-white` — near-white
+                                               text on a near-white gradient, so the filename
+                                               was rendering blank. It was `from-black/80`
+                                               before the migration; `ed-media` is the token
+                                               that means "the dark ground media sits on". */}
+                                           <span className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-ed-media/90 to-transparent text-ed-text text-[8px] font-bold truncate px-1 py-0.5 text-left">
                                              {asset.name}
                                            </span>
                                          </button>
@@ -7380,7 +7719,7 @@ export default function TimelineEditor({
                      ) : selectedAsset.type === 'image' ? (
                         <img src={selectedAsset.url} className="w-full h-full object-contain" alt="Asset Preview" />
                      ) : (
-                        <div className="flex flex-col items-center text-ed-text-faint bg-ed-surface w-full h-full justify-center">
+                        <div className="flex flex-col items-center text-ed-text-dim bg-ed-surface w-full h-full justify-center">
                            <Music size={64} className="mb-6 opacity-50 text-ed-accent-text" />
                            <p className="text-sm font-bold mb-4">{selectedAsset.name}</p>
                            <audio src={selectedAsset.url} controls className="w-3/4 max-w-sm outline-none" autoPlay />
@@ -7473,16 +7812,21 @@ export default function TimelineEditor({
                             only appears on hover, at the estimated box's corner. */}
                         {(() => {
                           const fontSize = selectedOverlayClip.fontSize ?? 64;
-                          const cardScale = (selectedOverlayClip.templateData as { scale?: number } | undefined)?.scale ?? 1;
                           let boxWidth: number;
                           let boxHeight: number;
-                          if (selectedOverlayClip.kind === 'checklist-card') {
-                            const bulletCount = ((selectedOverlayClip.templateData as ChecklistCardData)?.bullets ?? []).length;
-                            boxWidth = 420 * cardScale;
-                            boxHeight = (60 + bulletCount * 36 + 32) * cardScale;
-                          } else if (selectedOverlayClip.kind === 'title-cutout-card') {
-                            boxWidth = 400 * cardScale;
-                            boxHeight = 500 * cardScale;
+                          // Card footprints come from the style registry, which is
+                          // the same definition the composition renders from — so a
+                          // style can't change its layout and leave this box behind.
+                          // `measureCard` already applies template_data.scale and
+                          // returns composition pixels.
+                          const cardBox = measureCard(
+                            selectedOverlayClip.kind,
+                            selectedOverlayClip,
+                            remotionDimensions
+                          );
+                          if (cardBox) {
+                            boxWidth = cardBox.width;
+                            boxHeight = cardBox.height;
                           } else {
                             boxWidth = Math.max(80, selectedOverlayClip.text.length * fontSize * 0.55);
                             boxHeight = fontSize * 1.4;
@@ -7540,7 +7884,7 @@ export default function TimelineEditor({
 
         {/* Right Panel (CapCut-style File Details / Properties) */}
         {selectedScene && (!selectedTimelineClip || (selectedSceneTrack !== 'A1' && selectedSceneTrack !== 'A2')) && activeTab === 'scene' && (
-           <div className="w-[300px] lg:w-[320px] bg-ed-surface flex flex-col flex-none shadow-[-2px_0_10px_rgba(0,0,0,0.05)] z-10 h-full">
+           <div className="w-[300px] lg:w-[320px] bg-ed-surface flex flex-col flex-none z-10 h-full">
               {/* Tab Header */}
               <div className="flex items-center border-b border-ed-border p-2 gap-1 bg-ed-raised">
                  <div className="flex-1 flex items-center justify-center gap-2 py-2 px-3 rounded-md text-xs font-semibold bg-ed-surface text-ed-text shadow-sm border border-ed-border">
@@ -7565,9 +7909,13 @@ export default function TimelineEditor({
                            <img src={selectedScene.custom_media_url} className="w-full h-full object-contain" alt="Scene thumbnail" />
                          )
                        ) : (
-                         <div className="w-full h-full flex flex-col items-center justify-center text-ed-text-dim bg-ed-surface">
-                           <Film size={32} className="opacity-40 mb-2" />
-                           <span className="text-[10px] font-medium opacity-60">No media yet</span>
+                         <div className="w-full h-full flex flex-col items-center justify-center bg-ed-surface">
+                           {/* The icon may stay quiet — it is decoration beside the
+                               label, not the message. The label itself was
+                               `ed-text-dim` at 60%, which is not readable; it keeps
+                               the token and drops the wrapper. */}
+                           <Film size={32} className="text-ed-text-faint mb-2" />
+                           <span className="text-[10px] font-medium text-ed-text-dim">No media yet</span>
                          </div>
                        )}
                        <div className="absolute top-2 left-2 px-2 py-0.5 bg-ed-media/60 backdrop-blur-sm rounded text-[9px] text-white font-mono font-bold">
@@ -7690,7 +8038,7 @@ export default function TimelineEditor({
         <div className="w-12 h-0.5 rounded-full bg-ed-text-faint"></div>
       </div>
 
-      {/* Bottom Horizontal Timeline (Light Theme) */}
+      {/* Bottom horizontal timeline */}
       <div 
         className="bg-ed-surface overflow-hidden flex flex-col flex-none relative z-10"
         style={{ height: `${timelineHeight}px` }}
@@ -7775,7 +8123,12 @@ export default function TimelineEditor({
                      <button
                        key={ratio}
                        onClick={() => {
-                         setAspectRatio(ratio);
+                         // Writes the resolution, not the ratio — `aspectRatio`
+                         // is derived from it, so this control now actually
+                         // changes the composition instead of only the
+                         // preview's letterbox. Stays in lockstep with the
+                         // Resolution select in the Export tab.
+                         setExportResolution(RESOLUTION_FOR_ASPECT_RATIO[ratio]);
                          setShowRatioMenu(false);
                        }}
                        className={`w-full text-left px-3 py-2 text-xs font-semibold hover:bg-ed-well transition-colors ${aspectRatio === ratio ? 'text-ed-accent-text bg-ed-accent-soft/50' : 'text-ed-text-dim'}`}
@@ -7793,8 +8146,12 @@ export default function TimelineEditor({
                   onClick={() => setScale(Math.max(10, scale - 10))}
                   className="text-ed-text-dim hover:text-ed-text font-bold px-1"
                 >-</button>
-                <div className="w-24 h-1.5 bg-ed-raised rounded-full overflow-hidden relative border border-ed-border">
-                   <div className="absolute left-0 top-0 h-full bg-ed-text-faint rounded-full" style={{ width: `${(scale/100)*100}%`}}></div>
+                {/* Zoom level. The fill was `ed-text-faint` on `ed-raised` — 3.1:1,
+                    so the one thing this control communicates was the hardest part
+                    of it to see. The accent is correct here: this IS an interactive
+                    value readout, which is what the accent means. */}
+                <div className="w-24 h-1.5 bg-ed-well rounded-full overflow-hidden relative border border-ed-border">
+                   <div className="absolute left-0 top-0 h-full bg-ed-accent rounded-full transition-[width] duration-150" style={{ width: `${(scale/100)*100}%`}}></div>
                 </div>
                 <button 
                   onClick={() => setScale(Math.min(100, scale + 10))}
@@ -7824,7 +8181,15 @@ export default function TimelineEditor({
                 // of everything nearby on a long-form project's crowded track.
                 style={{ left: '8rem', transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
               >
-                 <div className="w-px h-full bg-ed-media shadow-[0_0_8px_rgba(0,0,0,0.3)]"></div>
+                 {/* `ed-playhead`, not `ed-media`. This line was `bg-ed-media`
+                     (#05060A) on the `ed-base` (#0A0B0D) track — 1.04:1, i.e.
+                     invisible — because the dark migration name-matched a
+                     light-theme `bg-black` onto the media token. The glow was
+                     black-on-black for the same reason and did nothing; it is a
+                     white-alpha ring now, which is what keeps the line legible
+                     where it crosses a bright V1 thumbnail or the mint A1
+                     waveform. */}
+                 <div className="w-px h-full bg-ed-playhead shadow-[0_0_6px_var(--color-ed-playhead-glow)]"></div>
               </div>
 
               {/* OV-to-V1 alignment guide — CapCut-style: while dragging or
@@ -7837,13 +8202,17 @@ export default function TimelineEditor({
                   className="absolute top-0 bottom-0 z-40 pointer-events-none flex flex-col items-center"
                   style={{ left: `calc(8rem + ${overlaySnapGuideTime * scale}px)`, transform: 'translateX(-50%)' }}
                 >
-                  <div className="w-px h-full bg-ed-border-strong/80 shadow-[0_0_6px_rgba(0,0,0,0.15)]"></div>
+                  {/* Deliberately dimmer than the playhead: this is a transient
+                      hint that appears only mid-drag, so it must not compete
+                      with the one line that is always true. Its old
+                      black-alpha glow was invisible on a near-black ground. */}
+                  <div className="w-px h-full bg-ed-accent/70 shadow-[0_0_6px_rgba(19,239,147,0.25)]"></div>
                 </div>
               )}
 
               {/* Ruler Track */}
               <div className="flex items-end mb-1 relative group w-max">
-                 <div className="w-32 shrink-0 sticky left-0 z-50 bg-ed-surface h-6 border-b border-ed-border pr-2 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] before:absolute before:-inset-y-4 before:inset-x-0 before:bg-ed-surface before:-z-10 before:border-r before:border-ed-border"></div>
+                 <div className="w-32 shrink-0 sticky left-0 z-50 bg-ed-surface h-6 border-b border-ed-border pr-2 before:absolute before:-inset-y-4 before:inset-x-0 before:bg-ed-surface before:-z-10 before:border-r before:border-ed-border"></div>
                  <div 
                     className="relative h-6 border-b border-ed-border cursor-pointer"
                     style={{ width: `${timelineDuration * scale}px` }}
@@ -7871,14 +8240,19 @@ export default function TimelineEditor({
                        )
                     })}
 
-                    {/* Playhead / Cursor - Changed to Purple */}
+                    {/* Playhead handle. The grab target for the line below, so it
+                        shares its colour exactly — a handle in a different colour
+                        from its own line reads as two separate controls. The
+                        downward arrow was `border-t-black`, the last literal
+                        light-theme colour left in this file, which pointed a black
+                        triangle at a black ruler. */}
                     <div
                       className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
                       // Same compositor-only fix as the vertical line above — see that comment.
                       style={{ left: 0, transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
                     >
-                       <div className="w-3 h-3 bg-ed-media rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-sm">
-                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-black"></div>
+                       <div className="w-3 h-3 bg-ed-playhead rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-[0_0_6px_var(--color-ed-playhead-glow)]">
+                          <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-ed-playhead"></div>
                        </div>
                     </div>
                  </div>
@@ -7891,7 +8265,7 @@ export default function TimelineEditor({
                   clips overlap in time (see packOverlayLanes), so simultaneous
                   overlays never render stacked on one another. */}
               <div className="flex items-stretch group relative">
-                 <div className="w-32 shrink-0 sticky left-0 z-[52] bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint">
+                 <div className="w-32 shrink-0 sticky left-0 z-[52] bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border text-ed-text-dim">
                     <span
                       className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       title="Text overlay track"
@@ -8014,9 +8388,13 @@ export default function TimelineEditor({
                      setSelectedOverlayClipId(null);
                    }}
                  >
+                    {/* No `opacity-50` wrapper. `ed-text-dim` is already the "quiet"
+                        step of the text ladder; halving it on top landed this
+                        placeholder near 2.3:1 on the lane fill. The token carries the
+                        dimming so there is one source of truth for how quiet quiet is. */}
                     {overlayClips.length === 0 && (
-                      <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50">
-                        <Type size={12} className="mr-2 text-ed-text-dim" />
+                      <div className="absolute inset-0 flex items-center px-4 pointer-events-none">
+                        <Type size={12} className="mr-2 text-ed-text-faint" />
                         <span className="text-[10px] text-ed-text-dim font-bold italic">
                           Add a text overlay — it can sit anywhere, across any scene
                         </span>
@@ -8118,7 +8496,7 @@ export default function TimelineEditor({
 
               {/* Video Track (V1) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-[52]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'V1' ? 'z-[60]' : 'z-[52]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border text-ed-text-dim`}>
                     <span 
                       className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
@@ -8135,14 +8513,14 @@ export default function TimelineEditor({
                     >
                       V1
                     </span>
-                    <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.V1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                    <button onClick={() => toggleTrackState('V1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.V1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                        {trackStates.V1.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
                     <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'V1' ? null : 'V1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.V1.muted || trackStates.V1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'V1' ? null : 'V1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.V1.muted || trackStates.V1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                          {trackStates.V1.muted || trackStates.V1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
                       </button>
                       {activeVolumePopup === 'V1' && (
                         <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
@@ -8228,7 +8606,7 @@ export default function TimelineEditor({
                           className={`absolute rounded-md border-2 border-dashed overflow-hidden cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                             isBusy
                               ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text animate-pulse'
-                              : 'border-ed-border-strong bg-ed-well text-ed-text-faint hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
+                              : 'border-ed-border-strong bg-ed-well text-ed-text-dim hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
                           }`}
                           style={{
                             transform: `translateX(${leftPx}px)`,
@@ -8327,7 +8705,7 @@ export default function TimelineEditor({
 
               {/* Audio Track (A1) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-[51]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A1' ? 'z-[60]' : 'z-[51]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border text-ed-text-dim`}>
                     <span 
                       className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
@@ -8344,14 +8722,14 @@ export default function TimelineEditor({
                     >
                       A1
                     </span>
-                    <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                    <button onClick={() => toggleTrackState('A1', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.A1.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                        {trackStates.A1.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
                     <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A1' ? null : 'A1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A1.muted || trackStates.A1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A1' ? null : 'A1'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.A1.muted || trackStates.A1.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                          {trackStates.A1.muted || trackStates.A1.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
                       </button>
                       {activeVolumePopup === 'A1' && (
                         <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
@@ -8500,7 +8878,7 @@ export default function TimelineEditor({
                            className={`absolute rounded-md border-2 border-dashed overflow-hidden cursor-pointer transition-all flex items-center justify-center gap-1.5 ${
                              isBusy
                                ? 'border-ed-accent-border bg-ed-accent-soft text-ed-accent-text animate-pulse'
-                               : 'border-ed-border-strong bg-ed-well text-ed-text-faint hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
+                               : 'border-ed-border-strong bg-ed-well text-ed-text-dim hover:border-ed-accent-border hover:text-ed-accent-text hover:bg-ed-accent-soft/40'
                            }`}
                            style={{
                              left: placeholderStart * scale,
@@ -8727,7 +9105,7 @@ export default function TimelineEditor({
 
               {/* Music Track (A2) */}
               <div className="flex items-stretch group relative">
-                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-[50]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)] text-ed-text-faint`}>
+                 <div className={`w-32 shrink-0 sticky left-0 ${activeVolumePopup === 'A2' ? 'z-[60]' : 'z-[50]'} bg-ed-surface px-5 flex items-center justify-between border-r border-ed-border text-ed-text-dim`}>
                     <span 
                       className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
@@ -8741,14 +9119,14 @@ export default function TimelineEditor({
                     >
                       A2
                     </span>
-                    <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A2.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                    <button onClick={() => toggleTrackState('A2', 'locked')} className={`group/lock relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.A2.locked ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                        {trackStates.A2.locked ? <Lock size={18} /> : <Unlock size={18} />}
-                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
+                       <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/lock:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Lock Track</div>
                     </button>
                     <div className="relative">
-                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A2' ? null : 'A2'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text-dim transition-colors ${trackStates.A2.muted || trackStates.A2.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
+                      <button onClick={(e) => { e.stopPropagation(); setActiveVolumePopup(activeVolumePopup === 'A2' ? null : 'A2'); }} className={`group/mute relative flex items-center justify-center hover:text-ed-text transition-colors ${trackStates.A2.muted || trackStates.A2.volume === 0 ? 'text-ed-accent-text hover:text-ed-accent-text' : ''}`}>
                          {trackStates.A2.muted || trackStates.A2.volume === 0 ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised text-white text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
+                         <div className="absolute top-full left-1/2 -translate-x-1/2 mt-1.5 hidden group-hover/mute:block bg-ed-raised border border-ed-border text-ed-text text-[10px] py-1 px-2 rounded whitespace-nowrap z-50">Volume</div>
                       </button>
                       {activeVolumePopup === 'A2' && (
                         <div className="absolute left-full top-1/2 -translate-y-1/2 ml-3 p-2 w-10 h-36 bg-ed-accent-hover border border-ed-accent-border/50 rounded-xl shadow-2xl z-[100] flex flex-col items-center justify-between cursor-default" onClick={e => e.stopPropagation()}>
@@ -8806,8 +9184,10 @@ export default function TimelineEditor({
                       handleDrop(e, 'A2');
                    }}
                  >
-                    <div className="absolute inset-0 flex items-center px-4 pointer-events-none opacity-50 z-0">
-                       <Music size={12} className="mr-2 text-ed-text-dim"/>
+                    {/* See the OV placeholder above for why the opacity wrapper is
+                        gone rather than tuned. */}
+                    <div className="absolute inset-0 flex items-center px-4 pointer-events-none z-0">
+                       <Music size={12} className="mr-2 text-ed-text-faint"/>
                        <span className="text-[10px] text-ed-text-dim font-bold italic">Drop audio here...</span>
                     </div>
 
@@ -9116,7 +9496,7 @@ export default function TimelineEditor({
             >
               <Trash2 size={15} />
               <span className="flex-1">{label}</span>
-              <kbd className="text-[10px] font-sans font-medium text-ed-text-faint bg-ed-raised border border-ed-border rounded px-1.5 py-0.5">Del</kbd>
+              <kbd className="text-[10px] font-sans font-medium text-ed-text-dim bg-ed-raised border border-ed-border rounded px-1.5 py-0.5">Del</kbd>
             </button>
           </div>
         );

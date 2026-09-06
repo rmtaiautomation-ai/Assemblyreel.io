@@ -3,10 +3,11 @@ import { z } from "zod";
 import {
   AGENT_MODEL,
   CREATIVE_TEMPERATURE,
-  MISSING_GEMINI_KEY_ERROR,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import { SCENE_AGENT_CONCURRENCY, mapWithConcurrency } from "../concurrency";
 import { type SceneType } from "../generation-rules";
 import { resolveFormatProfile, type FormatProfile } from "../format-profile";
@@ -71,8 +72,8 @@ export async function designSceneVisuals({
   nicheTheme,
   formatProfile,
 }: DesignSceneVisualsParams): Promise<SceneVisualsResult[]> {
-  if (!isGeminiConfigured()) {
-    return scenes.map(() => ({ visuals: null, error: MISSING_GEMINI_KEY_ERROR }));
+  if (!isOpenAIConfigured()) {
+    return scenes.map(() => ({ visuals: null, error: MISSING_OPENAI_KEY_ERROR }));
   }
 
   const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
@@ -102,7 +103,8 @@ RULES:
 
     try {
       const { object } = await generateObject({
-        model: gemini(AGENT_MODEL),
+        model: openai(AGENT_MODEL),
+        providerOptions: OBJECT_PROVIDER_OPTIONS,
         schema: SceneVisualsSchema,
         temperature: CREATIVE_TEMPERATURE,
         system: systemInstruction,

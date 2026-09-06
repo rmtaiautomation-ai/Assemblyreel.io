@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface TypewriterProps {
@@ -57,7 +58,7 @@ export const Typewriter: React.FC<TypewriterProps> = ({
         opacity,
         color,
         fontSize,
-        fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+        fontFamily: FONTS.mono,
         fontWeight: 600,
         textAlign: 'center',
         textShadow: '0 2px 16px rgba(0,0,0,0.5)',

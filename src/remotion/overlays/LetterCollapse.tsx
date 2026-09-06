@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { exitOpacity } from './kinetic-utils';
 
@@ -46,7 +47,7 @@ export const LetterCollapse: React.FC<LetterCollapseProps> = ({
         justifyContent: 'center',
         alignItems: 'baseline',
         opacity: exitOpacity(frame, durationInFrames, fps),
-        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontFamily: FONTS.sans,
         fontWeight: 900,
         fontSize,
         color,

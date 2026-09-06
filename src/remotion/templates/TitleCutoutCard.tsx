@@ -1,5 +1,7 @@
 import React from 'react';
 import { AbsoluteFill, Img } from 'remotion';
+import type { OverlayPreset } from '../types';
+import { renderPreset } from '../overlays/renderPreset';
 
 interface TitleCutoutCardProps {
   backgroundImageUrl?: string;
@@ -8,15 +10,18 @@ interface TitleCutoutCardProps {
   color?: string;
   /** Uniform scale of the whole card, images included. Independent of the headline's own font size. */
   scale?: number;
+  /** The headline wording, and how it animates in. */
+  text: string;
+  preset: OverlayPreset;
   /**
-   * Renders the animated headline. Supplied by the caller (`VideoComposition`)
-   * rather than imported here, since the headline's animation is the EXISTING
-   * `renderPreset` switch that already lives there — passing it in as a
-   * render prop is what lets the headline reuse real kinetic-text motion
-   * without this file importing VideoComposition (which would be circular,
-   * as VideoComposition is what renders this component).
+   * Headline text color. Deliberately NOT `color` — for this template `color`
+   * means the fallback background, so the headline needs its own field.
    */
-  renderHeadline: () => React.ReactNode;
+  textColor?: string;
+  fontSize?: number;
+  /** Small label above the headline. Only read by the 'chapter-card' preset. */
+  kickerText?: string;
+  durationInFrames: number;
 }
 
 const CARD_WIDTH = 400;
@@ -40,13 +45,25 @@ const CARD_HEIGHT = 500;
  * Missing images (an old row, or a template with neither slot filled) degrade
  * gracefully — a solid-color background and no foreground layer — rather than
  * throwing, since `template_data` is unenforced JSON.
+ *
+ * The headline reuses the same eight kinetic-text presets every other overlay
+ * animates with, imported directly from `overlays/renderPreset`. It used to
+ * arrive as a `renderHeadline` render prop because that switch was trapped
+ * inside `VideoComposition`, which this file cannot import (circular — that
+ * component is what renders this one). Now that it is a leaf module, the
+ * indirection is unnecessary.
  */
 export const TitleCutoutCard: React.FC<TitleCutoutCardProps> = ({
   backgroundImageUrl,
   foregroundImageUrl,
   color = '#111111',
   scale = 1,
-  renderHeadline,
+  text,
+  preset,
+  textColor,
+  fontSize,
+  kickerText,
+  durationInFrames,
 }) => {
   return (
     <div
@@ -74,7 +91,7 @@ export const TitleCutoutCard: React.FC<TitleCutoutCardProps> = ({
       )}
 
       <AbsoluteFill style={{ alignItems: 'center', justifyContent: 'center', padding: 24 }}>
-        {renderHeadline()}
+        {renderPreset(preset, { text, color: textColor, fontSize, durationInFrames }, kickerText)}
       </AbsoluteFill>
 
       {foregroundImageUrl && (

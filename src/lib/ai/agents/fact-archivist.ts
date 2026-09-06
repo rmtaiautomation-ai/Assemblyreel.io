@@ -2,11 +2,12 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import {
   AGENT_MODEL,
-  MISSING_GEMINI_KEY_ERROR,
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
   STRUCTURED_TEMPERATURE,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import { FACT_KINDS, type ChannelFactCandidate, type FactKind } from "../channel-facts";
 
 /**
@@ -96,8 +97,8 @@ export interface ExtractChannelFactsResult {
 export async function extractChannelFacts(
   source: string
 ): Promise<ExtractChannelFactsResult> {
-  if (!isGeminiConfigured()) {
-    return { success: false, error: MISSING_GEMINI_KEY_ERROR };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: MISSING_OPENAI_KEY_ERROR };
   }
 
   const trimmed = source.trim();
@@ -116,7 +117,8 @@ export async function extractChannelFacts(
     console.log(`[Fact Archivist] Reading a ${trimmed.length}-character brief for named sources.`);
 
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: z.object({ facts: z.array(FactCandidateSchema) }),
       temperature: STRUCTURED_TEMPERATURE,
       system: `You are the Fact Archivist. You read research about a video channel and extract every NAMED, CITABLE thing it mentions, so a script writer can later draw on a fixed list instead of inventing sources.

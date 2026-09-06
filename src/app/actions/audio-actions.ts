@@ -3,8 +3,37 @@
 import { createClient } from "@/lib/supabase/server";
 import { generateSceneSpeech } from "@/lib/ai/elevenlabs";
 import { generateLocalSceneSpeech } from "@/lib/ai/local-tts";
+import { generateOpenAISceneSpeech } from "@/lib/ai/openai-tts";
 import type { DeliverySpec } from "@/lib/ai/format-profile";
 import { resolveProjectFormatProfile } from "./format-actions";
+
+/**
+ * Picks the narration backend from `TTS_PROVIDER` and calls it with the matching
+ * slice of the channel's delivery spec.
+ *
+ *   "local"      → Voice Studio (Kokoro), the default when the var is unset
+ *   "openai"     → OpenAI `gpt-4o-mini-tts`
+ *   anything else → ElevenLabs
+ *
+ * Kept in one place so `generateSceneAudio` and `synthesizeAndAlign` cannot drift
+ * apart on which provider a given env value selects.
+ */
+async function synthesizeSpeech(
+  text: string,
+  fileId: string,
+  voiceId?: string,
+  delivery?: DeliverySpec
+): Promise<{ success: boolean; audioUrl?: string; error?: string; voiceWarning?: string }> {
+  const provider = process.env.TTS_PROVIDER || "local";
+
+  if (provider === "local") {
+    return generateLocalSceneSpeech(text, fileId, voiceId, delivery?.localTts);
+  }
+  if (provider === "openai") {
+    return generateOpenAISceneSpeech(text, fileId, voiceId, delivery?.openai);
+  }
+  return generateSceneSpeech(text, fileId, voiceId, delivery?.elevenlabs);
+}
 
 /**
  * Separator inserted between two scenes' voiceover text before synthesis.
@@ -113,14 +142,7 @@ export async function generateSceneAudio(
     return { success: false, error: "Missing sceneId or text" };
   }
 
-  const provider = process.env.TTS_PROVIDER || "local";
-  let result: { success: boolean; audioUrl?: string; error?: string };
-
-  if (provider === "local") {
-    result = await generateLocalSceneSpeech(text, sceneId, voiceId, delivery?.localTts);
-  } else {
-    result = await generateSceneSpeech(text, sceneId, voiceId, delivery?.elevenlabs);
-  }
+  const result = await synthesizeSpeech(text, sceneId, voiceId, delivery);
 
   if (!result.success || !result.audioUrl) {
     return { success: false, error: result.error || "Failed to generate audio" };
@@ -201,20 +223,15 @@ async function synthesizeAndAlign(
     return { success: false, error: "All scenes have empty voiceover text" };
   }
 
-  const provider = process.env.TTS_PROVIDER || "local";
-  const result =
-    provider === "local"
-      ? await generateLocalSceneSpeech(script, fileId, voiceId, delivery?.localTts)
-      : await generateSceneSpeech(script, fileId, voiceId, delivery?.elevenlabs);
+  const result = await synthesizeSpeech(script, fileId, voiceId, delivery);
 
   if (!result.success || !result.audioUrl) {
     return { success: false, error: result.error || "Failed to generate narration" };
   }
 
-  // Only `generateLocalSceneSpeech` produces this — the ElevenLabs path doesn't
-  // substitute voices, so `result` (a plain `{ success, audioUrl }` shape from
-  // `generateSceneSpeech`) simply has no such field and this stays undefined.
-  const voiceWarning = (result as { voiceWarning?: string }).voiceWarning;
+  // Set by the local and OpenAI paths when the requested voice couldn't be honoured;
+  // the ElevenLabs path never substitutes, so this stays undefined there.
+  const voiceWarning = result.voiceWarning;
 
   // Alignment is a best-effort enhancement: without it the audio is still usable, the
   // scenes just keep their estimated durations. Never fail the synthesis over it.

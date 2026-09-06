@@ -1,18 +1,16 @@
 import { NextResponse } from 'next/server';
-import { GoogleGenAI, Type, Schema } from "@google/genai";
+import { generateText } from 'ai';
+import { SCRIPT_MODEL, isOpenAIConfigured, openai } from '@/lib/ai/openai-provider';
 
 export async function POST(req: Request) {
   try {
     const { prompt, history, context } = await req.json();
-    const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
-    if (!GEMINI_API_KEY) {
-      return NextResponse.json({ success: false, error: 'GEMINI_API_KEY not found' }, { status: 500 });
+    if (!isOpenAIConfigured()) {
+      return NextResponse.json({ success: false, error: 'OPENAI_API_KEY not found' }, { status: 500 });
     }
 
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
-    // Format history for Gemini Context
+    // Format history for conversation context
     let conversationHistory = "";
     if (history && history.length > 0) {
       conversationHistory = history.map((h: any) => `${h.role === 'user' ? 'User' : 'Assistant'}: ${h.content}`).join("\n");
@@ -23,7 +21,7 @@ You are an expert AI Video Co-Writer. The user is brainstorming a video idea for
 Help them flesh out their idea by suggesting a strong Topic, Narrative Arc (2-3 sentences), Script Hook (1-2 sentences), and a distinct Visual Aesthetic.
 Be concise, creative, and engaging.
 
-IMPORTANT: If you feel the brainstorming has reached a point where you have a solid Topic, Narrative Arc, Hook, and Visual Aesthetic, 
+IMPORTANT: If you feel the brainstorming has reached a point where you have a solid Topic, Narrative Arc, Hook, and Visual Aesthetic,
 you must include a JSON block at the very end of your response, wrapped in a markdown block like this:
 
 \`\`\`json
@@ -38,24 +36,15 @@ This JSON block allows the UI to parse it and offer an "Apply to Form" button to
 If it's too early to finalize the idea, just respond normally without the JSON block.
 `;
 
-    const fullPrompt = `
-System Context: ${systemInstruction}
-
-Conversation History:
+    const { text: reply } = await generateText({
+      model: openai(SCRIPT_MODEL),
+      temperature: 0.7,
+      system: systemInstruction,
+      prompt: `Conversation History:
 ${conversationHistory}
 
-User's Latest Message: ${prompt}
-`;
-
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: fullPrompt,
-      config: {
-        temperature: 0.7,
-      },
+User's Latest Message: ${prompt}`,
     });
-
-    const reply = response.text || "";
 
     // Extract JSON block if it exists
     let parsed = null;
@@ -64,14 +53,14 @@ User's Latest Message: ${prompt}
       try {
         parsed = JSON.parse(jsonMatch[1]);
       } catch (e) {
-        console.error("Failed to parse JSON block from Gemini output");
+        console.error("Failed to parse JSON block from co-writer output");
       }
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       reply: reply.replace(/```json\n[\s\S]*?\n```/, '').trim(), // Remove JSON block from the chat output
-      parsed 
+      parsed
     });
 
   } catch (error) {

@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 import { exitOpacity, splitWords, staggerProgress } from './kinetic-utils';
 
@@ -61,7 +62,7 @@ export const ChapterCard: React.FC<ChapterCardProps> = ({
         alignItems: 'center',
         gap: fontSize * 0.28,
         opacity: exitOpacity(frame, durationInFrames, fps),
-        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontFamily: FONTS.sans,
         textAlign: 'center',
       }}
     >

@@ -2,11 +2,12 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import {
   AGENT_MODEL,
-  MISSING_GEMINI_KEY_ERROR,
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
   STRUCTURED_TEMPERATURE,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import { SCENE_AGENT_CONCURRENCY, mapWithConcurrency } from "../concurrency";
 
 /**
@@ -57,18 +58,19 @@ RULES:
 5. If the prompt is already safe, return it byte-for-byte unchanged and set wasModified to false.`;
 
 export async function reviewPromptSafety(rawPrompt: string): Promise<SafetyReview> {
-  if (!isGeminiConfigured()) {
+  if (!isOpenAIConfigured()) {
     return {
       safePrompt: rawPrompt,
       wasModified: false,
-      reason: MISSING_GEMINI_KEY_ERROR,
+      reason: MISSING_OPENAI_KEY_ERROR,
       reviewFailed: true,
     };
   }
 
   try {
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: SafetyReviewSchema,
       temperature: STRUCTURED_TEMPERATURE,
       system: SAFETY_SYSTEM_INSTRUCTION,

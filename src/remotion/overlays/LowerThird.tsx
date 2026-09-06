@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface LowerThirdProps {
@@ -87,7 +88,7 @@ export const LowerThird: React.FC<LowerThirdProps> = ({
           style={{
             color,
             fontSize,
-            fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+            fontFamily: FONTS.sans,
             fontWeight: 700,
             textShadow: '0 2px 12px rgba(0,0,0,0.6)',
             lineHeight: 1.2,

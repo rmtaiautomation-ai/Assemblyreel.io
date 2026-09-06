@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 
 interface SlideInProps {
@@ -67,7 +68,7 @@ export const SlideIn: React.FC<SlideInProps> = ({
         opacity,
         color,
         fontSize,
-        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontFamily: FONTS.sans,
         fontWeight: 800,
         textAlign: 'center',
         textShadow: '0 4px 20px rgba(0,0,0,0.6)',

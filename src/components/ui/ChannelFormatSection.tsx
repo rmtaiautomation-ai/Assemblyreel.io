@@ -930,6 +930,25 @@ export default function ChannelFormatSection({
                 onChange={(e) => update((d) => (d.visual.stillTreatment = e.target.value))}
               />
             </Field>
+            <Field
+              label="Content-Aware Slicing"
+              modified={isFieldModified(
+                profile.visual.contentAwareSlicing,
+                preset.visual.contentAwareSlicing
+              )}
+              hint="Off by default for every channel. On, the Scene Slicer cuts on what a line actually shows instead of a target seconds-per-scene — one image per idea the words affirm, none for an idea they deny ('not a trial, not a choir' gets neither on screen)."
+            >
+              <label className="flex items-center gap-2 text-sm text-ed-text h-[38px]">
+                <input
+                  type="checkbox"
+                  checked={profile.visual.contentAwareSlicing}
+                  onChange={(e) =>
+                    update((d) => (d.visual.contentAwareSlicing = e.target.checked))
+                  }
+                />
+                Cut scenes by content, not by target duration
+              </label>
+            </Field>
           </div>
         </div>
 

@@ -9,7 +9,12 @@ import {
   resolveDurationProfile,
 } from "@/lib/ai/generation-rules";
 import { resolveFormatProfile, type FormatProfile } from "@/lib/ai/format-profile";
-import { AGENT_MODEL, STRUCTURED_TEMPERATURE, gemini } from "@/lib/ai/gemini-provider";
+import {
+  AGENT_MODEL,
+  OBJECT_PROVIDER_OPTIONS,
+  STRUCTURED_TEMPERATURE,
+  openai,
+} from "@/lib/ai/openai-provider";
 import { acquireCallSlot } from "@/lib/ai/concurrency";
 
 /**
@@ -86,8 +91,8 @@ export async function sliceScriptIntoScenes({
   targetDuration,
   formatProfile,
 }: SliceScriptParams) {
-  if (!process.env.GEMINI_API_KEY) {
-    return { success: false, error: "GEMINI_API_KEY is missing in environment variables." };
+  if (!process.env.OPENAI_API_KEY) {
+    return { success: false, error: "OPENAI_API_KEY is missing in environment variables." };
   }
 
   const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
@@ -100,7 +105,8 @@ export async function sliceScriptIntoScenes({
 
     await acquireCallSlot();
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: buildSceneSliceSchema(profile.delivery.wordsPerMinute / 60),
       temperature: STRUCTURED_TEMPERATURE,
       system: `You are the Scene B-roll Slicer. You take a complete voiceover script and break it into distinct visual beats (Scenes).
@@ -110,7 +116,16 @@ CRITICAL RULES:
 2. Tone Overrides: ${profile.visual.visualBias}
 3. Voiceover Exact Match: the 'voiceOverText' of all scenes concatenated in order MUST EXACTLY MATCH the original script. Never skip, summarise, reorder or reword.
 4. Scene Types: choose from ${SCENE_TYPES.join(", ")}. Favour ${profile.visual.preferredSceneTypes.join(", ")} for this niche.
-5. Organic Slicing: you decide the total scene count from the pacing strategy and the density of the script. Do not force an artificial limit — target roughly ${duration.sceneDurationSeconds.min}-${duration.sceneDurationSeconds.max} seconds per scene and let the visual flow stay natural.
+5. ${
+        // Off by default — untouched from before this rule existed, so every channel
+        // that has not opted in keeps exactly today's behaviour. On, this replaces a
+        // duration target with a content judgment: duration was only ever a proxy for
+        // "how many pictures does this line need," and a proxy is what produced one
+        // 13-second clip out of a sentence naming four different things.
+        profile.visual.contentAwareSlicing
+          ? `Content-Aware Slicing: decide the cut points from what the line actually shows, not from a target duration. Count only the images this stretch of narration AFFIRMS — a line naming something only to deny it ("not a trial, not a choir, a holding pen") gets no image for the denied things, because showing them on screen asserts the opposite of what the words say. One affirmed idea is one scene; several affirmed ideas in one sentence is several scenes; do not split further just to hit a length. Judge each stretch on what best serves a viewer watching it, the way a human editor would, not by measuring seconds.`
+          : `Organic Slicing: you decide the total scene count from the pacing strategy and the density of the script. Do not force an artificial limit — target roughly ${duration.sceneDurationSeconds.min}-${duration.sceneDurationSeconds.max} seconds per scene and let the visual flow stay natural.`
+      }
 6. Cut to a new scene whenever the visual subject changes.${
         // Appended only when the format declares one, so a migrated preset's prompt is
         // unchanged from before the blueprint existed.

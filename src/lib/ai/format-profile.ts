@@ -128,6 +128,25 @@ export interface DeliverySpec {
     speed?: number;
   };
   /**
+   * OpenAI TTS (`gpt-4o-mini-tts`). Optional — absent, synthesis uses a neutral
+   * default voice and no style instruction, so a preset that never set this keeps
+   * behaving exactly as before OpenAI was an option.
+   */
+  openai?: {
+    /**
+     * One of OpenAI's named voices: alloy, ash, ballad, coral, echo, fable, onyx,
+     * nova, sage, shimmer, verse. Overridden by the channel's saved
+     * `narration_voice_id` when that is itself a valid OpenAI voice.
+     */
+    voice?: string;
+    /**
+     * Plain-English delivery direction the model is steered by, e.g. "calm, grave,
+     * documentary narrator; unhurried pace; no upspeak". This is where a channel's
+     * spoken register is dialled in for `gpt-4o-mini-tts`.
+     */
+    instructions?: string;
+  };
+  /**
    * Silence to place before a revelation beat, in milliseconds.
    *
    * NOT YET APPLIED. Honouring this requires emitting inline markers into the synthesis
@@ -358,6 +377,19 @@ export interface FormatVisual {
   preferredSceneTypes: readonly SceneType[];
   /** How stills are treated — the archival look a narration-led channel lives on. */
   stillTreatment: string;
+  /**
+   * Off by default for every existing and future channel — the Scene Slicer keeps
+   * today's behaviour, cutting to a target seconds-per-scene band, unless a channel
+   * opts in here.
+   *
+   * On, the slicer instead counts the distinct visual ideas a stretch of narration
+   * actually AFFIRMS and cuts on that — never inventing a shot for a concept the line
+   * denies ("not a trial, not a choir" gets no trial and no choir on screen), and never
+   * forcing a second image where the sentence only has one. A duration target is a
+   * proxy for "how many pictures does this line need"; this rule answers that question
+   * directly instead of guessing from length.
+   */
+  contentAwareSlicing: boolean;
 }
 
 export interface FormatProfile {
@@ -487,6 +519,7 @@ function visualFromNiche(niche: NicheProfile): FormatVisual {
     promptStyleTag: niche.promptStyleTag,
     preferredSceneTypes: niche.preferredSceneTypes,
     stillTreatment: "",
+    contentAwareSlicing: false,
   };
 }
 
@@ -784,6 +817,7 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
     preferredSceneTypes: ["ESTABLISH", "MACRO", "CLOSEUP"],
     stillTreatment:
       "Dim, desaturated, slow push. 5-8 seconds per image. No fast cuts, no dramatic zooms.",
+    contentAwareSlicing: false,
   },
 };
 
@@ -882,6 +916,11 @@ export function mergeFormatProfile(
       ...override.delivery,
       elevenlabs: { ...preset.delivery.elevenlabs, ...override.delivery?.elevenlabs },
       localTts: { ...preset.delivery.localTts, ...override.delivery?.localTts },
+      // Only materialise an `openai` block when one side actually has one, so a preset
+      // that never mentions OpenAI keeps `delivery.openai` undefined rather than `{}`.
+      ...(preset.delivery.openai || override.delivery?.openai
+        ? { openai: { ...preset.delivery.openai, ...override.delivery?.openai } }
+        : {}),
     },
     structure: {
       ...preset.structure,

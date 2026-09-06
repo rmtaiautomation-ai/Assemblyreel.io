@@ -71,12 +71,27 @@
   /* Text — three steps is enough; more becomes mush at small sizes. */
   --color-ed-text:          #EDEDEF;
   --color-ed-text-dim:      #9C9EA6;
-  --color-ed-text-faint:    #7C7F88; /* was #6B6D75 — failed WCAG AA (3.8:1) at
-                                        body size on ed-base/ed-surface; this passes
-                                        on both. Reserve this token for true micro
-                                        chrome (badges, timestamps) — anything meant
-                                        to be read as a sentence belongs on
-                                        ed-text-dim, which clears AA by a wide margin. */
+  --color-ed-text-faint:    #7C7F88; /* was #6B6D75 — failed WCAG AA (3.8:1) at body
+                                        size everywhere.
+
+                                        Measured, this value clears AA on ed-base
+                                        (4.9:1) but NOT on ed-surface (4.2:1), and it
+                                        is worse again on ed-raised (3.1:1) and
+                                        ed-hover. An earlier note here claimed it
+                                        passed on both; it does not, and a run of
+                                        unreadable labels sat on that claim.
+
+                                        So: faint is for micro chrome ON THE APP
+                                        GROUND only — never on a raised surface, and
+                                        never for anything read as a sentence. Above
+                                        ed-base, step up to ed-text-dim, which clears
+                                        AA on every rung of the ladder.
+
+                                        It is also not a substitute for opacity: do
+                                        not wrap dim/faint text in `opacity-50` to
+                                        quiet it further. That stacks two dimming
+                                        systems, lands around 2.3:1, and means the
+                                        ladder no longer describes what renders. */
 
   /* Accent — the ONLY saturated colour in the chrome, so it always
      means "interactive / selected" and never decoration.
@@ -108,6 +123,24 @@
   --color-ed-ov-soft:       #2A1230;
   --color-ed-ov-border:     #5B2A66;
 
+  /* Playhead. Its own token rather than a reuse of anything above, because
+     nothing above can carry it:
+
+     - `ed-accent` (mint) is taken. It means "interactive / selected" — resize
+       handles, the active tab, selection chips. A playhead is neither, and
+       painting it mint would both dilute that meaning and camouflage the line
+       against the mint narration waveform it has to cross on A1.
+     - `ed-danger` and friends mean "state", and a time cursor is not a state.
+     - `ed-text` is close, but the playhead must out-brighten the brightest
+       text on the track, not match it.
+
+     Near-white and slightly cool, the CapCut / Final Cut convention: it reads
+     as "now" against every track fill in the ladder, and against media
+     thumbnails in V1 the `ed-playhead-glow` ring below separates it from
+     whatever frame sits underneath. */
+  --color-ed-playhead:      #F2F4F8;
+  --color-ed-playhead-glow: rgba(242, 244, 248, 0.35);
+
   /* Status. Each has a saturated fill, a dark tint for backgrounds, and
      a border, so chips read correctly without inventing values inline.
 
@@ -134,9 +167,19 @@
      dialog from the page behind it. */
   --color-ed-scrim:         rgba(6, 7, 9, 0.78);
 
-  /* The one intentionally light surface: media that has to be judged on its
-     own colour (thumbnail wells, the player letterbox). Never use it for
-     chrome — it exists so an image never sits on a tinted ground. */
+  /* The neutral ground media sits on: thumbnail wells, the player letterbox,
+     and the scrim-ish tints over a thumbnail (`bg-ed-media/60`). It is the
+     DARKEST value in this file, and deliberately so — an image has to be
+     judged on its own colour, so what surrounds it must be hueless and must
+     not out-brighten it.
+
+     ⚠ It is NOT a chrome colour, and specifically it is not a stand-in for
+     `black`. During the dark migration a handful of light-theme `bg-black`
+     utilities were swapped to `bg-ed-media` by name-matching, which painted
+     near-black chrome (the playhead, most visibly) onto a near-black ground
+     at ~1.04:1 — invisible. If you want an element to READ against the app
+     ground, reach for `ed-text`, `ed-playhead` or an accent; reach here only
+     when the thing behind or inside it is actual media. */
   --color-ed-media:         #05060A;
 }
 

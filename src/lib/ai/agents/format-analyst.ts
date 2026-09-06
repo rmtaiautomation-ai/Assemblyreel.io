@@ -2,11 +2,12 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import {
   AGENT_MODEL,
-  MISSING_GEMINI_KEY_ERROR,
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
   STRUCTURED_TEMPERATURE,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import { SCENE_TYPES } from "../generation-rules";
 import { CHANNEL_BRIEF_BOXES, formatBriefBoxesForPrompt } from "../channel-brief";
 import { FORMAT_PRESETS, mergeFormatProfile, type FormatProfile } from "../format-profile";
@@ -232,8 +233,8 @@ export interface AnalyzeChannelBriefResult {
 export async function analyzeChannelBrief(
   source: string
 ): Promise<AnalyzeChannelBriefResult> {
-  if (!isGeminiConfigured()) {
-    return { success: false, error: MISSING_GEMINI_KEY_ERROR };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: MISSING_OPENAI_KEY_ERROR };
   }
 
   const trimmed = source.trim();
@@ -249,7 +250,8 @@ export async function analyzeChannelBrief(
     console.log(`[Format Analyst] Analysing a ${trimmed.length}-character channel brief.`);
 
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: FormatAnalysisSchema,
       temperature: STRUCTURED_TEMPERATURE,
       system: `You are the Format Analyst. You read a description of a video channel and compile it into a precise, machine-followable format specification.

@@ -1,7 +1,14 @@
 "use server";
 
-import { GoogleGenAI, Type, Schema } from "@google/genai";
-import { ScriptWriterSchema } from "./schemas";
+import { generateObject } from "ai";
+import { z } from "zod";
+import {
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
+  SCRIPT_MODEL,
+  isOpenAIConfigured,
+  openai,
+} from "./openai-provider";
 import { resolveDurationProfile } from "./generation-rules";
 import { resolveFormatProfile, type FormatProfile } from "./format-profile";
 import type { ActContinuityEntry, ChannelFact } from "./channel-facts";
@@ -9,9 +16,8 @@ import {
   buildActStructureRules,
   buildScriptWriterSystemInstruction,
 } from "./format-prompt";
-// These three functions call `@google/genai` directly rather than the Vercel AI SDK,
-// but they draw on the same provider quota as every other agent — so they share the
-// same throttle.
+// These functions go through the Vercel AI SDK like every other agent, and draw on
+// the same provider quota — so they share the same throttle.
 import { acquireCallSlot } from "./concurrency";
 
 export async function generateScript(params: {
@@ -53,15 +59,11 @@ export async function generateScript(params: {
    */
   continuity?: readonly ActContinuityEntry[];
 }) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-
-  if (!GEMINI_API_KEY) {
-    return { success: false, error: "GEMINI_API_KEY is missing in environment variables." };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: MISSING_OPENAI_KEY_ERROR };
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
-
     const profile =
       params.formatProfile ?? resolveFormatProfile({ nicheTheme: params.nicheTheme });
     const duration = resolveDurationProfile(params.targetDuration);
@@ -117,24 +119,20 @@ Do NOT write the entire story. Only cover this specific act!
 
     await acquireCallSlot();
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: prompt,
-      config: {
-        systemInstruction: systemInstruction,
-        responseMimeType: "application/json",
-        responseSchema: ScriptWriterSchema,
-        temperature: 0.7,
-      },
+    const { object } = await generateObject({
+      model: openai(SCRIPT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
+      schema: z.object({
+        lines: z
+          .array(z.string())
+          .describe("The script, one spoken line per array element, in order."),
+      }),
+      temperature: 0.7,
+      system: systemInstruction,
+      prompt,
     });
 
-    const outputText = response.text;
-    if (!outputText) {
-      throw new Error("No response generated.");
-    }
-    
-    // The response is a JSON string of an array of strings
-    let scriptLines = JSON.parse(outputText) as string[];
+    let scriptLines = object.lines;
 
     // Clean the script lines to remove AI artifacts (asterisks, double commas, slashes, quotes)
     scriptLines = scriptLines.map(line => {
@@ -155,41 +153,29 @@ Do NOT write the entire story. Only cover this specific act!
 }
 
 export async function generateArcAndHook(topic: string, nicheTheme: string) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  if (!GEMINI_API_KEY) return { success: false, error: "GEMINI_API_KEY is missing." };
+  if (!isOpenAIConfigured()) return { success: false, error: MISSING_OPENAI_KEY_ERROR };
 
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const prompt = `
 Based on the niche "${nicheTheme}" and the core topic "${topic}", generate a short Story Outline and a catchy 5-second Script Hook.
 
 The Story Outline should be a 2-3 sentence summary of the plot.
 The Script Hook should be 1-2 sentences designed to grab the viewer's attention immediately within the first 3-5 seconds.
 `;
-    
-    const responseSchema: Schema = {
-      type: Type.OBJECT,
-      properties: {
-        narrativeArc: { type: Type.STRING },
-        scriptHook: { type: Type.STRING },
-      },
-      required: ["narrativeArc", "scriptHook"],
-    };
 
     await acquireCallSlot();
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-      },
+    const { object: data } = await generateObject({
+      model: openai(SCRIPT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
+      schema: z.object({
+        narrativeArc: z.string().describe("The 2-3 sentence story outline."),
+        scriptHook: z.string().describe("The catchy 1-2 sentence hook."),
+      }),
+      temperature: 0.7,
+      prompt,
     });
 
-    if (!response.text) throw new Error("No response generated");
-    
-    const data = JSON.parse(response.text) as { narrativeArc: string; scriptHook: string };
     return { success: true, data };
   } catch (error) {
     console.error("Error generating Arc/Hook:", error);
@@ -205,14 +191,12 @@ export async function generateActOutlines(
   /** Optional; falls back to keyword resolution from `nicheTheme`. See generateScript. */
   formatProfile?: FormatProfile
 ) {
-  const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-  if (!GEMINI_API_KEY) return { success: false, error: "GEMINI_API_KEY is missing." };
+  if (!isOpenAIConfigured()) return { success: false, error: MISSING_OPENAI_KEY_ERROR };
 
   const { actCount } = resolveDurationProfile(targetDuration);
   const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
 
   try {
-    const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
     const prompt = `
 The user is creating a long-form YouTube video about "${topic}".
 Niche/Genre: "${nicheTheme}"
@@ -231,34 +215,31 @@ Return a JSON array of exactly ${actCount} objects. Each object should have:
 - "description" (a 2-3 sentence summary of what must happen in this specific act to maintain high retention).
 `;
     
-    const responseSchema: Schema = {
-      type: Type.ARRAY,
-      items: {
-        type: Type.OBJECT,
-        properties: {
-          actNumber: { type: Type.INTEGER },
-          title: { type: Type.STRING },
-          description: { type: Type.STRING }
-        },
-        required: ["actNumber", "title", "description"]
-      }
-    };
-
     await acquireCallSlot();
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.6-flash",
-      contents: prompt,
-      config: {
-        responseMimeType: "application/json",
-        responseSchema: responseSchema,
-      },
+    const { object } = await generateObject({
+      model: openai(SCRIPT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
+      schema: z.object({
+        acts: z
+          .array(
+            z.object({
+              actNumber: z.number().int().describe(`Act order, 1 to ${actCount}.`),
+              title: z.string(),
+              description: z
+                .string()
+                .describe(
+                  "A 2-3 sentence summary of what must happen in this act to maintain high retention."
+                ),
+            })
+          )
+          .describe(`Exactly ${actCount} acts, in order.`),
+      }),
+      temperature: 0.7,
+      prompt,
     });
 
-    if (!response.text) throw new Error("No response generated");
-    
-    const acts = JSON.parse(response.text) as { actNumber: number; title: string; description: string }[];
-    return { success: true, acts };
+    return { success: true, acts: object.acts };
   } catch (error) {
     console.error("Error generating acts:", error);
     return { success: false, error: (error as Error).message };

@@ -68,23 +68,64 @@ export const isEnvironmentalKind = (kind: OverlayClipKind): boolean =>
   kind === 'light-sweep' ||
   kind === 'film-damage';
 
-/** `template_data` shape for the `checklist-card` kind. */
-export interface ChecklistCardData {
-  bullets: string[];
-  /** Header title text color. Defaults to white. `color` itself is the header bar / checkmark accent, not the text. */
-  textColor?: string;
-  /** Uniform scale of the whole card (header + bullets). Defaults to 1. Independent of `fontSize`, which only sizes the header title text. */
+/**
+ * Fields every graphic-card style shares, whichever kind it belongs to.
+ *
+ * ── Why ONE superset per kind, not one interface per style ──
+ * Each card kind is a library of interchangeable styles (see
+ * `templates/card-registry.ts`), and flipping between them on the same
+ * content is the whole point of a template pack. A discriminated union per
+ * style would force a narrow-and-drop on every switch: going
+ * Numbered → Checkmarks would discard `startNumber`, and switching back would
+ * find it gone. A per-kind superset with everything optional means unused
+ * fields simply sit there ignored, so style switching is LOSSLESS.
+ *
+ * That is safe here because `template_data` is unenforced jsonb and every read
+ * site already guards before reading (see `OverlayClipData.templateData`).
+ * WHICH fields a given style actually uses is expressed in the registry's
+ * `fields` array — that's what drives the inspector — not in the type.
+ */
+export interface CardDataBase {
+  /**
+   * Which design in the registry renders this clip. Typed `string`, not the
+   * registry's `CardStyleId` union, because a stored row can legitimately name
+   * a style this build doesn't have — a project edited on a newer deploy, or
+   * read by a stale Lambda bundle. Resolution and the unknown-style path are
+   * `resolveCardStyle`'s job.
+   *
+   * Absent on every row written before styles existed; those resolve to their
+   * kind's legacy design.
+   */
+  styleId?: string;
+  /** Uniform scale of the whole card. Defaults to 1. Independent of `fontSize`, which sizes only the card's own title/headline text. */
   scale?: number;
+  /** Title/headline text color. Defaults to white — `color` on the clip itself means something different per kind (accent bar, or fallback background). */
+  textColor?: string;
 }
 
-/** `template_data` shape for the `title-cutout-card` kind. */
-export interface TitleCutoutCardData {
+/** `template_data` shape for the `checklist-card` kind — every list style's fields. */
+export interface ChecklistCardData extends CardDataBase {
+  bullets?: string[];
+  /** First number for numbered styles. Defaults to 1. Ignored by styles that don't number their rows. */
+  startNumber?: number;
+  /** Draw hairline separators between rows. Ignored by styles that never rule their rows. */
+  showDividers?: boolean;
+  /** Which frame edge an edge-anchored list style hugs. Ignored by free-floating styles. */
+  edgeSide?: 'left' | 'right';
+}
+
+/** `template_data` shape for the `title-cutout-card` kind — every title style's fields. */
+export interface TitleCutoutCardData extends CardDataBase {
   backgroundImageUrl?: string;
   foregroundImageUrl?: string;
-  /** Headline text color. Defaults to white. `color` itself is the fallback background, not the text. */
-  textColor?: string;
-  /** Uniform scale of the whole card, images included. Defaults to 1. Independent of `fontSize`, which only sizes the headline text. */
-  scale?: number;
+  /** Attribution line, e.g. under a pulled quote. Ignored by styles with no attribution slot. */
+  attribution?: string;
+  /**
+   * Small label above the headline. Distinct from `OverlayClipData.kickerText`,
+   * which is read only by the 'chapter-card' TEXT preset: this one is the
+   * card's own kicker and is read by the card styles that draw one.
+   */
+  kicker?: string;
 }
 
 /** `template_data` shape for the `dim-scrim` kind. */

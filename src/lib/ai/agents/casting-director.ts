@@ -2,11 +2,12 @@ import { generateObject } from "ai";
 import { z } from "zod";
 import {
   AGENT_MODEL,
-  MISSING_GEMINI_KEY_ERROR,
+  MISSING_OPENAI_KEY_ERROR,
+  OBJECT_PROVIDER_OPTIONS,
   STRUCTURED_TEMPERATURE,
-  gemini,
-  isGeminiConfigured,
-} from "../gemini-provider";
+  isOpenAIConfigured,
+  openai,
+} from "../openai-provider";
 import { resolveFormatProfile, type FormatProfile } from "../format-profile";
 import { acquireCallSlot } from "../concurrency";
 
@@ -72,8 +73,8 @@ export async function castCharacters({
   nicheTheme,
   formatProfile,
 }: CastingDirectorParams): Promise<CastingDirectorResult> {
-  if (!isGeminiConfigured()) {
-    return { success: false, error: MISSING_GEMINI_KEY_ERROR };
+  if (!isOpenAIConfigured()) {
+    return { success: false, error: MISSING_OPENAI_KEY_ERROR };
   }
 
   const profile = formatProfile ?? resolveFormatProfile({ nicheTheme });
@@ -81,7 +82,8 @@ export async function castCharacters({
   try {
     await acquireCallSlot();
     const { object } = await generateObject({
-      model: gemini(AGENT_MODEL),
+      model: openai(AGENT_MODEL),
+      providerOptions: OBJECT_PROVIDER_OPTIONS,
       schema: CastingSchema,
       temperature: STRUCTURED_TEMPERATURE,
       system: `You are the Casting Director for a cinematic video pipeline.

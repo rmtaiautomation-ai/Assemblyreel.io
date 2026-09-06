@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { interpolate, spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { Check } from 'lucide-react';
 import { exitOpacity, staggerProgress } from '../overlays/kinetic-utils';
@@ -76,7 +77,7 @@ export const ChecklistCard: React.FC<ChecklistCardProps> = ({
         borderRadius: 16,
         overflow: 'hidden',
         boxShadow: '0 12px 40px rgba(0,0,0,0.45)',
-        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontFamily: FONTS.sans,
       }}
     >
       <div

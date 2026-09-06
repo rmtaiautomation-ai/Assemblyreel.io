@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Settings, Mic, Palette, MonitorPlay, Activity, CheckCircle2, Ratio, Clock3, Edit3, Loader2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
 import NewVideoForm from "@/components/ui/NewVideoForm";
+import DeleteProjectButton from "@/components/ui/DeleteProjectButton";
 
 function timeAgo(dateString: string) {
   const diffMs = Date.now() - new Date(dateString).getTime();
@@ -330,21 +331,32 @@ export default async function WorkspaceHubPage({ params }: { params: { slug: str
               ) : (
                 videoProjects.map((video) => {
                   const view = statusView(video.status);
+                  // The card is a wrapper rather than the <Link> itself so the delete
+                  // button can sit beside the link instead of inside it — see the
+                  // markup note in DeleteProjectButton.
                   return (
-                    <Link key={video.id} href={`/workspaces/${workspace.id}/videos/${video.id}`} className="bg-ed-surface border border-ed-border rounded-lg p-3 shadow-sm hover:border-ed-accent-border transition-all group flex flex-col gap-2 block relative overflow-hidden">
+                    <div key={video.id} className="bg-ed-surface border border-ed-border rounded-lg shadow-sm hover:border-ed-accent-border transition-all group relative overflow-hidden">
                       <div className={`absolute left-0 top-0 bottom-0 w-1 ${view.bar}`}></div>
-                      <div className="pl-1">
-                        <h3 className="font-semibold text-ed-text group-hover:text-ed-accent-text transition-colors line-clamp-2 text-xs leading-tight mb-2">
-                          {video.topic || "Untitled"}
-                        </h3>
-                        <div className="flex items-center justify-between">
-                          <span className={`text-[8px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-sm ${view.chip}`}>
-                            {view.label}
-                          </span>
-                          <span className="text-[9px] text-ed-text-faint font-medium">{new Date(video.created_at).toLocaleDateString()}</span>
+                      <DeleteProjectButton
+                        projectId={video.id}
+                        workspaceId={workspace.id}
+                        topic={video.topic}
+                      />
+                      <Link href={`/workspaces/${workspace.id}/videos/${video.id}`} className="block p-3">
+                        <div className="pl-1">
+                          {/* pr-5 keeps a long title clear of the delete button's corner. */}
+                          <h3 className="font-semibold text-ed-text group-hover:text-ed-accent-text transition-colors line-clamp-2 text-xs leading-tight mb-2 pr-5">
+                            {video.topic || "Untitled"}
+                          </h3>
+                          <div className="flex items-center justify-between">
+                            <span className={`text-[8px] uppercase tracking-wider font-bold px-1.5 py-0.5 rounded-sm ${view.chip}`}>
+                              {view.label}
+                            </span>
+                            <span className="text-[9px] text-ed-text-faint font-medium">{new Date(video.created_at).toLocaleDateString()}</span>
+                          </div>
                         </div>
-                      </div>
-                    </Link>
+                      </Link>
+                    </div>
                   );
                 })
               )}

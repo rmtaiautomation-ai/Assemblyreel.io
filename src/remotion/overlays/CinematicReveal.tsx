@@ -1,4 +1,5 @@
 import React from 'react';
+import { FONTS } from '../fonts';
 import { useCurrentFrame, useVideoConfig } from 'remotion';
 import { exitOpacity, splitWords, staggerProgress } from './kinetic-utils';
 
@@ -64,7 +65,7 @@ export const CinematicReveal: React.FC<CinematicRevealProps> = ({
         // wrapped lines overlapping.
         gap: `${fontSize * 0.18}px ${fontSize * 0.28}px`,
         opacity: exitOpacity(frame, durationInFrames, fps),
-        fontFamily: "'Inter', 'Helvetica Neue', sans-serif",
+        fontFamily: FONTS.sans,
         fontWeight: 800,
         fontSize,
         letterSpacing: '-0.02em',

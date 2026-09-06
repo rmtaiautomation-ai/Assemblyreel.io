@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   AbsoluteFill,
   Sequence,
@@ -7,24 +7,20 @@ import {
   OffthreadVideo,
   Audio,
   interpolate,
+  delayRender,
+  continueRender,
 } from 'remotion';
-import type { ChecklistCardData, DimScrimData, FilmDamageData, LightBeamData, LightSweepData, OverlayClipData, OverlayClipKind, OverlayPreset, ParticleFieldData, SceneOverlay, TitleCutoutCardData, VideoCompositionProps } from '../types';
+import { waitForFonts } from '../fonts';
+import type { DimScrimData, FilmDamageData, LightBeamData, LightSweepData, OverlayClipData, OverlayClipKind, ParticleFieldData, SceneOverlay, VideoCompositionProps } from '../types';
 import { isEnvironmentalKind } from '../types';
 import { layoutScenes } from '../timeline';
 import { SceneTransition } from '../transitions/SceneTransition';
 import { CaptionTrack } from '../captions/CaptionTrack';
 import { KenBurns } from '../effects/KenBurns';
-import { SlideIn } from '../overlays/SlideIn';
-import { PopIn } from '../overlays/PopIn';
-import { Typewriter } from '../overlays/Typewriter';
-import { LowerThird } from '../overlays/LowerThird';
-import { CinematicReveal } from '../overlays/CinematicReveal';
-import { LineWipe } from '../overlays/LineWipe';
-import { LetterCollapse } from '../overlays/LetterCollapse';
-import { ChapterCard } from '../overlays/ChapterCard';
+import { renderPreset } from '../overlays/renderPreset';
 import { OverlayFrame, defaultAlignForPreset } from '../overlays/OverlayFrame';
-import { ChecklistCard } from '../templates/ChecklistCard';
-import { TitleCutoutCard } from '../templates/TitleCutoutCard';
+import { isCardKind, readStyleId, resolveCardStyle } from '../templates/card-registry';
+import { CARD_STYLE_COMPONENTS, UnknownCardStyle } from '../templates/card-styles';
 import { DimScrim } from '../templates/DimScrim';
 import { ParticleField } from '../templates/ParticleField';
 import { LightBeam } from '../templates/LightBeam';
@@ -73,6 +69,37 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
 }) => {
   const { fps } = useVideoConfig();
 
+  /**
+   * Holds the render open until every typeface in `fonts.ts` has actually
+   * loaded.
+   *
+   * Without this, Lambda — which renders a job as independent chunks on
+   * separate workers — can capture frames before a face resolves, so part of
+   * the video draws in fallback metrics and part in the real font. It changes
+   * mid-video, and nothing errors. The Player is unaffected either way, which
+   * is precisely what makes the bug easy to ship.
+   *
+   * `useState` for the handle so it is created exactly once per mount; this
+   * component re-runs on every frame.
+   */
+  const [fontHandle] = useState(() => delayRender('Loading fonts'));
+  useEffect(() => {
+    let cancelled = false;
+    waitForFonts()
+      .then(() => {
+        if (!cancelled) continueRender(fontHandle);
+      })
+      .catch((err) => {
+        // Never strand the render on a font failure — a video in fallback type
+        // beats a job that hangs until it times out.
+        console.error('[VideoComposition] Font loading failed:', err);
+        continueRender(fontHandle);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [fontHandle]);
+
   // The Player re-invokes this whole component on every frame during playback (that's
   // how Remotion works — frame-driven, not incremental), so an unmemoized layoutScenes
   // pass over every scene ran 30-60x/sec regardless of scene count. Invisible on a
@@ -80,39 +107,6 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   // cost behind visible playback jank. `scenes` doesn't change frame-to-frame, so this
   // only needs to recompute when the project's scene list itself changes.
   const { segments } = useMemo(() => layoutScenes(scenes, fps), [scenes, fps]);
-
-  /**
-   * Picks the animation component for a preset. Returns only the moving text —
-   * placement is applied by the `OverlayFrame` each caller wraps this in, which
-   * is what lets the same eight presets serve both the scene-scoped overlay
-   * (fixed default position) and a freely-dragged overlay clip.
-   */
-  const renderPreset = (
-    preset: OverlayPreset,
-    props: { text: string; color?: string; fontSize?: number; durationInFrames: number },
-    kickerText?: string
-  ) => {
-    switch (preset) {
-      case 'slide':
-        return <SlideIn {...props} />;
-      case 'pop':
-        return <PopIn {...props} />;
-      case 'typewriter':
-        return <Typewriter {...props} />;
-      case 'lower-third':
-        return <LowerThird {...props} />;
-      case 'cinematic-reveal':
-        return <CinematicReveal {...props} />;
-      case 'line-wipe':
-        return <LineWipe {...props} />;
-      case 'letter-collapse':
-        return <LetterCollapse {...props} />;
-      case 'chapter-card':
-        return <ChapterCard {...props} kickerText={kickerText} />;
-      default:
-        return null;
-    }
-  };
 
   const renderOverlay = (overlay: SceneOverlay, nominalDurationInFrames: number) => (
     <OverlayFrame defaultAlign={defaultAlignForPreset(overlay.preset)}>
@@ -126,50 +120,23 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   );
 
   /**
-   * WHAT renders inside the OverlayFrame for a given clip — the only thing
-   * that branches on `kind`. Timing, positioning, the scrim, and persistence
-   * are all handled once in `renderOverlayClip` below regardless of kind.
+   * WHAT renders inside the OverlayFrame for a given clip.
+   *
+   * Graphic-card kinds resolve through the style registry rather than being
+   * branched on here, so adding a design touches the registry only and never
+   * this file. Everything else — timing, positioning, the scrim — is handled
+   * once in `renderOverlayClip` below regardless of kind.
    */
   const renderOverlayClipContent = (clip: OverlayClipData, durationInFrames: number) => {
-    if (clip.kind === 'checklist-card') {
-      // `template_data` is unenforced JSON — a row with a missing/wrongly-typed
-      // `bullets` still renders (as header-only), it never throws.
-      const data = clip.templateData as ChecklistCardData | undefined;
-      const bullets = Array.isArray(data?.bullets) ? data.bullets : [];
-      return (
-        <ChecklistCard
-          text={clip.text}
-          bullets={bullets}
-          color={clip.color}
-          textColor={data?.textColor}
-          fontSize={clip.fontSize}
-          scale={data?.scale}
-          durationInFrames={durationInFrames}
-        />
-      );
-    }
-
-    if (clip.kind === 'title-cutout-card') {
-      const data = clip.templateData as TitleCutoutCardData | undefined;
-      return (
-        <TitleCutoutCard
-          backgroundImageUrl={data?.backgroundImageUrl}
-          foregroundImageUrl={data?.foregroundImageUrl}
-          color={clip.color}
-          scale={data?.scale}
-          renderHeadline={() =>
-            renderPreset(
-              clip.preset,
-              // The headline never reads `clip.color` — that field means
-              // "fallback background color" for this kind (see the OverlayClipData
-              // field-mapping notes). Its own text color is the independent
-              // `template_data.textColor`, defaulting white like every preset does.
-              { text: clip.text, color: data?.textColor, fontSize: clip.fontSize, durationInFrames },
-              clip.kickerText
-            )
-          }
-        />
-      );
+    if (isCardKind(clip.kind)) {
+      const styleId = readStyleId(clip.templateData);
+      const style = resolveCardStyle(clip.kind, styleId);
+      // Unresolvable means this build doesn't have the style — realistically a
+      // stale Lambda bundle. Render a loud marker, never a quiet substitute;
+      // see `UnknownCardStyle` for why that distinction matters.
+      if (!style) return <UnknownCardStyle styleId={styleId} />;
+      const StyleComponent = CARD_STYLE_COMPONENTS[style.id];
+      return <StyleComponent clip={clip} durationInFrames={durationInFrames} />;
     }
 
     return renderPreset(
@@ -289,6 +256,17 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
       );
     }
 
+    // A full-bleed card style paints to the frame edges and positions itself —
+    // a chapter plate covering the shot, or a list anchored to a frame edge.
+    // OverlayFrame would centre it on xPercent/yPercent AND clamp it to 90%
+    // width, which puts a margin of undimmed footage around a layer whose job
+    // is to cover, and pulls an edge-anchored rail off its edge. So these skip
+    // it, for the same reason (and by the same mechanism) the environmental
+    // kinds above do.
+    const cardStyle = isCardKind(clip.kind)
+      ? resolveCardStyle(clip.kind, readStyleId(clip.templateData))
+      : null;
+
     return (
       <Sequence key={`overlay-${clip.id}`} from={from} durationInFrames={durationInFrames}>
         {/* Scrim sized to THIS clip, not to a scene: the whole point of the OV
@@ -297,9 +275,15 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
         {clip.dimBackground && (
           <AbsoluteFill style={{ backgroundColor: 'rgba(0,0,0,0.45)' }} />
         )}
-        <OverlayFrame xPercent={clip.xPercent} yPercent={clip.yPercent}>
-          {renderOverlayClipContent(clip, durationInFrames)}
-        </OverlayFrame>
+        {cardStyle?.fullBleed ? (
+          <AbsoluteFill style={{ pointerEvents: 'none' }}>
+            {renderOverlayClipContent(clip, durationInFrames)}
+          </AbsoluteFill>
+        ) : (
+          <OverlayFrame xPercent={clip.xPercent} yPercent={clip.yPercent}>
+            {renderOverlayClipContent(clip, durationInFrames)}
+          </OverlayFrame>
+        )}
       </Sequence>
     );
   };
