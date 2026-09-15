@@ -175,7 +175,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
               <button
                 type="button"
                 onClick={() => setIsAiSidebarOpen(true)}
-                className="bg-ed-accent hover:bg-ed-accent-hover text-ed-base font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all shadow-sm"
+                className="bg-ed-raised border border-ed-border text-ed-text hover:border-ed-accent hover:text-ed-accent-text font-semibold text-xs px-4 py-2 rounded-lg flex items-center justify-center gap-1.5 transition-all"
               >
                 <Bot size={14} />
                 Open AI Co-Writer
@@ -265,7 +265,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
             <button
               type="submit"
               disabled={isSubmitting}
-              className="bg-ed-surface hover:bg-ed-raised text-white font-bold px-8 py-3.5 rounded-xl shadow-lg transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-[1px]"
+              className="bg-ed-accent hover:bg-ed-accent-hover text-ed-base font-bold px-8 py-3.5 rounded-xl transition-all flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed hover:-translate-y-[1px]"
             >
               {isSubmitting ? <Loader2 size={18} className="animate-spin" /> : <Wand2 size={18} />}
               {isSubmitting ? "Planning acts…" : "Generate Story"}
