@@ -341,8 +341,7 @@ export function buildScriptWriterSystemInstruction(
     : "You are an expert Script Writer for a highly visual, cinematic video channel.";
 
   // The four numbered rules are the original prompt's shape and must stay in this order.
-  const core = `
-${preamble}
+  const core = `${preamble}
 Your task is to write a master Voiceover (VO) script based on the provided parameters.
 
 ### CRITICAL RULES:

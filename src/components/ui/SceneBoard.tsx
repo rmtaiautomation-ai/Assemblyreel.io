@@ -200,6 +200,9 @@ export default function SceneBoard({ data }: SceneBoardProps) {
   /** Which act of how many the batch pass is currently on — null outside a batch run. */
   const [writingAllProgress, setWritingAllProgress] = useState<{ index: number; total: number } | null>(null);
 
+  const [recordingAll, setRecordingAll] = useState(false);
+  const [recordingAllProgress, setRecordingAllProgress] = useState<{ index: number; total: number } | null>(null);
+
   /** Act number showing "Copied" after its bulk-copy button was clicked; resets after 2s. */
   const [copiedAct, setCopiedAct] = useState<number | null>(null);
   const handleCopyAct = (act: SceneBoardAct) => {
@@ -455,13 +458,96 @@ export default function SceneBoard({ data }: SceneBoardProps) {
           alert(res.error || `Act ${act.outline.actNumber} failed. The acts before it were saved.`);
           break;
         }
+
+        if (res.scenes) {
+          setActs((currentActs) =>
+            currentActs.map((a) => {
+              if (a.outline.actNumber === act.outline.actNumber) {
+                const mappedScenes = res.scenes!.map((s) => ({
+                  id: s.id,
+                  sequenceNumber: s.sequenceNumber,
+                  actNumber: a.outline.actNumber,
+                  voiceOverText: s.voiceOverText,
+                  sceneType: s.sceneType,
+                  durationSeconds: s.estimatedDurationSeconds,
+                  finalVideoPrompt: s.finalVideoPrompt,
+                  environment: null,
+                  lighting: null,
+                  cameraDirection: null,
+                  mediaUrl: null,
+                  mediaType: null,
+                  generationStatus: "pending",
+                  castNames: [],
+                }));
+                return {
+                  ...a,
+                  scenes: mappedScenes,
+                  progress: { hasScript: true, hasAudio: false, hasVisuals: false, isApproved: false },
+                };
+              }
+              return a;
+            })
+          );
+        }
+
         sequenceNumber += res.scenes?.length ?? 0;
         done += 1;
+        router.refresh(); // Update the UI progressively so the user can read this act while the next one writes
       }
     } finally {
       setScriptingAct(null);
       setWritingAll(false);
       setWritingAllProgress(null);
+      router.refresh();
+    }
+  };
+
+  const handleRecordAllAudio = async () => {
+    setRecordingAll(true);
+    const unrecorded = acts.filter((a) => a.scenes.length > 0 && !a.narration);
+    let done = 0;
+    setRecordingAllProgress({ index: 0, total: unrecorded.length });
+
+    try {
+      for (const act of acts) {
+        if (act.scenes.length === 0 || act.narration) continue;
+
+        setRecordingAct(act.outline.actNumber);
+        setRecordingAllProgress({ index: done + 1, total: unrecorded.length });
+        
+        const res = await regenerateActNarration({ projectId: data.projectId, actNumber: act.outline.actNumber });
+
+        if (!res.success) {
+          alert(res.error || `Act ${act.outline.actNumber} failed to record audio. Previous acts were saved.`);
+          break;
+        }
+
+        const newNarration = res.acts?.find((a) => a.actNumber === act.outline.actNumber);
+        if (newNarration) {
+          setActs((currentActs) =>
+            currentActs.map((a) =>
+              a.outline.actNumber === act.outline.actNumber
+                ? {
+                    ...a,
+                    narration: {
+                      audioUrl: newNarration.audioUrl,
+                      durationSeconds: newNarration.durationSeconds,
+                      startSeconds: newNarration.startSeconds,
+                    },
+                    progress: { ...a.progress, hasAudio: true },
+                  }
+                : a
+            )
+          );
+        }
+        
+        done += 1;
+        router.refresh();
+      }
+    } finally {
+      setRecordingAct(null);
+      setRecordingAll(false);
+      setRecordingAllProgress(null);
       router.refresh();
     }
   };
@@ -546,6 +632,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
 
   const sceneCount = allScenes.length;
   const unwrittenActs = acts.filter((a) => a.scenes.length === 0).length;
+  const unrecordedActs = acts.filter((a) => a.scenes.length > 0 && !a.narration).length;
   const approvedActs = acts.filter((a) => a.progress.isApproved).length;
 
   // Drives the global status pill below. Stays true across a whole "Write all acts"
@@ -598,6 +685,9 @@ export default function SceneBoard({ data }: SceneBoardProps) {
           writingAll={writingAll}
           scriptingAct={scriptingAct}
           onWriteAll={() => void handleWriteAllActs()}
+          unrecordedActs={unrecordedActs}
+          recordingAll={recordingAll}
+          onRecordAll={() => void handleRecordAllAudio()}
         />
 
         {data.warnings.length > 0 && (
@@ -744,7 +834,9 @@ export default function SceneBoard({ data }: SceneBoardProps) {
           <span className="text-[12px] font-medium text-ed-text">
             {writingAll && writingAllProgress
               ? `Writing scripts — Act ${writingAllProgress.index} of ${writingAllProgress.total} · ${scriptStageLabel(globalElapsed)}…`
-              : scriptingAct !== null
+              : recordingAll && recordingAllProgress
+                ? `Generating audio — Act ${recordingAllProgress.index} of ${recordingAllProgress.total}…`
+                : scriptingAct !== null
                 ? `Writing Act ${scriptingAct} · ${scriptStageLabel(globalElapsed)}…`
                 : recordingAct !== null
                   ? `Generating audio — Act ${recordingAct}…`
@@ -905,6 +997,9 @@ function BoardToolbar({
   writingAll,
   scriptingAct,
   onWriteAll,
+  unrecordedActs,
+  recordingAll,
+  onRecordAll,
 }: {
   viewMode: ViewMode;
   onViewMode: (v: ViewMode) => void;
@@ -919,6 +1014,9 @@ function BoardToolbar({
   writingAll: boolean;
   scriptingAct: number | null;
   onWriteAll: () => void;
+  unrecordedActs: number;
+  recordingAll: boolean;
+  onRecordAll: () => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 h-12 border-b border-ed-border bg-ed-surface shrink-0">
@@ -975,6 +1073,20 @@ function BoardToolbar({
               ? `Writing Act ${scriptingAct}…`
               : "Writing…"
             : `Write ${unwrittenActs} act${unwrittenActs === 1 ? "" : "s"}`}
+        </button>
+      )}
+
+      {unrecordedActs > 0 && (
+        <button
+          onClick={onRecordAll}
+          disabled={recordingAll || writingAll}
+          className="flex items-center gap-1.5 text-[12px] font-bold text-ed-base bg-ed-a1 hover:bg-ed-a1-hover disabled:opacity-60 px-3 py-1.5 rounded-md transition-colors"
+          title="Generates audio for every act that has a script but no audio yet"
+        >
+          {recordingAll ? <Loader2 size={13} className="animate-spin" /> : <Mic size={13} />}
+          {recordingAll
+            ? "Generating audio…"
+            : `Generate audio (${unrecordedActs})`}
         </button>
       )}
 
@@ -1053,8 +1165,14 @@ function ActHeader({
   const togglePlay = () => {
     const el = audioRef.current;
     if (!el) return;
-    if (el.paused) void el.play();
-    else el.pause();
+    if (el.paused) {
+      document.querySelectorAll("audio").forEach((other) => {
+        if (other !== el) other.pause();
+      });
+      void el.play();
+    } else {
+      el.pause();
+    }
   };
 
   // Local to this Act's own scrubber — separate from the parent's `playhead`, which
@@ -1099,7 +1217,11 @@ function ActHeader({
       onClick={collapsible ? onToggleCollapse : undefined}
       title={collapsible ? (collapsed ? "Expand this act's scenes" : "Collapse this act's scenes") : undefined}
       className={`sticky top-0 z-20 backdrop-blur-sm border-b border-ed-border px-4 py-2.5 transition-colors ${
-        collapsible ? "cursor-pointer bg-ed-surface/95 hover:bg-ed-hover" : "bg-ed-surface/95"
+        busy
+          ? "bg-ed-hover animate-pulse"
+          : collapsible
+            ? "cursor-pointer bg-ed-surface/95 hover:bg-ed-hover"
+            : "bg-ed-surface/95"
       }`}
     >
       <div className="flex items-center gap-3">

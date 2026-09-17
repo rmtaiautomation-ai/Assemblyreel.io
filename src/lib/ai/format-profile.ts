@@ -444,6 +444,7 @@ export type FormatProfileOverride = {
 /* -------------------------------------------------------------------------- */
 
 export const FORMAT_PRESET_KEYS = [
+  "suppressed-truth-archivist",
   "forensic-documentary",
   "mythic-epic",
   "grounded-investigation",
@@ -845,7 +846,118 @@ const CUSTOM_BASE: FormatProfile = {
   },
 };
 
+const SUPPRESSED_TRUTH_ARCHIVIST: FormatProfile = {
+  key: "suppressed-truth-archivist",
+  label: "Suppressed Truth Archivist",
+  version: 1,
+  identity: {
+    narratorPersona:
+      "A modern researcher speaking directly to an everyday 2026 audience. They are working through recovered documents, reading the record aloud plainly so anyone can understand it. Not a preacher, not a professor, not an academic, not a conspiracy host. Treats the viewer as a tired, curious person who just wants the truth without needing a dictionary. The narrator is casual but authoritative, never using poetic or theatrical language.",
+    explanatoryMethod:
+      "Every claim is unpacked by the same move, without exception: state the accepted modern belief or institutional doctrine, and then immediately juxtapose it with a direct quote, physical artifact, or structural detail from an ancient, suppressed text. They ground every paradigm-shifting claim in a physical, verifiable ancient source.",
+    register:
+      "Conversational, punchy, and highly accessible modern English. Speaks like a popular investigative journalist on YouTube. Uses modern technological and biological terminology applied to ancient theology (e.g. 'genetic firewall', 'downgraded operating system') to make ancient concepts relatable today. Rhythm is built on violent length contrast: a long sentence carrying nested clauses, followed by a fragment of three or four words.",
+    forbiddenRegisters: [
+      "archaic, theatrical, or overly poetic language (e.g., 'bestowed', 'Sisyphean', 'imbued', 'obfuscation', 'alas')",
+      "academic jargon or complex, dense phrasing that requires a high reading level",
+      "hype or clickbait phrasing (e.g., 'insane', 'mind-blowing')",
+      "hesitant or qualifying academic language (e.g., 'it's possible that')",
+      "traditional religious sermon or preachy Sunday school lesson",
+      "casual audience address (e.g., 'Hey guys')",
+    ],
+    audienceStance:
+      "The narrator speaks directly to the viewer using 'you,' framing the knowledge as a personal, urgent revelation. When presenting a claim a skeptic would doubt, they state the text's claim plainly and as an absolute reality, rather than softening it or only presenting evidence and moving on.",
+    sourceRegister:
+      "The source texts are treated as raw data, blueprints, or forgotten science, not moral fables.",
+    characterRule:
+      "Abstract institutional forces (councils, lists, translators) act as the suppressors, making deliberate choices to restrict information.",
+  },
+  delivery: {
+    wordsPerMinute: 135,
+    elevenlabs: { stability: 0.85, similarityBoost: 0.6, style: 0.15 },
+    localTts: { speed: 0.95 },
+    pauseBeforeRevelationMs: 1000,
+    quotationStyle: "spoken-marker",
+  },
+  structure: {
+    actCycle: [
+      "State the specific physical location, text, or artifact being examined.",
+      "State the comforting lie or mainstream assumption the viewer currently believes about this topic.",
+      "Reveal exactly what the ancient text actually says, shattering the assumption.",
+      "Explain the physical, biological, or cosmic mechanics of how it worked using sci-fi/theological vocabulary.",
+      "End the chapter by dropping a hint about the next, even more severe anomaly to pull them into the next chapter."
+    ],
+    arcBeats: [
+      {
+        id: "credibility-reversal",
+        instruction: "The vindication or credibility reversal near the start.",
+        position: 0.05
+      },
+      {
+        id: "personal-stake",
+        instruction: "Establish the personal stakes for the viewer.",
+        position: 0.2
+      },
+      {
+        id: "modern-parallel",
+        instruction: "The modern-parallel or corroboration beat.",
+        position: 0.7
+      },
+      {
+        id: "suppression-chronology",
+        instruction: "The suppression or opposition chronology.",
+        position: 0.8
+      }
+    ],
+    beatSheet: [],
+    coldOpen: {
+      maxSeconds: 45,
+      payoffDeadlineSeconds: 25,
+      sequence: [],
+      bannedOpenings: [
+        "greetings of any kind",
+        "channel or host introductions",
+        "statements of intent",
+        "logo stings"
+      ]
+    },
+    terminalRevelation: true,
+    reHookIntervalSeconds: 100,
+    closer: "open-door",
+  },
+  content: {
+    lineComposition: "documentary",
+    readingLevel: "Eighth-grade reading level. Modern conversational English. Simple, punchy, and immediately accessible.",
+    requiredBeats: [
+      "A personal-stake beat by chapter 2.",
+      "A verbatim citation per chapter."
+    ],
+    sourcingRule: "Ground abstractions in physical, occupational analogies.",
+    rotatingDevices: [
+      "A translation that softens or drops a specific phrase.",
+      "A Sumerian tablet ignored by mainstream archaeology.",
+      "A fragment surviving in only one Ethiopian collection.",
+      "A council that actively suppressed the text to maintain control.",
+      "A biological trait described in ancient texts that matches modern genetics.",
+      "An artifact that predates the accepted timeline of human history."
+    ],
+    apparatusRule: "Apparatus means manuscripts, folios, parchment, catalogue and fragment numbers. It belongs ONLY in the beats marked for it.",
+    sensoryRule: "Put physical sensation into the spoken narration.",
+    fragmentRule: "Violent length contrast: a long sentence carrying two nested clauses, then a fragment of three or four words.",
+    scaleRule: "Turn figures into something a listener can picture.",
+    transitionPhrases: ["But the text doesn't stop there. What follows is stranger still."],
+  },
+  visual: {
+    visualBias: "Favors 'ESTABLISH' and 'MACRO' scenes for slow, intimate examination of artifacts.",
+    promptStyleTag: "archival documentary photography, desaturated palette, aged paper texture, charcoal blacks, stark glowing gold highlights",
+    preferredSceneTypes: ["ESTABLISH", "MACRO", "CLOSEUP"],
+    stillTreatment: "Each shot holds for 5 to 8 seconds, utilizing very slow, creeping pans or zooms into specific details of an artifact just as the narrator explains that exact detail. No fast cuts and no whip transitions.",
+    contentAwareSlicing: false,
+  }
+};
+
 export const FORMAT_PRESETS: Record<FormatPresetKey, FormatProfile> = {
+  "suppressed-truth-archivist": SUPPRESSED_TRUTH_ARCHIVIST,
   "forensic-documentary": FORENSIC_DOCUMENTARY,
   "mythic-epic": migratedPreset("mythic-epic", "Mythic Epic", "mythology"),
   "grounded-investigation": migratedPreset(
