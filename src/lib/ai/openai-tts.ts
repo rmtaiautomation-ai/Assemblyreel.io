@@ -1,8 +1,9 @@
 "use server";
 
-import fs from "fs";
-import path from "path";
 import type { DeliverySpec } from "./format-profile";
+import { uploadBufferToSupabase } from "../supabase/storage";
+import fs from "fs/promises";
+import path from "path";
 
 /**
  * Narration via OpenAI's `gpt-4o-mini-tts`.
@@ -109,17 +110,21 @@ export async function generateOpenAISceneSpeech(
     }
 
     const audioBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(audioBuffer);
+    
+    const fileName = `audio/${sceneId}.mp3`;
+    
+    // Background upload to Supabase
+    uploadBufferToSupabase(buffer, "media", fileName, "audio/mpeg").catch(err => {
+      console.error("[OpenAI TTS] Supabase upload failed:", err);
+    });
 
-    const publicAudioDir = path.join(process.cwd(), "public", "audio");
-    if (!fs.existsSync(publicAudioDir)) {
-      fs.mkdirSync(publicAudioDir, { recursive: true });
-    }
+    // Save locally for instant UI playback
+    const localPath = path.join(process.cwd(), "public", "audio", `${sceneId}.mp3`);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, buffer);
 
-    const fileName = `${sceneId}.mp3`;
-    const filePath = path.join(publicAudioDir, fileName);
-    fs.writeFileSync(filePath, Buffer.from(audioBuffer));
-
-    return { success: true, audioUrl: `/audio/${fileName}`, voiceWarning: resolved.warning };
+    return { success: true, audioUrl: `/audio/${sceneId}.mp3`, voiceWarning: resolved.warning };
   } catch (error) {
     console.error("[OpenAI TTS] Error:", error);
     return { success: false, error: (error as Error).message };

@@ -118,65 +118,53 @@ export async function syncMediaUrlToS3(
   bucketName: string
 ): Promise<string | undefined> {
   if (!url) return url;
-  if (url.includes(".amazonaws.com/") && url.includes("X-Amz-Signature=")) return url; // already synced
-
-  const client = getS3Client(region);
+  
+  // If it's already a Supabase URL, return as-is
+  if (url.includes(".supabase.co/storage/v1/object/public/")) return url;
 
   const isLocal = url.startsWith("/") || url.startsWith(origin);
   if (isLocal) {
     const relativePath = url.startsWith(origin) ? url.slice(origin.length) : url;
-    const filePath = path.join(process.cwd(), "public", relativePath);
-    const key = `render-inputs${relativePath}`;
-    try {
-      return await putAndPresign(
-        client,
-        bucketName,
-        key,
-        () => fs.readFile(filePath),
-        guessContentType(filePath)
-      );
-    } catch (err: any) {
-      // No fallback here on purpose, unlike the remote-asset branch below: a
-      // local `/media/...` URL is on THIS machine's disk and categorically
-      // unreachable from a Lambda worker no matter why the upload failed, so
-      // returning it unchanged would just defer the same failure to a much
-      // more confusing point (Remotion's <Img> loader, deep inside the Lambda
-      // render, with no indication it was ever an S3 sync problem). Failing
-      // here instead surfaces the real cause immediately, before any Lambda
-      // time is spent.
-      throw new Error(`Could not sync local asset ${relativePath} to S3: ${err?.message || err}`);
+    
+    // In our dual-storage architecture, all local files in /media/ and /audio/
+    // have already been simultaneously uploaded to Supabase Storage during generation.
+    // Instead of doing a slow S3 upload at export time, we simply translate the local URL
+    // into its corresponding Supabase Public URL for the Lambda render farm.
+    
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    if (!supabaseUrl) {
+      throw new Error("NEXT_PUBLIC_SUPABASE_URL is not set. Cannot translate local URLs to cloud URLs for export.");
     }
+    
+    const publicPrefix = `${supabaseUrl}/storage/v1/object/public/media/`;
+    
+    if (relativePath.startsWith("/media/")) {
+      // /media/uploads/... -> uploads/...
+      const cloudPath = relativePath.slice("/media/".length);
+      return `${publicPrefix}${cloudPath}`;
+    }
+    
+    if (relativePath.startsWith("/audio/")) {
+      // /audio/123.mp3 -> audio/123.mp3
+      const cloudPath = relativePath.slice(1);
+      return `${publicPrefix}${cloudPath}`;
+    }
+    
+    return url;
   }
 
-  if (/^https?:\/\//i.test(url)) {
-    const hash = crypto.createHash("sha1").update(url).digest("hex").slice(0, 16);
-    let ext = ".mp4";
-    try {
-      const urlExt = path.extname(new URL(url).pathname);
-      if (urlExt && urlExt.length <= 5) ext = urlExt;
-    } catch {
-      // Unparseable URL — keep the default extension.
-    }
-    const key = `render-inputs/remote-cache/${hash}${ext}`;
-    try {
-      return await putAndPresign(
-        client,
-        bucketName,
-        key,
-        async () => {
-          const res = await fetch(url);
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          return Buffer.from(await res.arrayBuffer());
-        },
-        EXT_CONTENT_TYPES[ext] || "application/octet-stream"
-      );
-    } catch (err) {
-      console.warn(`[S3 Sync] Could not sync remote asset ${url}:`, err);
-      return url; // Fall back to the original remote URL rather than failing the whole render.
-    }
-  }
-
+  // Remote stock URLs are already natively fast for Lambda.
   return url;
+}
+
+async function runInChunks<T, R>(items: T[], chunkSize: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const results: R[] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    const chunk = items.slice(i, i + chunkSize);
+    const chunkResults = await Promise.all(chunk.map(fn));
+    results.push(...chunkResults);
+  }
+  return results;
 }
 
 /**
@@ -184,23 +172,20 @@ export async function syncMediaUrlToS3(
  * render-remotion/route.ts) and rewrites every scene/audio media URL to a
  * presigned S3 URL, uploading anything not already on S3 first.
  *
- * Sequential per-asset on purpose — same reasoning as the local media cache
- * loop it mirrors: this app is single-user/single-render, and firing dozens
- * of uploads at once isn't worth the complexity for the marginal time saved.
+ * Processes assets in parallel chunks to dramatically speed up export times
+ * without overwhelming the network or hitting OS file descriptor limits.
  */
 export async function syncPayloadMediaToS3(payload: any, origin: string): Promise<any> {
   const { region, bucketName } = getLambdaConfig();
   const sync = (url: string | undefined) => syncMediaUrlToS3(url, origin, region, bucketName);
 
-  const scenes: any[] = [];
-  for (const scene of payload.scenes ?? []) {
-    scenes.push({ ...scene, mediaUrl: await sync(scene.mediaUrl) });
-  }
+  const scenes = await runInChunks(payload.scenes ?? [], 10, async (scene: any) => {
+    return { ...scene, mediaUrl: await sync(scene.mediaUrl) };
+  });
 
-  const audioClips: any[] = [];
-  for (const clip of payload.audioClips ?? []) {
-    audioClips.push({ ...clip, src: await sync(clip.src) });
-  }
+  const audioClips = await runInChunks(payload.audioClips ?? [], 10, async (clip: any) => {
+    return { ...clip, src: await sync(clip.src) };
+  });
 
   return {
     ...payload,

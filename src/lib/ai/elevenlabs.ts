@@ -1,7 +1,9 @@
 "use server";
 
-import fs from "fs";
+import { uploadBufferToSupabase } from "../supabase/storage";
+import fs from "fs/promises";
 import path from "path";
+
 import type { DeliverySpec } from "./format-profile";
 
 /**
@@ -63,21 +65,21 @@ export async function generateSceneSpeech(
     }
 
     const audioBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(audioBuffer);
     
-    // Save to public/audio directory for prototype
-    const publicAudioDir = path.join(process.cwd(), "public", "audio");
-    const fileName = `${sceneId}.mp3`;
-    const filePath = path.join(publicAudioDir, fileName);
+    const fileName = `audio/${sceneId}.mp3`;
     
-    // Ensure public/audio dir exists
-    if (!fs.existsSync(publicAudioDir)) {
-      fs.mkdirSync(publicAudioDir, { recursive: true });
-    }
+    // Background upload to Supabase
+    uploadBufferToSupabase(buffer, "media", fileName, "audio/mpeg").catch(err => {
+      console.error("[ElevenLabs TTS] Supabase upload failed:", err);
+    });
 
-    fs.writeFileSync(filePath, Buffer.from(audioBuffer));
+    // Save locally for UI playback
+    const localPath = path.join(process.cwd(), "public", "audio", `${sceneId}.mp3`);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, buffer);
 
-    // Return the relative URL to be saved in DB
-    return { success: true, audioUrl: `/audio/${fileName}` };
+    return { success: true, audioUrl: `/audio/${sceneId}.mp3` };
   } catch (error) {
     console.error("Error generating speech:", error);
     return { success: false, error: (error as Error).message };

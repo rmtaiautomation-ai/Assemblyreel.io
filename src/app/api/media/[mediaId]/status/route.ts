@@ -1,35 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import fs from "fs/promises";
-import path from "path";
-import { createClient } from "@/lib/supabase/server";
 import { updateMediaStatus } from "@/app/actions/media-actions";
 import { getProvider } from "@/lib/ai/providers/registry";
+import { uploadBufferToSupabase } from "@/lib/supabase/storage";
+import { createClient } from "@/lib/supabase/server";
+import fs from "fs/promises";
+import path from "path";
 
 function guessExtFromUrl(url: string, fallback: string): string {
   const match = /\.([a-zA-Z0-9]{2,4})(?:[?#]|$)/.exec(url);
   return match ? match[1].toLowerCase() : fallback;
 }
 
-/**
- * Real async completions (currently: Fal) hand back a URL hosted on the
- * provider's own CDN — nothing in this app has ever kept a copy. That's fine
- * for a quick preview, but a multi-day edit on the same project can outlive
- * whatever retention the provider gives that URL, silently breaking a clip
- * mid-edit with no copy anywhere. Download it once, the same way uploads and
- * Gemini images already persist to public/media/. Best-effort: if the fetch
- * fails, fall back to the provider's URL rather than failing the generation.
- */
-async function persistLocally(url: string, projectId: string, mediaId: string, mediaType: string) {
+async function persistToSupabase(url: string, projectId: string, mediaId: string, mediaType: string) {
   const ext = guessExtFromUrl(url, mediaType === "video" ? "mp4" : "png");
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Fetch failed (${res.status})`);
 
-  const mediaDir = path.join(process.cwd(), "public", "media", projectId);
-  await fs.mkdir(mediaDir, { recursive: true });
+  const buffer = Buffer.from(await res.arrayBuffer());
   const fileName = `${mediaId}.${ext}`;
-  await fs.writeFile(path.join(mediaDir, fileName), Buffer.from(await res.arrayBuffer()));
+  const storagePath = `downloads/${projectId}/${fileName}`;
+  const contentType = mediaType === "video" ? "video/mp4" : "image/png";
 
-  return { url: `/media/${projectId}/${fileName}`, storagePath: `media/${projectId}/${fileName}` };
+  // Background upload to Supabase
+  uploadBufferToSupabase(buffer, "media", storagePath, contentType).catch(err => {
+    console.error("[api/media/status] Supabase upload failed:", err);
+  });
+
+  // Save locally for instant UI playback
+  const localPath = path.join(process.cwd(), "public", "media", "downloads", projectId, fileName);
+  await fs.mkdir(path.dirname(localPath), { recursive: true });
+  await fs.writeFile(localPath, buffer);
+
+  const localUrl = `/media/downloads/${projectId}/${fileName}`;
+
+  return { url: localUrl, storagePath };
 }
 
 export async function GET(req: NextRequest, { params }: { params: Promise<{ mediaId: string }> }) {
@@ -71,11 +75,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ medi
 
     if (!result.simulated && finalUrl) {
       try {
-        const local = await persistLocally(finalUrl, media.project_id, mediaId, media.media_type);
-        finalUrl = local.url;
-        storagePath = local.storagePath;
+        const persisted = await persistToSupabase(finalUrl, media.project_id, mediaId, media.media_type);
+        finalUrl = persisted.url;
+        storagePath = persisted.storagePath;
       } catch (err) {
-        console.warn(`[media/status] Could not persist ${finalUrl} locally, keeping provider URL:`, err);
+        console.warn(`[media/status] Could not persist ${finalUrl} to Supabase, keeping provider URL:`, err);
       }
     }
 

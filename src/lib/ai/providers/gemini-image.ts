@@ -1,6 +1,7 @@
 import fs from "fs/promises";
 import path from "path";
 import type { GenerateInput, ProviderResult, VideoProvider } from "./types";
+import { uploadBufferToSupabase } from "@/lib/supabase/storage";
 
 const MODEL = "gemini-3-pro-image";
 
@@ -11,13 +12,20 @@ const REFERENCE_MIME_TYPES: Record<string, string> = {
   ".webp": "image/webp",
 };
 
-/** Reads a local, public-relative image URL (see `GenerateInput.referenceImageUrl`) as an inline part. */
 async function loadReferenceImagePart(referenceImageUrl: string) {
-  const relativePath = referenceImageUrl.replace(/^\/+/, "");
-  const absolutePath = path.join(process.cwd(), "public", relativePath);
-  const data = await fs.readFile(absolutePath);
-  const mimeType = REFERENCE_MIME_TYPES[path.extname(absolutePath).toLowerCase()] ?? "image/png";
-  return { inlineData: { mimeType, data: data.toString("base64") } };
+  if (/^https?:\/\//i.test(referenceImageUrl)) {
+    const res = await fetch(referenceImageUrl);
+    if (!res.ok) throw new Error(`Could not fetch reference image from ${referenceImageUrl}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    let mimeType = res.headers.get("content-type") || "image/png";
+    return { inlineData: { mimeType, data: buffer.toString("base64") } };
+  } else {
+    const relativePath = referenceImageUrl.replace(/^\/+/, "");
+    const absolutePath = path.join(process.cwd(), "public", relativePath);
+    const data = await fs.readFile(absolutePath);
+    const mimeType = REFERENCE_MIME_TYPES[path.extname(absolutePath).toLowerCase()] ?? "image/png";
+    return { inlineData: { mimeType, data: data.toString("base64") } };
+  }
 }
 
 export const geminiImageProvider: VideoProvider = {
@@ -63,15 +71,25 @@ export const geminiImageProvider: VideoProvider = {
       const ext = mimeType.split("/")[1] || "png";
       const buffer = Buffer.from(base64Data, "base64");
 
-      const mediaDir = path.join(process.cwd(), "public", "media", input.projectId);
-      await fs.mkdir(mediaDir, { recursive: true });
       const fileName = `${input.mediaId}.${ext}`;
-      await fs.writeFile(path.join(mediaDir, fileName), buffer);
+      const storagePath = `uploads/${input.projectId}/${fileName}`;
+      
+      // Background upload to Supabase
+      uploadBufferToSupabase(buffer, "media", storagePath, mimeType).catch(err => {
+        console.error("[Gemini Image] Supabase upload failed:", err);
+      });
+
+      // Save locally for instant UI playback
+      const localPath = path.join(process.cwd(), "public", "media", "uploads", input.projectId, fileName);
+      await fs.mkdir(path.dirname(localPath), { recursive: true });
+      await fs.writeFile(localPath, buffer);
+
+      const localUrl = `/media/uploads/${input.projectId}/${fileName}`;
 
       return {
         status: "completed",
-        url: `/media/${input.projectId}/${fileName}`,
-        storagePath: `media/${input.projectId}/${fileName}`,
+        url: localUrl,
+        storagePath: storagePath,
       };
     } catch (error: any) {
       console.error("Gemini image generation failed:", error);

@@ -4548,16 +4548,8 @@ export default function TimelineEditor({
                             {previewMediaUrl && (
                                <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
                                   {previewMediaType === 'video' ? (
-                                     Array.from({ length: stripCount }).map((_, i, arr) => (
-                                        <video
-                                          key={i}
-                                          src={`${previewMediaUrl}#t=${(scene.trim_start || 0) + (getSceneDuration(scene) / arr.length) * i + 0.1}`}
-                                          className="h-full object-cover shrink-0 border-r border-ed-text/20"
-                                          style={{ width: `${100 / arr.length}%` }}
-                                          preload="metadata"
-                                          muted
-                                        />
-                                     ))
+                                     /* No video filmstrip: rendering 100+ <video> tags concurrently crashes the browser via OOM. */
+                                     <div className="w-full h-full bg-ed-media/10" />
                                   ) : (
                                      Array.from({ length: stripCount }).map((_, i, arr) => (
                                         <img
@@ -4630,7 +4622,7 @@ export default function TimelineEditor({
                              audio/visual workflow rather than a wall of empty-looking
                              blocks with no explanation. pointer-events-none so it never
                              steals the click/drag/resize handlers above. */}
-                         {isLongForm && scene.environment == null && (
+                         {isLongForm && scene.environment == null && !previewMediaUrl && (
                            <div
                              className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-ed-text-faint/15"
                              style={{

@@ -33,6 +33,7 @@ import {
   rewriteActWithAI,
   updateSceneVoiceover,
 } from "@/app/actions/whiteboard-actions";
+import { updateScene } from "@/app/actions/scene-actions";
 import { getAvailableVoices } from "@/app/actions/audio-actions";
 import type { SceneBoardAct, SceneBoardData, SceneBoardScene } from "@/app/actions/scene-board-actions";
 
@@ -158,6 +159,20 @@ function scriptStageLabel(seconds: number): string {
   return seconds < 12 ? "Writing narration" : "Slicing into scenes";
 }
 
+const pollMediaStatus = async (mediaId: string, intervalMs = 3000, maxAttempts = 60) => {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+    try {
+      const res = await fetch(`/api/media/${mediaId}/status`);
+      const data = await res.json();
+      if (data.status === 'ready' || data.status === 'failed') return data;
+    } catch (err) {
+      console.error('[pollMediaStatus] Status check failed:', err);
+    }
+  }
+  return { status: 'failed', error: 'Generation timed out' };
+};
+
 export default function SceneBoard({ data }: SceneBoardProps) {
   const router = useRouter();
 
@@ -202,6 +217,11 @@ export default function SceneBoard({ data }: SceneBoardProps) {
 
   const [recordingAll, setRecordingAll] = useState(false);
   const [recordingAllProgress, setRecordingAllProgress] = useState<{ index: number; total: number } | null>(null);
+
+  const [generatingMediaAct, setGeneratingMediaAct] = useState<number | null>(null);
+  const [generatingAllMedia, setGeneratingAllMedia] = useState(false);
+  const [generatingAllMediaProgress, setGeneratingAllMediaProgress] = useState<{ index: number; total: number } | null>(null);
+  const [actMediaProvider, setActMediaProvider] = useState("pixabay-video");
 
   /** Act number showing "Copied" after its bulk-copy button was clicked; resets after 2s. */
   const [copiedAct, setCopiedAct] = useState<number | null>(null);
@@ -552,6 +572,139 @@ export default function SceneBoard({ data }: SceneBoardProps) {
     }
   };
 
+  const generateMediaForScene = async (sceneId: string, actNumber: number, prompt: string) => {
+    const isStock = actMediaProvider.startsWith('pixabay') || actMediaProvider.startsWith('pexels');
+    const stockType = actMediaProvider.endsWith('-image') ? 'image' : 'video';
+    const providerName = actMediaProvider.split('-')[0];
+
+    setActs(prev => prev.map(a => a.outline.actNumber === actNumber ? {
+      ...a,
+      scenes: a.scenes.map(s => s.id === sceneId ? { ...s, generationStatus: 'Rendering' } : s)
+    } : a));
+
+    try {
+      if (isStock) {
+        const query = prompt || 'cinematic';
+        const res = await fetch(
+          `/api/stock-media?query=${encodeURIComponent(query.substring(0, 80))}&provider=${providerName}&type=${stockType}`
+        );
+        const stockData = await res.json();
+        const top = stockData.success ? stockData.results?.[0] : null;
+        
+        if (top) {
+          const dl = await fetch('/api/media/from-url', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: top.mediaUrl, projectId: data.projectId, mediaType: top.type }),
+          });
+          const dlData = await dl.json();
+          if (dlData.success) {
+            setActs(prev => prev.map(a => a.outline.actNumber === actNumber ? {
+              ...a,
+              scenes: a.scenes.map(s => s.id === sceneId ? { ...s, mediaUrl: dlData.url, mediaType: top.type === 'image' ? 'image' : 'video', generationStatus: 'Completed' } : s)
+            } : a));
+            await updateScene(sceneId, {
+              custom_media_url: dlData.url,
+              custom_media_type: top.type === 'image' ? 'image' : 'video',
+              generation_status: 'Completed'
+            });
+            router.refresh();
+            return true;
+          }
+        }
+        throw new Error("Failed to save stock media");
+      } else {
+        const res = await fetch("/api/media/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            sceneId, 
+            projectId: data.projectId, 
+            prompt, 
+            model: actMediaProvider, 
+            duration: 5, 
+            aspectRatio: '16:9' 
+          }),
+        });
+        
+        let resData = await res.json();
+        if (!resData.success) throw new Error(resData.error || "Generation failed");
+
+        const mediaId = resData.mediaId;
+        if (resData.status === 'generating') {
+          resData = { ...resData, ...(await pollMediaStatus(mediaId)) };
+        }
+
+        if (resData.status === 'ready') {
+          setActs(prev => prev.map(a => a.outline.actNumber === actNumber ? {
+            ...a,
+            scenes: a.scenes.map(s => s.id === sceneId ? { ...s, mediaUrl: resData.url, mediaType: resData.mediaType === 'image' ? 'image' : 'video', generationStatus: 'Completed' } : s)
+          } : a));
+          await updateScene(sceneId, {
+            media_id: mediaId,
+            custom_media_url: resData.url,
+            custom_media_type: resData.mediaType === 'image' ? 'image' : 'video',
+            generation_status: resData.simulated ? 'Simulated' : 'Completed'
+          });
+          router.refresh();
+          return true;
+        } else {
+          throw new Error("Generation failed");
+        }
+      }
+    } catch (e) {
+      console.error("Failed to generate media for scene:", sceneId, e);
+      setActs(prev => prev.map(a => a.outline.actNumber === actNumber ? {
+        ...a,
+        scenes: a.scenes.map(s => s.id === sceneId ? { ...s, generationStatus: 'Failed' } : s)
+      } : a));
+      await updateScene(sceneId, { generation_status: 'Failed' });
+      return false;
+    }
+  };
+
+  const handleGenerateMediaForAct = async (actNumber: number) => {
+    setGeneratingMediaAct(actNumber);
+    try {
+      const act = acts.find(a => a.outline.actNumber === actNumber);
+      if (!act) return;
+
+      for (const scene of act.scenes) {
+        if (scene.mediaUrl) continue;
+        await generateMediaForScene(scene.id, actNumber, scene.finalVideoPrompt || scene.voiceOverText);
+      }
+    } finally {
+      setGeneratingMediaAct(null);
+      router.refresh();
+    }
+  };
+
+  const handleGenerateAllMedia = async () => {
+    setGeneratingAllMedia(true);
+    const targetActs = acts.filter((a) => a.progress.hasVisuals && a.scenes.some(s => !s.mediaUrl));
+    let done = 0;
+    setGeneratingAllMediaProgress({ index: 0, total: targetActs.length });
+
+    try {
+      for (const act of targetActs) {
+        setGeneratingMediaAct(act.outline.actNumber);
+        setGeneratingAllMediaProgress({ index: done + 1, total: targetActs.length });
+        
+        for (const scene of act.scenes) {
+          if (scene.mediaUrl) continue;
+          await generateMediaForScene(scene.id, act.outline.actNumber, scene.finalVideoPrompt || scene.voiceOverText);
+        }
+        done += 1;
+        router.refresh();
+      }
+    } finally {
+      setGeneratingMediaAct(null);
+      setGeneratingAllMedia(false);
+      setGeneratingAllMediaProgress(null);
+      router.refresh();
+    }
+  };
+
   const handleRecordAudio = (actNumber: number) =>
     void runWithRefresh(setRecordingAct, actNumber, () =>
       regenerateActNarration({ projectId: data.projectId, actNumber })
@@ -633,6 +786,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
   const sceneCount = allScenes.length;
   const unwrittenActs = acts.filter((a) => a.scenes.length === 0).length;
   const unrecordedActs = acts.filter((a) => a.scenes.length > 0 && !a.narration).length;
+  const unvisualizedActs = acts.filter((a) => a.progress.hasVisuals && a.scenes.some((s) => !s.mediaUrl)).length;
   const approvedActs = acts.filter((a) => a.progress.isApproved).length;
 
   // Drives the global status pill below. Stays true across a whole "Write all acts"
@@ -688,6 +842,11 @@ export default function SceneBoard({ data }: SceneBoardProps) {
           unrecordedActs={unrecordedActs}
           recordingAll={recordingAll}
           onRecordAll={() => void handleRecordAllAudio()}
+          unvisualizedActs={unvisualizedActs}
+          generatingAllMedia={generatingAllMedia}
+          onGenerateAllMedia={() => void handleGenerateAllMedia()}
+          actMediaProvider={actMediaProvider}
+          setActMediaProvider={setActMediaProvider}
         />
 
         {data.warnings.length > 0 && (
@@ -719,6 +878,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
                   scriptingAct={scriptingAct}
                   recordingAct={recordingAct}
                   visualsAct={visualsAct}
+                  generatingMediaAct={generatingMediaAct}
                   playingAct={playingAct}
                   collapsed={isCollapsed}
                   copied={copiedAct === act.outline.actNumber}
@@ -727,6 +887,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
                   onRecordAudio={() => handleRecordAudio(act.outline.actNumber)}
                   onApproveVisuals={() => handleApproveVisuals(act.outline.actNumber)}
                   onRegenerateVisuals={() => handleRegenerateVisuals(act.outline.actNumber)}
+                  onGenerateMedia={() => handleGenerateMediaForAct(act.outline.actNumber)}
                   onCopyAct={() => handleCopyAct(act)}
                   onOpenPaste={() => openPasteAct(act.outline.actNumber)}
                   onRewriteAct={() => handleRewriteAct(act)}
@@ -1000,6 +1161,11 @@ function BoardToolbar({
   unrecordedActs,
   recordingAll,
   onRecordAll,
+  unvisualizedActs,
+  generatingAllMedia,
+  onGenerateAllMedia,
+  actMediaProvider,
+  setActMediaProvider,
 }: {
   viewMode: ViewMode;
   onViewMode: (v: ViewMode) => void;
@@ -1017,6 +1183,11 @@ function BoardToolbar({
   unrecordedActs: number;
   recordingAll: boolean;
   onRecordAll: () => void;
+  unvisualizedActs: number;
+  generatingAllMedia: boolean;
+  onGenerateAllMedia: () => void;
+  actMediaProvider: string;
+  setActMediaProvider: (v: string) => void;
 }) {
   return (
     <div className="flex items-center gap-3 px-4 h-12 border-b border-ed-border bg-ed-surface shrink-0">
@@ -1090,6 +1261,38 @@ function BoardToolbar({
         </button>
       )}
 
+      {unvisualizedActs > 0 && (
+        <div className="flex items-center gap-2 border-l border-ed-border pl-3 ml-1">
+          <select
+            value={actMediaProvider}
+            onChange={(e) => setActMediaProvider(e.target.value)}
+            className="bg-ed-surface border border-ed-border rounded text-xs px-2 py-1.5 font-medium text-ed-text outline-none"
+          >
+            <option value="pixabay-video">Pixabay (Video)</option>
+            <option value="pixabay-image">Pixabay (Image)</option>
+            <option value="pexels-video">Pexels (Video)</option>
+            <option value="pexels-image">Pexels (Image)</option>
+            <option value="gemini-veo">Google Veo (Fast / Simulated)</option>
+            <option value="runway-gen3">Runway Gen-3 (Fast / Simulated)</option>
+            <option value="gemini-image">Gemini Imagen 3 (Images)</option>
+            <option value="fal-luma">Fal Luma (AI Video)</option>
+            <option value="fal-kling">Fal Kling (AI Video)</option>
+            <option value="fal-minimax">Fal Minimax (AI Video)</option>
+          </select>
+          <button
+            onClick={onGenerateAllMedia}
+            disabled={generatingAllMedia || writingAll || recordingAll}
+            className="flex items-center gap-1.5 text-[12px] font-bold text-ed-base bg-ed-info hover:bg-ed-info-hover disabled:opacity-60 px-3 py-1.5 rounded-md transition-colors"
+            title="Generates videos/images for all approved acts"
+          >
+            {generatingAllMedia ? <Loader2 size={13} className="animate-spin" /> : <Film size={13} />}
+            {generatingAllMedia
+              ? "Generating media…"
+              : `Generate media (${unvisualizedActs})`}
+          </button>
+        </div>
+      )}
+
       <div className="relative">
         <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ed-text-faint" />
         <input
@@ -1114,6 +1317,7 @@ function ActHeader({
   scriptingAct,
   recordingAct,
   visualsAct,
+  generatingMediaAct,
   playingAct,
   collapsed,
   copied,
@@ -1122,6 +1326,7 @@ function ActHeader({
   onRecordAudio,
   onApproveVisuals,
   onRegenerateVisuals,
+  onGenerateMedia,
   onCopyAct,
   onOpenPaste,
   onRewriteAct,
@@ -1133,6 +1338,7 @@ function ActHeader({
   scriptingAct: number | null;
   recordingAct: number | null;
   visualsAct: number | null;
+  generatingMediaAct: number | null;
   playingAct: number | null;
   collapsed: boolean;
   copied: boolean;
@@ -1141,6 +1347,7 @@ function ActHeader({
   onRecordAudio: () => void;
   onApproveVisuals: () => void;
   onRegenerateVisuals: () => void;
+  onGenerateMedia: () => void;
   onCopyAct: () => void;
   onOpenPaste: () => void;
   onRewriteAct: () => void;
@@ -1154,13 +1361,15 @@ function ActHeader({
   const isScripting = scriptingAct === actNumber;
   const isRecording = recordingAct === actNumber;
   const isVisualing = visualsAct === actNumber;
-  const busy = isScripting || isRecording || isVisualing;
+  const isGeneratingMedia = generatingMediaAct === actNumber;
+  const busy = isScripting || isRecording || isVisualing || isGeneratingMedia;
 
   // Per-act elapsed timers — each resets independently the moment this act's own flag
   // flips false, whether that's a solo action or its turn ending inside a batch write.
   const scriptElapsed = useElapsedSeconds(isScripting);
   const audioElapsed = useElapsedSeconds(isRecording);
   const visualsElapsed = useElapsedSeconds(isVisualing);
+  const mediaElapsed = useElapsedSeconds(isGeneratingMedia);
 
   const togglePlay = () => {
     const el = audioRef.current;
@@ -1354,14 +1563,25 @@ function ActHeader({
           {/* Visuals stay locked until narration exists, so real timing drives them. */}
           {act.narration &&
             (act.progress.isApproved ? (
-              <button
-                onClick={onRegenerateVisuals}
-                disabled={busy}
-                className="flex items-center gap-1.5 text-[12px] font-medium text-ed-text-dim hover:text-ed-text px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-40"
-              >
-                {isVisualing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
-                {isVisualing ? `Rebuilding visuals… ${visualsElapsed}s` : "Regenerate visuals"}
-              </button>
+              <>
+                <button
+                  onClick={onRegenerateVisuals}
+                  disabled={busy}
+                  className="flex items-center gap-1.5 text-[12px] font-medium text-ed-text-dim hover:text-ed-text px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-40"
+                >
+                  {isVisualing ? <Loader2 size={13} className="animate-spin" /> : <RefreshCw size={13} />}
+                  {isVisualing ? `Rebuilding visuals… ${visualsElapsed}s` : "Regenerate visuals"}
+                </button>
+                <button
+                  onClick={onGenerateMedia}
+                  disabled={busy || act.scenes.every(s => s.mediaUrl)}
+                  className="flex items-center gap-1.5 text-[12px] font-bold text-ed-info bg-ed-info-soft hover:bg-ed-info/20 px-2.5 py-1.5 rounded-md transition-colors disabled:opacity-40"
+                  title="Generate media files for all scenes in this act"
+                >
+                  {isGeneratingMedia ? <Loader2 size={13} className="animate-spin" /> : <Film size={13} />}
+                  {isGeneratingMedia ? `Fetching media… ${mediaElapsed}s` : "Generate media"}
+                </button>
+              </>
             ) : (
               <button
                 onClick={onApproveVisuals}
@@ -1457,6 +1677,43 @@ function EmptyActBody({
   );
 }
 
+
+function LazyMedia({ 
+  src, 
+  type, 
+  alt 
+}: { 
+  src: string; 
+  type: "video" | "image"; 
+  alt?: string; 
+}) {
+  const [isVisible, setIsVisible] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        setIsVisible(entry.isIntersecting);
+      },
+      { rootMargin: "600px" }
+    );
+    if (ref.current) observer.observe(ref.current);
+    return () => observer.disconnect();
+  }, []);
+
+  return (
+    <div ref={ref} className="w-full h-full bg-ed-media">
+      {isVisible && (
+        type === "image" ? (
+          <img src={src} alt={alt || "Media"} className="w-full h-full object-cover transition-opacity duration-300" />
+        ) : (
+          <video src={src} preload="metadata" muted className="w-full h-full object-cover transition-opacity duration-300" />
+        )
+      )}
+    </div>
+  );
+}
+
 /* ══════════════════════════════════════════════════════════════════════════ */
 /*  Scene card                                                                 */
 /* ══════════════════════════════════════════════════════════════════════════ */
@@ -1493,21 +1750,21 @@ function SceneCard({
     >
       <div className="relative aspect-video bg-ed-media">
         {scene.mediaUrl ? (
-          scene.mediaType === "image" ? (
-            <img
-              src={scene.mediaUrl}
-              alt={`Scene ${scene.sequenceNumber}`}
-              className="w-full h-full object-cover"
-            />
-          ) : (
-            <video src={scene.mediaUrl} preload="metadata" muted className="w-full h-full object-cover" />
-          )
+          <LazyMedia 
+            src={scene.mediaUrl} 
+            type={scene.mediaType === "image" ? "image" : "video"} 
+            alt={`Scene ${scene.sequenceNumber}`} 
+          />
         ) : (
           /* No media yet — say what the scene IS rather than showing a grey box. */
           <div className="w-full h-full flex flex-col items-center justify-center gap-1">
-            <Film size={16} className="text-ed-text-faint" />
+            {scene.generationStatus === 'Rendering' ? (
+              <Loader2 size={16} className="text-ed-accent animate-spin" />
+            ) : (
+              <Film size={16} className="text-ed-text-faint" />
+            )}
             <span className="text-[10px] font-bold uppercase tracking-wider text-ed-text-dim">
-              {scene.sceneType || "scene"}
+              {scene.generationStatus === 'Rendering' ? 'Generating...' : (scene.sceneType || "scene")}
             </span>
           </div>
         )}

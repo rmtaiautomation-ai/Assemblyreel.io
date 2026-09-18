@@ -1,8 +1,9 @@
 "use server";
 
-import fs from "fs";
-import path from "path";
 import type { DeliverySpec } from "./format-profile";
+import { uploadBufferToSupabase } from "../supabase/storage";
+import fs from "fs/promises";
+import path from "path";
 
 // Voice Studio backend runs on :8880 (FastAPI). The Vite dev UI is on :5173.
 const VOICE_STUDIO_URL = process.env.VOICE_STUDIO_URL || "http://localhost:8880";
@@ -112,19 +113,22 @@ export async function generateLocalSceneSpeech(
       throw new Error(`Voice Studio error ${response.status}: ${err}`);
     }
 
-    // Returns raw audio/wav binary
     const audioBuffer = await response.arrayBuffer();
+    const buffer = Buffer.from(audioBuffer);
+    
+    const fileName = `audio/${sceneId}.wav`;
+    
+    // Background upload to Supabase
+    uploadBufferToSupabase(buffer, "media", fileName, "audio/wav").catch(err => {
+      console.error("[Local TTS] Supabase upload failed:", err);
+    });
 
-    const publicAudioDir = path.join(process.cwd(), "public", "audio");
-    if (!fs.existsSync(publicAudioDir)) {
-      fs.mkdirSync(publicAudioDir, { recursive: true });
-    }
+    // Save locally for UI playback
+    const localPath = path.join(process.cwd(), "public", "audio", `${sceneId}.wav`);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, buffer);
 
-    const fileName = `${sceneId}.wav`;
-    const filePath = path.join(publicAudioDir, fileName);
-    fs.writeFileSync(filePath, Buffer.from(audioBuffer));
-
-    return { success: true, audioUrl: `/audio/${fileName}`, voiceWarning: resolved.warning };
+    return { success: true, audioUrl: `/audio/${sceneId}.wav`, voiceWarning: resolved.warning };
   } catch (error) {
     console.error("[Local TTS] Error:", error);
     return { success: false, error: (error as Error).message };

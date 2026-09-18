@@ -30,6 +30,8 @@ async function cacheRemoteMedia(url: string | undefined, origin: string): Promis
   if (!url || !/^https?:\/\//i.test(url)) return url;
   // Already served by us — it's on local disk behind `public/` already.
   if (url.startsWith(origin)) return url;
+  // Supabase Storage URLs are already on a fast CDN — no need to re-download.
+  if (url.includes('.supabase.co/')) return url;
 
   const hash = crypto.createHash("sha1").update(url).digest("hex").slice(0, 16);
   let ext = ".mp4";

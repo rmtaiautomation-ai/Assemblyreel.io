@@ -1,14 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
+import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
-import crypto from "crypto";
 import { createMediaRecord } from "@/app/actions/media-actions";
+import { uploadBufferToSupabase } from "@/lib/supabase/storage";
 
 /**
- * Downloads a stock-media pick (Pexels/Pixabay CDN URL) onto local disk and
- * records it as a `media` row, mirroring /api/media/upload's storage shape.
- * Called only when the user explicitly approves a pick — not on every
- * thumbnail click — so browsing results doesn't burn storage on rejects.
+ * Downloads a stock-media pick (Pexels/Pixabay CDN URL), uploads it to
+ * Supabase Storage, and records it as a `media` row. Called only when the
+ * user explicitly approves a pick — not on every thumbnail click — so
+ * browsing results doesn't burn storage on rejects.
  */
 export async function POST(req: NextRequest) {
   try {
@@ -29,21 +30,32 @@ export async function POST(req: NextRequest) {
 
     let ext = mediaType === "video" ? ".mp4" : ".jpg";
     try {
-      const urlExt = path.extname(new URL(url).pathname);
-      if (urlExt && urlExt.length <= 5) ext = urlExt;
+      const urlObject = new URL(url);
+      const parts = urlObject.pathname.split(".");
+      if (parts.length > 1) {
+        const urlExt = "." + parts.pop();
+        if (urlExt.length <= 5) ext = urlExt;
+      }
     } catch {
       // Unparseable URL — keep the type-based default extension.
     }
 
     const mediaId = crypto.randomUUID();
-    const mediaDir = path.join(process.cwd(), "public", "media", projectId);
-    await fs.mkdir(mediaDir, { recursive: true });
-
     const fileName = `${mediaId}${ext}`;
-    await fs.writeFile(path.join(mediaDir, fileName), buffer);
+    const storagePath = `downloads/${projectId}/${fileName}`;
+    const contentType = mediaType === "video" ? "video/mp4" : "image/jpeg";
 
-    const localUrl = `/media/${projectId}/${fileName}`;
-    const storagePath = `media/${projectId}/${fileName}`;
+    // Background upload to Supabase
+    uploadBufferToSupabase(buffer, "media", storagePath, contentType).catch(err => {
+      console.error("[/api/media/from-url] Supabase upload failed:", err);
+    });
+
+    // Save locally for UI playback
+    const localPath = path.join(process.cwd(), "public", "media", "downloads", projectId, fileName);
+    await fs.mkdir(path.dirname(localPath), { recursive: true });
+    await fs.writeFile(localPath, buffer);
+
+    const localUrl = `/media/downloads/${projectId}/${fileName}`;
 
     const result = await createMediaRecord(projectId, {
       media_type: mediaType === "video" ? "video" : "image",
