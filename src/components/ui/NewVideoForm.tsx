@@ -40,6 +40,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
   const [visualAesthetic, setVisualAesthetic] = useState(workspace.visual_aesthetic || "");
   const [isGeneratingHelper, setIsGeneratingHelper] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isWiping, setIsWiping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   
   const [targetDuration, setTargetDuration] = useState("Short (< 60s)");
@@ -110,16 +111,11 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
     });
 
     if (result.success && result.projectId) {
-      /* Navigate to the Scene Board rather than swapping the board in as local state.
-         Rendering it here meant a refresh, a stray click or a closed tab lost the whole
-         screen mid-generation, and it made the "new project" board and the "reopened"
-         board two different things behaving differently. There is now exactly one Scene
-         Board, and it is a route.
-
-         `isSubmitting` deliberately stays true — the navigation is the end of this
-         form's life, and clearing it would flash the button back to idle underneath a
-         page that is already leaving. */
-      router.push(`/workspaces/${workspace.id}/videos/${result.projectId}/scene-board`);
+      setIsWiping(true);
+      // Wait a moment for the user to read the loading state before the hard navigation
+      setTimeout(() => {
+        router.push(`/workspaces/${workspace.id}/videos/${result.projectId}/scene-board`);
+      }, 1500);
       return;
     }
 
@@ -127,8 +123,18 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
     setError(result.error || "Failed to create video project.");
   };
 
+  if (isWiping) {
+    return (
+      <div className="flex flex-col items-center justify-center h-[60vh] animate-in fade-in duration-500">
+        <div className="w-12 h-12 border-4 border-ed-border border-t-ed-accent rounded-full animate-spin mb-6"></div>
+        <h2 className="text-xl font-bold text-ed-text tracking-widest uppercase animate-pulse">Initializing...</h2>
+        <p className="text-sm text-ed-text-dim mt-2">Creating acts and structuring timeline</p>
+      </div>
+    );
+  }
+
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 relative overflow-hidden">
         <div className="bg-ed-surface border border-ed-border rounded-2xl shadow-sm p-6 sm:p-8 relative overflow-hidden">
         <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-ed-accent to-ed-accent"></div>
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6 pb-4 border-b border-ed-border">

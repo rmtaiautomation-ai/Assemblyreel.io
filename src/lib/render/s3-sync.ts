@@ -136,7 +136,7 @@ export async function syncMediaUrlToS3(
       throw new Error("NEXT_PUBLIC_SUPABASE_URL is not set. Cannot translate local URLs to cloud URLs for export.");
     }
     
-    const publicPrefix = `${supabaseUrl}/storage/v1/object/public/media/`;
+    const publicPrefix = `${supabaseUrl}/storage/v1/object/public/project-media/`;
     
     if (relativePath.startsWith("/media/")) {
       // /media/uploads/... -> uploads/...

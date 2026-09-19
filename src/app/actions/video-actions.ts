@@ -235,6 +235,19 @@ export async function updateProjectCaptionsEnabled(projectId: string, enabled: b
   return { success: true };
 }
 
+export async function updateProjectDefaultGenerationMode(projectId: string, mode: string, model: string | null = null) {
+  const supabase = await createClient();
+  const updatePayload: Record<string, any> = { default_generation_mode: mode };
+  if (model !== null) {
+    updatePayload.default_ai_model = model;
+  }
+  const { error } = await supabase.from('video_projects')
+    .update(updatePayload)
+    .eq('id', projectId);
+  if (error) return { success: false, error: error.message };
+  return { success: true };
+}
+
 /**
  * Renames a project's topic — the line every Act's Script Writer call, the Thumbnail
  * Composer, and the Casting Director all read live from this same column (see

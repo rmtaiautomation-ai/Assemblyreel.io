@@ -26,7 +26,7 @@ export interface LambdaRenderHandle {
 // increase is requested and approved (console: Service Quotas → AWS Lambda →
 // "Concurrent executions"), bump REMOTION_LAMBDA_CONCURRENCY instead of
 // touching this file — renders will speed up accordingly.
-const DEFAULT_CONCURRENCY = 6;
+const DEFAULT_CONCURRENCY = 10;
 function getConcurrency(): number {
   const raw = process.env.REMOTION_LAMBDA_CONCURRENCY;
   const parsed = raw ? parseInt(raw, 10) : NaN;
@@ -43,7 +43,8 @@ export async function startLambdaRender(inputProps: Record<string, unknown>): Pr
     composition: COMPOSITION_ID,
     inputProps,
     codec: "h264",
-    concurrency: getConcurrency(),
+    framesPerLambda: 500, // Increased to 500 to keep chunk count < 200 for 34+ minute videos
+    timeoutInMilliseconds: 900000, // Max out the 15-minute Lambda limit safely
   });
 
   return { renderId, bucketName };
@@ -68,6 +69,7 @@ export async function pollLambdaRenderProgress(handle: LambdaRenderHandle): Prom
   });
 
   if (progress.fatalErrorEncountered) {
+    console.error("[Lambda Render Fatal Error Details]:", JSON.stringify(progress.errors, null, 2));
     const message = progress.errors[0]?.message || "Lambda render failed with a fatal error.";
     return { progress: progress.overallProgress, stage: "error", done: true, outputUrl: null, error: message };
   }

@@ -6,14 +6,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import VideoTabs from "@/components/ui/VideoTabs";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch, Cloud } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices, getActNarrations, type ActNarration } from "@/app/actions/audio-actions";
 import { regenerateActNarration, approveAndGenerateVisuals, approveActVisuals, regenerateActVisuals, type ActOutline } from "@/app/actions/whiteboard-actions";
 import { getProjectFormatProfile } from "@/app/actions/format-actions";
 import type { FormatProfile } from "@/lib/ai/format-profile";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes, clearSceneVisuals } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
-import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled } from "@/app/actions/video-actions";
+import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled, updateProjectDefaultGenerationMode } from "@/app/actions/video-actions";
 import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
 import { createOverlayClip, updateOverlayClip, deleteOverlayClip } from "@/app/actions/overlay-clip-actions";
 import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
@@ -924,6 +924,8 @@ export default function TimelineEditor({
   }, []);
 
   const [activeTab, setActiveTab] = useState<TabState>('scene');
+  const [isSyncingCloud, setIsSyncingCloud] = useState(false);
+  const [syncStatus, setSyncStatus] = useState<{ checked: number; uploaded: number; failed: number; message: string } | null>(null);
   const [isRendering, setIsRendering] = useState(false);
   const [renderStatusMessage, setRenderStatusMessage] = useState<string | null>(null);
   // 0-1 fraction from Remotion's real onProgress, via polling GET /api/render-remotion.
@@ -2256,6 +2258,13 @@ export default function TimelineEditor({
     const mediaType = sourceScene.custom_media_type;
     const targetIds = new Set(scenesInSameActAs(sourceScene).map(s => s.id));
 
+    // Lock in this mode as the default for any future scenes created in the project.
+    setGlobalGenerationMode(mode);
+    setSelectedAiModel(model);
+    updateProjectDefaultGenerationMode(initialProject.id, mode, model).catch(e => {
+      console.error('[Apply Visual Setup] Failed to save project default generation mode', e);
+    });
+
     setScenes(prev => prev.map(s => {
       if (!targetIds.has(s.id)) return s;
       const fields: Record<string, any> = { generation_mode: mode, ai_model: model };
@@ -3437,6 +3446,35 @@ export default function TimelineEditor({
     }, 500);
   };
 
+  const handleSyncToCloud = async () => {
+    setIsSyncingCloud(true);
+    setSyncStatus({ checked: 0, uploaded: 0, failed: 0, message: "Checking and uploading missing assets..." });
+    try {
+      const payload = {
+        projectId: initialProject.id,
+        ...remotionInputProps,
+      };
+
+      const res = await fetch("/api/sync-timeline-assets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      setSyncStatus({
+        checked: data.checked ?? 0,
+        uploaded: data.uploaded ?? 0,
+        failed: data.failed ?? 0,
+        message: data.message || (data.success ? "Sync complete." : "Sync failed.")
+      });
+    } catch (err: any) {
+      setSyncStatus({ checked: 0, uploaded: 0, failed: 1, message: err.message || "Failed to sync to cloud." });
+    } finally {
+      setIsSyncingCloud(false);
+    }
+  };
+
   const handleRenderVideo = async () => {
     setIsRendering(true);
     setRenderStatusMessage("Submitting render job to Remotion engine...");
@@ -3460,13 +3498,11 @@ export default function TimelineEditor({
       }
     }
 
-    startRenderProgressPolling(initialProject.id, false);
-
-    // Set once the POST hands off to a Lambda render still running server-side —
-    // the finally block below must NOT stop polling or clear isRendering in that
-    // case, since completion hasn't happened yet and only the poll will ever learn
-    // about it (see startRenderProgressPolling's Lambda branch below).
-    let handedOffToLambda = false;
+    // Both local and Lambda renders now return immediately from POST — the
+    // encode runs server-side and we learn the outcome only through polling.
+    // Arm the poll with completeOnDone=true from the start so it can drive
+    // the completion/error UI without waiting for a POST response.
+    startRenderProgressPolling(initialProject.id, true);
 
     try {
       // Inside the try: a throw here (offline, action error) previously escaped the
@@ -3494,38 +3530,26 @@ export default function TimelineEditor({
       }
 
       if (data.success) {
-        if (data.mode === "local-remotion") {
-          await markStatus('exported');
-          setRenderStatusMessage("Render completed!");
-          // `data.outputPath` is the SERVER's absolute filesystem path — meaningless
-          // to the browser, and rejected by /api/render/download, whose security check
-          // only allows files under the OS temp dir. The render route now writes into
-          // `public/media/final_exports/`, so `publicUrl` is already directly servable
-          // and needs no download proxy at all.
-          setRenderOutputPath(data.publicUrl);
-        } else if (data.mode === "lambda") {
-          // The POST only submitted the job to AWS — it's still rendering. Re-arm the
-          // poll to treat GET's 'done'/'error' as authoritative now that we know this
-          // IS the current render (see the completeOnDone comment above), and leave
-          // isRendering/the interval alone so the UI keeps tracking it in the background.
-          handedOffToLambda = true;
+        if (data.mode === "lambda") {
           setRenderStatusMessage(`Render submitted to AWS Lambda (ID: ${data.renderId}). Rendering in the cloud…`);
-          startRenderProgressPolling(initialProject.id, true);
         } else {
-          setRenderStatusMessage(`Render Job Queued! (ID: ${data.jobId}) Ready for serverless cloud execution.`);
+          // local or any other fire-and-forget mode: encode is running server-side,
+          // the poll will handle completion. Just show a status message.
+          setRenderStatusMessage("Encoding started. Rendering in background…");
         }
+        // Leave isRendering=true and the poll running — they clear on 'done'/'error'.
       } else {
+        // POST itself was rejected (blob URLs, no scenes, etc.) — terminal immediately.
+        stopRenderProgressPolling();
         await markStatus('failed');
         setRenderStatusMessage("Render Error: " + (data.error || "Unknown error"));
-      }
-    } catch (err: any) {
-      await markStatus('failed');
-      setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
-    } finally {
-      if (!handedOffToLambda) {
-        stopRenderProgressPolling();
         setIsRendering(false);
       }
+    } catch (err: any) {
+      stopRenderProgressPolling();
+      await markStatus('failed');
+      setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
+      setIsRendering(false);
     }
   };
 
@@ -7621,6 +7645,41 @@ export default function TimelineEditor({
                      </select>
                      <p className="text-[10px] text-ed-text-faint mt-1">Used by &ldquo;Generate All&rdquo; and as the fallback for scenes with no model set.</p>
                    </div>
+                   
+                   <div className="bg-ed-surface/50 border border-ed-border rounded-xl p-4">
+                     <div className="flex items-center gap-2 mb-2">
+                       <Cloud size={16} className="text-ed-text-dim" />
+                       <h3 className="text-sm font-bold text-ed-text">Cloud Asset Sync</h3>
+                     </div>
+                     <p className="text-[11px] text-ed-text-dim mb-4 leading-relaxed">
+                       Ensure all local generated visuals are uploaded to Supabase before exporting. Missing assets will cause cloud renders to fail.
+                     </p>
+                     
+                     <button
+                       onClick={handleSyncToCloud}
+                       disabled={isSyncingCloud || isRendering}
+                       className="w-full py-2 bg-ed-surface hover:bg-ed-surface/80 border border-ed-border hover:border-ed-text-dim text-ed-text rounded-lg text-xs font-bold shadow-sm transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                     >
+                       {isSyncingCloud ? (
+                         <><Loader2 size={14} className="animate-spin" /> Syncing...</>
+                       ) : (
+                         <><RefreshCw size={14} /> Sync Missing Assets to Cloud</>
+                       )}
+                     </button>
+
+                     {syncStatus && (
+                       <div className={`mt-3 p-2.5 rounded-lg text-[10px] font-medium flex items-start gap-2 ${syncStatus.failed > 0 ? 'bg-ed-danger/10 text-ed-danger border border-ed-danger/20' : 'bg-ed-ok/10 text-ed-ok border border-ed-ok/20'}`}>
+                         {syncStatus.failed > 0 ? <AlertTriangle size={14} className="shrink-0 mt-0.5" /> : <CheckCircle2 size={14} className="shrink-0 mt-0.5" />}
+                         <div>
+                           <div className="font-bold">{syncStatus.message}</div>
+                           {syncStatus.checked > 0 && (
+                             <div className="opacity-80 mt-0.5">Checked {syncStatus.checked} local files. Uploaded {syncStatus.uploaded}.</div>
+                           )}
+                         </div>
+                       </div>
+                     )}
+                   </div>
+
                    <div>
                      <label className="block text-xs font-bold text-ed-text-dim mb-1.5">Resolution</label>
                      <select 
