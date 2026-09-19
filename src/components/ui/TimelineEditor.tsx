@@ -6,14 +6,14 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import VideoTabs from "@/components/ui/VideoTabs";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
-import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch, Cloud } from "lucide-react";
+import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch, Cloud, ExternalLink, Copy } from "lucide-react";
 import { generateSceneAudio, generateFullNarration, getAvailableVoices, getActNarrations, type ActNarration } from "@/app/actions/audio-actions";
 import { regenerateActNarration, approveAndGenerateVisuals, approveActVisuals, regenerateActVisuals, type ActOutline } from "@/app/actions/whiteboard-actions";
 import { getProjectFormatProfile } from "@/app/actions/format-actions";
 import type { FormatProfile } from "@/lib/ai/format-profile";
 import { updateScene, createSceneWithMedia, reorderScenes, deleteScenes, clearSceneVisuals } from "@/app/actions/scene-actions";
 import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/app/actions/timeline-actions";
-import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled, updateProjectDefaultGenerationMode } from "@/app/actions/video-actions";
+import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled, updateProjectDefaultGenerationMode, updateProjectExportUrl } from "@/app/actions/video-actions";
 import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
 import { createOverlayClip, updateOverlayClip, deleteOverlayClip } from "@/app/actions/overlay-clip-actions";
 import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
@@ -947,7 +947,10 @@ export default function TimelineEditor({
   const [projectStatus, setProjectStatus] = useState<ProjectStatus>(() =>
     normalizeProjectStatus(initialProject.status)
   );
-  const [renderOutputPath, setRenderOutputPath] = useState<string | null>(null);
+  const [renderOutputPath, setRenderOutputPath] = useState<string | null>(
+    () => initialProject?.platform_metadata?.export_url || null
+  );
+  const [copiedLink, setCopiedLink] = useState(false);
   const [selectedAiModel, setSelectedAiModel] = useState<'fal-luma' | 'fal-kling' | 'fal-minimax' | 'gemini-veo' | 'runway-gen3' | 'mock-banana' | 'gemini-image'>('fal-luma');
   const [isGeneratingVisualId, setIsGeneratingVisualId] = useState<string | null>(null);
   const [isGeneratingAllVisuals, setIsGeneratingAllVisuals] = useState(false);
@@ -3432,8 +3435,11 @@ export default function TimelineEditor({
           stopRenderProgressPolling();
           setIsRendering(false);
           setRenderStatusMessage("Render completed!");
-          setRenderOutputPath(data.outputUrl ?? `/media/final_exports/${projectId}.mp4`);
+          const finalUrl = data.outputUrl ?? `/media/final_exports/${projectId}.mp4`;
+          setRenderOutputPath(finalUrl);
+          setActiveTab('export');
           await markStatus('exported');
+          await updateProjectExportUrl(initialProject.id, finalUrl);
         } else if (completeOnDone && data.stage === 'error') {
           stopRenderProgressPolling();
           setIsRendering(false);
@@ -3553,6 +3559,35 @@ export default function TimelineEditor({
     }
   };
 
+  const handleCopyLink = async () => {
+    if (!renderOutputPath) return;
+    try {
+      await navigator.clipboard.writeText(renderOutputPath);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    } catch {
+      const textArea = document.createElement("textarea");
+      textArea.value = renderOutputPath;
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      setCopiedLink(true);
+      setTimeout(() => setCopiedLink(false), 2500);
+    }
+  };
+
+  const handleReRenderClick = () => {
+    const confirm = window.confirm(
+      "This project already has an exported video in cloud storage.\n\n" +
+      "Re-rendering will submit a new AWS Lambda job and replace the current export.\n\n" +
+      "Do you want to continue and re-render?"
+    );
+    if (confirm) {
+      handleRenderVideo();
+    }
+  };
+
   // Resumes progress if this project was already mid-render when the page loaded —
   // e.g. the user reloaded, or (before this feature existed) navigated away and back.
   // The render itself is not tied to the original request's connection and keeps
@@ -3563,13 +3598,22 @@ export default function TimelineEditor({
   // server is an in-memory-only map. If the dev server restarted mid-render, there is
   // no entry to find, and this will show 0% indefinitely rather than resolving.
   useEffect(() => {
-    if (normalizeProjectStatus(initialProject.status) !== 'rendering') return;
-    setIsRendering(true);
-    setRenderStatusMessage("Resuming render progress…");
-    startRenderProgressPolling(initialProject.id, true);
-    // Intentionally no cleanup-driven stopRenderProgressPolling here: unmounting this
-    // effect (e.g. React re-rendering the tree) should not silently drop progress
-    // visibility for a render that is still genuinely running.
+    if (normalizeProjectStatus(initialProject.status) === 'rendering') {
+      setIsRendering(true);
+      setRenderStatusMessage("Resuming render progress…");
+      startRenderProgressPolling(initialProject.id, true);
+    } else if (!renderOutputPath) {
+      // Check if server still has a completed render cached in memory from this session
+      fetch(`/api/render-remotion?projectId=${initialProject.id}`)
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.success && data.stage === 'done' && data.outputUrl) {
+            setRenderOutputPath(data.outputUrl);
+            updateProjectExportUrl(initialProject.id, data.outputUrl);
+          }
+        })
+        .catch(() => {});
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -4796,13 +4840,41 @@ export default function TimelineEditor({
               tab group they do rather than its own one-off pair of buttons. */}
           <VideoTabs workspaceId={workspaceId} videoId={initialProject.id} active="timeline" />
           <button
-            onClick={handleRenderVideo}
-            disabled={isRendering || scenes.length === 0}
-            className="bg-ed-accent hover:bg-ed-accent-hover disabled:bg-ed-border-strong disabled:cursor-not-allowed text-ed-base px-4 py-1.5 rounded-md text-xs font-bold transition-colors flex items-center gap-1.5 shadow-sm"
-            title={scenes.length === 0 ? 'Add at least one scene to export' : 'Render this project to an .mp4'}
+            onClick={() => setActiveTab('export')}
+            disabled={isRendering}
+            className={`px-3.5 py-1.5 rounded-md text-xs font-bold transition-all flex items-center gap-1.5 shadow-sm ${
+              isRendering
+                ? 'bg-ed-border-strong text-ed-text-dim cursor-not-allowed'
+                : renderOutputPath
+                ? 'bg-ed-ok hover:brightness-110 text-ed-base ring-1 ring-ed-ok/50'
+                : 'bg-ed-accent hover:bg-ed-accent-hover text-ed-base'
+            }`}
+            title={
+              isRendering
+                ? 'Rendering video in progress…'
+                : renderOutputPath
+                ? 'Video exported and ready! Click to download or re-export'
+                : scenes.length === 0
+                ? 'Add at least one scene to export'
+                : 'Open Export Settings'
+            }
           >
-            {isRendering ? <Loader2 size={13} className="animate-spin" /> : <Download size={13} />}
-            {isRendering ? 'Rendering…' : 'Export'}
+            {isRendering ? (
+              <>
+                <Loader2 size={13} className="animate-spin" />
+                <span>Rendering…</span>
+              </>
+            ) : renderOutputPath ? (
+              <>
+                <CheckCircle2 size={13} className="text-ed-base" />
+                <span>Exported</span>
+              </>
+            ) : (
+              <>
+                <Download size={13} />
+                <span>Export</span>
+              </>
+            )}
           </button>
         </div>
       </header>
@@ -7705,43 +7777,102 @@ export default function TimelineEditor({
                      </select>
                    </div>
                    
-                   <div className="pt-6 mt-4 border-t border-ed-border">
-                     {renderOutputPath ? (
-                        <div className="flex flex-col gap-3">
+                   <div className="pt-5 mt-4 border-t border-ed-border">
+                      {renderOutputPath ? (
+                        <div className="flex flex-col gap-3.5">
+                          {/* Export Success Banner */}
+                          <div className="bg-ed-ok/10 border border-ed-ok/30 rounded-xl p-3.5">
+                            <div className="flex items-center gap-2 mb-1.5">
+                              <CheckCircle2 size={16} className="text-ed-ok shrink-0" />
+                              <h4 className="text-xs font-bold text-ed-ok">Video Rendered &amp; Ready</h4>
+                            </div>
+                            <p className="text-[11px] text-ed-text-dim leading-relaxed mb-3">
+                              Your video is safely stored in cloud storage and ready to download.
+                            </p>
+
+                            {/* Cloud link & Copy Action */}
+                            <div className="flex items-center gap-1.5 bg-ed-surface border border-ed-border rounded-lg p-1.5">
+                              <span className="text-[10px] font-mono text-ed-text-dim truncate flex-1 px-1 select-all" title={renderOutputPath}>
+                                {renderOutputPath}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={handleCopyLink}
+                                className="px-2 py-1 bg-ed-raised hover:bg-ed-raised/80 text-ed-text rounded text-[10px] font-semibold flex items-center gap-1 shrink-0 transition-colors"
+                                title="Copy video URL to clipboard"
+                              >
+                                {copiedLink ? (
+                                  <>
+                                    <Check size={11} className="text-ed-ok" />
+                                    <span className="text-ed-ok font-bold">Copied!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <Copy size={11} />
+                                    <span>Copy</span>
+                                  </>
+                                )}
+                              </button>
+                            </div>
+                          </div>
+
+                          {/* Primary Download Action — Always opens in a new tab so TimelineEditor is never lost */}
                           <a
                             href={renderOutputPath}
+                            target="_blank"
+                            rel="noopener noreferrer"
                             download={toExportFileName(initialProject.topic)}
-                            className="w-full py-3 bg-ed-ok hover:bg-ed-ok text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                            className="w-full py-3 bg-ed-ok hover:brightness-110 text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                            title="Open video in a new tab to download"
                           >
                             <Download size={18} /> Download Video
+                            <ExternalLink size={14} className="opacity-70" />
                           </a>
+
+                          {/* Secondary Re-render Action with Safe Guard */}
+                          <div className="pt-2 border-t border-ed-border/60">
+                            <button
+                              type="button"
+                              onClick={handleReRenderClick}
+                              disabled={isRendering}
+                              className="w-full py-2.5 bg-ed-surface hover:bg-ed-surface/80 border border-ed-border hover:border-ed-text-dim text-ed-text rounded-xl text-xs font-semibold transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                              title="Re-run AWS Lambda render to overwrite this video"
+                            >
+                              <RefreshCw size={14} /> Re-render / Export New Version
+                            </button>
+                            <p className="text-center text-[10px] text-ed-text-faint font-medium mt-1.5">
+                              Re-rendering will invoke AWS Lambda and update your cloud video.
+                            </p>
+                          </div>
                         </div>
-                     ) : (
-                       <button 
-                         onClick={handleRenderVideo}
-                         disabled={isRendering}
-                         className="w-full py-3 bg-ed-accent hover:bg-ed-accent-hover disabled:opacity-50 text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
-                       >
-                         {isRendering ? (
-                           <>
-                             <Loader2 size={18} className="animate-spin" /> Rendering Video...
-                           </>
-                         ) : (
-                           <>
-                             <Download size={18} /> Render & Export Video
-                           </>
-                         )}
-                       </button>
-                     )}
-                     
-                     {renderStatusMessage && !renderOutputPath && (
-                        <div className="mt-4 p-4 rounded-xl border text-xs font-medium break-all bg-ed-well border-ed-border text-ed-text-dim">
-                          {renderStatusMessage}
+                      ) : (
+                        <div>
+                          <button 
+                            onClick={handleRenderVideo}
+                            disabled={isRendering || scenes.length === 0}
+                            className="w-full py-3 bg-ed-accent hover:bg-ed-accent-hover disabled:opacity-50 text-ed-base rounded-xl text-sm font-bold shadow-md hover:shadow-lg hover:-translate-y-0.5 transition-all flex items-center justify-center gap-2"
+                          >
+                            {isRendering ? (
+                              <>
+                                <Loader2 size={18} className="animate-spin" /> Rendering Video...
+                              </>
+                            ) : (
+                              <>
+                                <Download size={18} /> Render &amp; Export Video
+                              </>
+                            )}
+                          </button>
+                          
+                          {renderStatusMessage && !renderOutputPath && (
+                            <div className="mt-4 p-4 rounded-xl border text-xs font-medium break-all bg-ed-well border-ed-border text-ed-text-dim">
+                              {renderStatusMessage}
+                            </div>
+                          )}
+
+                          <p className="text-center text-[10px] text-ed-text-dim font-medium mt-3">Estimated cloud render time: 5-15 seconds</p>
                         </div>
                       )}
-
-                     <p className="text-center text-[10px] text-ed-text-dim font-medium mt-3">Estimated cloud render time: 5-15 seconds</p>
-                   </div>
+                    </div>
                 </div>
               </div>
             )}

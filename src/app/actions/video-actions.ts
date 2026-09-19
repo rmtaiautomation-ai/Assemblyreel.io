@@ -215,6 +215,36 @@ export async function updateProjectStatus(projectId: string, status: ProjectStat
   return { success: true };
 }
 
+export async function updateProjectExportUrl(projectId: string, exportUrl: string) {
+  const supabase = await createClient();
+  const { data: project } = await supabase
+    .from('video_projects')
+    .select('platform_metadata')
+    .eq('id', projectId)
+    .single();
+
+  const currentMeta = (project?.platform_metadata as Record<string, any>) || {};
+  const updatedMeta = {
+    ...currentMeta,
+    export_url: exportUrl,
+    exported_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from('video_projects')
+    .update({
+      platform_metadata: updatedMeta,
+      status: 'exported',
+    })
+    .eq('id', projectId);
+
+  if (error) {
+    console.error("Error updating project export URL:", error);
+    return { success: false, error: error.message };
+  }
+  return { success: true };
+}
+
 /**
  * Persists the global auto-captions toggle.
  *
