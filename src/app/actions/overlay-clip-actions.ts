@@ -29,6 +29,7 @@ const UPDATABLE_FIELDS = [
   "duration",
   "kind",
   "template_data",
+  "origin",
 ] as const;
 
 export async function createOverlayClip(
@@ -47,6 +48,7 @@ export async function createOverlayClip(
     /** Requires db/add-overlay-clip-templates.sql to have run. Defaults to 'text'. */
     kind?: string;
     templateData?: Record<string, unknown>;
+    origin?: "user" | "ai";
   }
 ) {
   if (!projectId) {
@@ -76,9 +78,18 @@ export async function createOverlayClip(
   // the migration having run for the common case.
   if (fields.kind !== undefined) payload.kind = fields.kind;
   if (fields.templateData !== undefined) payload.template_data = fields.templateData;
+  if (fields.origin !== undefined) payload.origin = fields.origin;
 
   const supabase = await createClient();
-  const { data, error } = await supabase.from("overlay_clips").insert(payload).select().single();
+  let { data, error } = await supabase.from("overlay_clips").insert(payload).select().single();
+
+  // Gracefully degrade if origin column has not been added via db/add-overlay-ai-origin.sql yet
+  if (error && payload.origin && (error.message.includes('origin') || error.code === 'PGRST204' || error.code === '42703')) {
+    delete payload.origin;
+    const retry = await supabase.from("overlay_clips").insert(payload).select().single();
+    data = retry.data;
+    error = retry.error;
+  }
 
   if (error) {
     console.error("[createOverlayClip] Failed to insert overlay clip:", error);

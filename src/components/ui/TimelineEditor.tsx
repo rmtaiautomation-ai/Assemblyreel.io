@@ -16,6 +16,9 @@ import { createTimelineItem, updateTimelineItem, deleteTimelineItem } from "@/ap
 import { updateProjectTrackStates, updateProjectStatus, updateProjectCaptionsEnabled, updateProjectDefaultGenerationMode, updateProjectExportUrl } from "@/app/actions/video-actions";
 import { getOrCreatePresetMedia } from "@/app/actions/media-actions";
 import { createOverlayClip, updateOverlayClip, deleteOverlayClip } from "@/app/actions/overlay-clip-actions";
+import { applyComboToScene, autoDirectSingleSceneAction } from "@/app/actions/combo-actions";
+import { COMBO_PRESETS } from "@/lib/combo-templates";
+import type { ComboId } from "@/lib/ai/agents/edit-director";
 import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
 import { Rnd } from "react-rnd";
 import { Player, PlayerRef } from '@remotion/player';
@@ -116,6 +119,7 @@ interface OverlayClip {
    * declarations of one shape is how that drift happened, so there is now one.
    */
   templateData?: OverlayClipData['templateData'];
+  origin: 'user' | 'ai';
 }
 
 const overlayRowToClip = (row: any): OverlayClip => ({
@@ -132,6 +136,7 @@ const overlayRowToClip = (row: any): OverlayClip => ({
   startTime: typeof row.start_time === 'number' ? row.start_time : 0,
   duration: typeof row.duration === 'number' ? row.duration : 3,
   templateData: row.template_data && typeof row.template_data === 'object' ? row.template_data : {},
+  origin: row.origin || 'user',
 });
 
 /**
@@ -970,8 +975,12 @@ export default function TimelineEditor({
   // Stock-media search settings. Global rather than per-scene: they describe where to
   // search, not what the scene is, and carrying them across scenes is what makes
   // searching several scenes in a row bearable.
-  const [globalStockProvider, setGlobalStockProvider] = useState<'pexels' | 'pixabay'>('pexels');
+  const [globalStockProvider, setGlobalStockProvider] = useState<'all' | 'pexels' | 'pixabay' | 'wikimedia'>('all');
   const [globalStockType, setGlobalStockType] = useState<'video' | 'image'>('video');
+
+  // AI Edit Director / Visual Template combo state per scene
+  const [activeComboBySceneId, setActiveComboBySceneId] = useState<Record<string, string>>({});
+  const [isApplyingCombo, setIsApplyingCombo] = useState(false);
 
   interface StockResult {
     id: string;
@@ -2523,6 +2532,7 @@ export default function TimelineEditor({
       startTime,
       duration,
       templateData,
+      origin: 'user',
     };
     setOverlayClips(prev => [...prev, optimistic]);
     setSelectedOverlayClipId(tempId);
@@ -3264,6 +3274,91 @@ export default function TimelineEditor({
       setIsApplyingStock(false);
     }
   };
+
+  /** Detects which combo preset is currently represented on a scene from its overlay clips */
+  const getDetectedComboForScene = (sceneId: string): string => {
+    if (activeComboBySceneId[sceneId]) return activeComboBySceneId[sceneId];
+    const sceneIdx = scenes.findIndex(s => s.id === sceneId);
+    if (sceneIdx === -1) return 'clean';
+    const start = sceneOffsets[sceneIdx] ?? 0;
+    const dur = scenes[sceneIdx].video_duration || 5;
+    const sceneClips = overlayClips.filter(c => c.startTime >= start - 0.05 && c.startTime < start + dur);
+    if (sceneClips.some(c => c.kind === 'checklist-card')) return 'checklist';
+    if (sceneClips.some(c => c.kind === 'light-beam')) return 'divine';
+    if (sceneClips.some(c => c.kind === 'title-cutout-card' && (c.templateData as any)?.style === 'quote-card')) return 'quote';
+    if (sceneClips.some(c => c.kind === 'title-cutout-card')) return 'title_reveal';
+    if (sceneClips.some(c => c.kind === 'film-damage' && sceneClips.some(k => k.preset === 'chapter-card'))) return 'chapter_open';
+    if (sceneClips.some(c => c.kind === 'film-damage')) return 'archive';
+    if (sceneClips.some(c => c.kind === 'text')) return 'motion_text';
+    return 'clean';
+  };
+
+  /** Applies an Edit Director combo template to a scene, updating overlay clips and seeking preview. */
+  const handleApplyCombo = async (sceneId: string, comboId: ComboId | 'auto') => {
+    const targetScene = scenes.find(s => s.id === sceneId);
+    if (!targetScene) return;
+
+    setIsApplyingCombo(true);
+    try {
+      const sceneIdx = scenes.findIndex(s => s.id === sceneId);
+      const sceneStartTime = sceneOffsets[sceneIdx] ?? 0;
+      const sceneDuration = targetScene.video_duration || 5;
+
+      // Identify existing AI overlays for this scene's time range to replace them
+      const existingAiClips = overlayClips.filter(c =>
+        c.origin === 'ai' &&
+        c.startTime >= sceneStartTime - 0.05 &&
+        c.startTime < sceneStartTime + sceneDuration
+      );
+      const replaceClipIds = existingAiClips.map(c => c.id);
+
+      let res: any;
+      if (comboId === 'auto') {
+        res = await autoDirectSingleSceneAction(
+          initialProject.id,
+          sceneId,
+          targetScene.voice_over_beat || '',
+          sceneStartTime,
+          sceneDuration,
+          initialProject.topic || 'Video',
+          initialProject.visual_aesthetic || 'cinematic',
+          replaceClipIds
+        );
+      } else {
+        res = await applyComboToScene(
+          initialProject.id,
+          sceneId,
+          comboId,
+          targetScene.voice_over_beat || '',
+          sceneStartTime,
+          sceneDuration,
+          replaceClipIds
+        );
+      }
+
+      if (res && res.success) {
+        const createdClips = (res.createdClips || []).map(overlayRowToClip);
+        setOverlayClips(prev => [
+          ...prev.filter(c => !replaceClipIds.includes(c.id)),
+          ...createdClips
+        ]);
+        setActiveComboBySceneId(prev => ({ ...prev, [sceneId]: res.comboId || comboId }));
+
+        // Seek playhead to 0.8s into the scene so the animated entrance is settled and visible
+        const previewTime = sceneStartTime + Math.min(0.8, sceneDuration / 2);
+        setCursorPosition(previewTime * scale);
+      } else {
+        console.error('[handleApplyCombo] failed:', res?.error);
+        alert(res?.error || 'Failed to apply template combo.');
+      }
+    } catch (e: any) {
+      console.error('[handleApplyCombo] error:', e);
+      alert('An error occurred while applying the template.');
+    } finally {
+      setIsApplyingCombo(false);
+    }
+  };
+
 
   const handleGenerateAllVisuals = async () => {
     // Scoped to the selected scene's own Act on long-form — this used to loop over
@@ -4506,14 +4601,16 @@ export default function TimelineEditor({
                       // never the whole block: a static line once a transition exists, a
                       // brighter "drop here" glow while a card is being dragged over this
                       // exact seam, and a brief pulse right after either lands.
-                      const seamIndicator: 'drag-over' | 'just-applied' | 'set' | null =
-                        transitionDragOverSceneId === scene.id
-                          ? 'drag-over'
-                          : transitionJustAppliedId === scene.id
-                            ? 'just-applied'
-                            : hasTransition
-                              ? 'set'
-                              : null;
+                      const seamIndicator: 'drag-over' | 'just-applied' | 'set' | 'empty' | null =
+                        idx === 0
+                          ? null // First scene never has an incoming transition seam
+                          : transitionDragOverSceneId === scene.id
+                            ? 'drag-over'
+                            : transitionJustAppliedId === scene.id
+                              ? 'just-applied'
+                              : hasTransition
+                                ? 'set'
+                                : 'empty';
                       return (
                        <div
                          key={`video-${scene.id}`}
@@ -4587,7 +4684,7 @@ export default function TimelineEditor({
                            if (trackStates.V1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
                          }}
-                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors overflow-hidden group/block shadow-sm ${ringClass}`}
+                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors group/block shadow-sm ${ringClass}`}
                          style={{
                            // Positioned by transform rather than `left` so a move stays on
                            // the compositor instead of forcing layout on the whole track.
@@ -4631,52 +4728,111 @@ export default function TimelineEditor({
                                </div>
                             )}
                          </div>
-                         {/* Transition seam indicator — lives ON THE BOUNDARY between this
-                             scene and the previous one, never a glow around the whole
-                             block (that read as "this scene is selected", which isn't
-                             what's being communicated). Extends slightly past the block's
-                             own top/bottom so it reads as a small opening right at the
-                             seam, exactly where you'd drag a card to. */}
-                         {seamIndicator && (() => {
+                                   {seamIndicator && (() => {
                            const TransitionIcon = TRANSITION_ICONS[scene.transition_type ?? ''] ?? Layers;
                            const isDragOver = seamIndicator === 'drag-over';
+                           const transitionWidth = hasTransition ? (scene.transition_duration || 0.5) * scale : 16;
+                           
                            return (
                              <div
-                               className="absolute -left-[3px] -top-1 -bottom-1 w-1.5 z-40 pointer-events-none"
-                               title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Drop a transition card here'}
+                               className={`absolute top-0 bottom-0 z-40 cursor-pointer flex items-center justify-center group/seam transition-colors ${
+                                 hasTransition ? 'bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/40 shadow-sm' : ''
+                               } ${isDragOver ? 'bg-ed-warn/50' : ''}`}
+                               style={{
+                                 width: `${transitionWidth}px`,
+                                 left: `-${transitionWidth / 2}px`,
+                                 borderRadius: hasTransition ? '2px' : '0px'
+                               }}
+                               title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Click to add a transition'}
+                               onClick={(e) => {
+                                 e.stopPropagation();
+                                 if (trackStates.V1.locked) return;
+                                 handleSelectSceneBlock(e, scene, 'V1', idx);
+                                 setIsTransitionExpanded(true);
+                               }}
                              >
-                               {/* The seam bar. Dark slate rather than white: EVERY scene
-                                   block background is a light status tint (emerald-50,
-                                   amber-50, blue-50, red-50, gray-100), so a white line
-                                   has almost no contrast to work with no matter how much
-                                   outline you stack on it, while near-black separates
-                                   from all five at once. The thin white ring keeps it
-                                   readable if a dark thumbnail is showing underneath. */}
-                               <div
-                                 className={`absolute inset-0 rounded-full ${
-                                   isDragOver
-                                     ? 'bg-ed-warn shadow-[0_0_10px_3px_rgba(251,191,36,0.9)] animate-pulse'
-                                     : seamIndicator === 'just-applied'
-                                       ? 'bg-ed-surface animate-pulse shadow-[0_0_0_1.5px_rgba(255,255,255,0.95)]'
-                                       : 'bg-ed-surface shadow-[0_0_0_1.5px_rgba(255,255,255,0.95)]'
-                                 }`}
-                               />
-                               {/* CapCut's actual affordance isn't a tinted line, it's a
-                                   badge straddling the cut — a shape your eye finds at any
-                                   zoom, carrying WHICH transition is set, not just THAT one
-                                   is. Colour alone can't say that, and the timeline's other
-                                   colours are already spoken for: purple = selection, amber
-                                   = drop target, and blue/emerald/red/gray = scene status.
-                                   Neutral dark + icon stays unambiguous, and works for a
-                                   colour-blind user since the icon does the identifying. */}
+                               {!hasTransition && (
+                                 <div className="w-[2px] h-[80%] bg-white opacity-0 group-hover/seam:opacity-80 transition-opacity rounded-full shadow-sm" />
+                               )}
+                               
+                               {hasTransition && (
+                                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
+                                   <TransitionIcon size={12} className="text-white drop-shadow-md opacity-80" strokeWidth={2.5} />
+                                 </div>
+                               )}
+
+                               {/* Left Drag Handle */}
                                {hasTransition && (
                                  <div
-                                   className={`absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 h-[15px] w-[15px] rounded-full flex items-center justify-center ring-[1.5px] ring-ed-border shadow-md ${
-                                     isDragOver ? 'bg-ed-warn text-ed-base' : 'bg-ed-surface text-ed-base'
-                                   } ${seamIndicator === 'just-applied' ? 'animate-pulse' : ''}`}
-                                 >
-                                   <TransitionIcon size={9} strokeWidth={2.75} />
-                                 </div>
+                                   className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/60 opacity-0 group-hover/seam:opacity-100 transition-opacity rounded-l-[2px]"
+                                   onPointerDown={(e) => {
+                                     e.stopPropagation();
+                                     e.preventDefault();
+                                     if (trackStates.V1.locked) return;
+                                     const target = e.currentTarget;
+                                     target.setPointerCapture(e.pointerId);
+                                     const startX = e.clientX;
+                                     const startDuration = scene.transition_duration || 0.5;
+                                     const max = maxTransitionSeconds(remotionScenes, idx, remotionFps);
+                                     
+                                     target.onpointermove = (ev) => {
+                                       const deltaX = startX - ev.clientX; // moving left increases width
+                                       const deltaDuration = (deltaX / scale) * 2;
+                                       let newDuration = startDuration + deltaDuration;
+                                       newDuration = Math.max(0.1, Math.min(newDuration, max));
+                                       if (target.parentElement) {
+                                          target.parentElement.style.width = `${newDuration * scale}px`;
+                                          target.parentElement.style.left = `-${(newDuration * scale) / 2}px`;
+                                       }
+                                       target.dataset.newDuration = newDuration.toString();
+                                     };
+                                     
+                                     target.onpointerup = (ev) => {
+                                       target.onpointermove = null;
+                                       target.onpointerup = null;
+                                       target.releasePointerCapture(ev.pointerId);
+                                       const final = parseFloat(target.dataset.newDuration || startDuration.toString());
+                                       updateSceneDetails(scene.id, 'transition_duration', final);
+                                     };
+                                   }}
+                                 />
+                               )}
+
+                               {/* Right Drag Handle */}
+                               {hasTransition && (
+                                 <div
+                                   className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/60 opacity-0 group-hover/seam:opacity-100 transition-opacity rounded-r-[2px]"
+                                   onPointerDown={(e) => {
+                                     e.stopPropagation();
+                                     e.preventDefault();
+                                     if (trackStates.V1.locked) return;
+                                     const target = e.currentTarget;
+                                     target.setPointerCapture(e.pointerId);
+                                     const startX = e.clientX;
+                                     const startDuration = scene.transition_duration || 0.5;
+                                     const max = maxTransitionSeconds(remotionScenes, idx, remotionFps);
+                                     
+                                     target.onpointermove = (ev) => {
+                                       const deltaX = ev.clientX - startX; // moving right increases width
+                                       const deltaDuration = (deltaX / scale) * 2;
+                                       let newDuration = startDuration + deltaDuration;
+                                       newDuration = Math.max(0.1, Math.min(newDuration, max));
+                                       if (target.parentElement) {
+                                          target.parentElement.style.width = `${newDuration * scale}px`;
+                                          target.parentElement.style.left = `-${(newDuration * scale) / 2}px`;
+                                       }
+                                       target.dataset.newDuration = newDuration.toString();
+                                     };
+                                     
+                                     target.onpointerup = (ev) => {
+                                       target.onpointermove = null;
+                                       target.onpointerup = null;
+                                       target.releasePointerCapture(ev.pointerId);
+                                       const final = parseFloat(target.dataset.newDuration || startDuration.toString());
+                                       updateSceneDetails(scene.id, 'transition_duration', final);
+                                     };
+                                   }}
+                                 />
                                )}
                              </div>
                            );
@@ -6699,6 +6855,47 @@ export default function TimelineEditor({
                           <span className="text-[10px] text-ed-text-dim font-mono bg-ed-well border border-ed-border px-2 py-1 rounded-md">ID: {selectedScene.id.substring(0,8)}</span>
                         </div>
                      </div>
+
+                     {/* ── Section 1: Visual Template (AI Edit Director) Card ── */}
+                     <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm bg-ed-raised/40 p-3 space-y-2.5">
+                       <div className="flex items-center justify-between">
+                         <span className="flex items-center gap-1.5 text-xs font-bold text-ed-text">
+                           <Sparkles size={14} className="text-ed-accent-text" /> Visual Template
+                         </span>
+                         <span className="text-[9px] font-mono px-2 py-0.5 rounded bg-ed-accent-soft text-ed-accent-text border border-ed-accent-border font-semibold">
+                           Edit Director
+                         </span>
+                       </div>
+                       
+                       <div>
+                         <label className="block text-[10px] font-bold text-ed-text-dim mb-1 uppercase tracking-wider">
+                           Scene Combo Preset
+                         </label>
+                         <div className="relative">
+                           <select
+                             value={getDetectedComboForScene(selectedScene.id)}
+                             disabled={isApplyingCombo}
+                             onChange={(e) => handleApplyCombo(selectedScene.id, e.target.value as any)}
+                             className="w-full bg-ed-surface border border-ed-border focus:border-ed-accent-border rounded-md p-2 text-xs font-semibold text-ed-text outline-none shadow-sm disabled:opacity-50"
+                           >
+                             <option value="auto">✨ Auto (AI Edit Director Picks)</option>
+                             {COMBO_PRESETS.map((p) => (
+                               <option key={p.id} value={p.id}>
+                                 {p.label} — {p.description}
+                               </option>
+                             ))}
+                           </select>
+                           {isApplyingCombo && (
+                             <div className="absolute right-3 top-2.5">
+                               <Loader2 size={13} className="animate-spin text-ed-accent-text" />
+                             </div>
+                           )}
+                         </div>
+                         <p className="text-[9px] text-ed-text-faint mt-1 leading-normal">
+                           Selecting a preset auto-builds text cards, dim screens, and effects directly onto this scene's timeline tracks.
+                         </p>
+                       </div>
+                     </div>
                      
                       {/* ── Visual Generation Accordion ──
                           flex-1 only while expanded: applied unconditionally, this
@@ -6711,7 +6908,7 @@ export default function TimelineEditor({
                           className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
                         >
                           <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
-                            <ImageIcon size={14} className="text-ed-info" /> Visual Generation
+                            <Film size={14} className="text-ed-info" /> Background Media
                           </span>
                           {isVisualExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
                         </button>
@@ -6727,16 +6924,16 @@ export default function TimelineEditor({
                           <div className="p-3 bg-ed-surface border-t border-ed-border space-y-3 flex-1 flex flex-col">
 
                            <div>
-                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">How this scene is generated</label>
+                              <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Source / Generation Mode</label>
                               <select
                                 value={sceneMode}
                                 onChange={(e: any) => updateSceneDetails(selectedScene.id, 'generation_mode', e.target.value)}
                                 className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
                               >
+                                <option value="stock_media">Stock Media Scout (Pexels / Pixabay / Wikimedia)</option>
                                 <option value="ai_video">AI Video (Prompt)</option>
                                 <option value="ai_image">AI Image (Prompt)</option>
                                 <option value="project_media">Project Media (already uploaded / generated)</option>
-                                <option value="stock_media">Stock Media (Pexels / Pixabay)</option>
                                 <option value="static_theme">Static / Dark Theme</option>
                                 <option value="lip_sync">AI Lip Sync (Avatar)</option>
                               </select>
@@ -6950,6 +7147,31 @@ export default function TimelineEditor({
 
                            {sceneMode === 'stock_media' && (
                              <div className="space-y-3">
+                               {/* Active Media Info */}
+                               {selectedScene.custom_media_url ? (
+                                 <div className="flex items-center justify-between text-[11px] bg-ed-well border border-ed-border rounded-lg p-2.5">
+                                   <div className="flex items-center gap-2 min-w-0">
+                                     {selectedScene.custom_media_type === 'video' ? <Film size={14} className="text-ed-info shrink-0" /> : <ImageIcon size={14} className="text-ed-accent-text shrink-0" />}
+                                     <div className="min-w-0">
+                                       <span className="block text-[9px] font-bold text-ed-text-dim uppercase tracking-wider">Active Background</span>
+                                       <span className="block font-semibold text-ed-text truncate text-[11px]">
+                                         {selectedScene.custom_media_url.includes('pexels') ? '🎥 Pexels Stock' :
+                                          selectedScene.custom_media_url.includes('pixabay') ? '🎥 Pixabay Stock' :
+                                          selectedScene.custom_media_url.includes('wikimedia') ? '🖼️ Wikimedia Commons' :
+                                          selectedScene.assetId ? '📁 Local Upload' : '✨ Custom Media'}
+                                       </span>
+                                     </div>
+                                   </div>
+                                   <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-ed-raised text-ed-text-dim capitalize">
+                                     {selectedScene.custom_media_type || 'video'}
+                                   </span>
+                                 </div>
+                               ) : (
+                                 <div className="text-[10px] text-ed-text-dim italic bg-ed-well/60 border border-ed-border/60 rounded-md p-2">
+                                   No background media yet. Search below or auto-scout with AI.
+                                 </div>
+                               )}
+
                                <div className="grid grid-cols-2 gap-2">
                                  <div>
                                    <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Platform</label>
@@ -6958,20 +7180,32 @@ export default function TimelineEditor({
                                      onChange={(e: any) => { setGlobalStockProvider(e.target.value); setStockSearchResults(null); }}
                                      className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
                                    >
+                                     <option value="all">Auto (Search All)</option>
                                      <option value="pexels">Pexels</option>
                                      <option value="pixabay">Pixabay</option>
+                                     <option value="wikimedia">Wikimedia Commons</option>
                                    </select>
                                  </div>
                                  <div>
                                    <label className="block text-[10px] font-bold text-ed-text-dim mb-1">Media Type</label>
-                                   <select
-                                     value={globalStockType}
-                                     onChange={(e: any) => { setGlobalStockType(e.target.value); setStockSearchResults(null); }}
-                                     className="w-full bg-ed-surface border border-ed-border rounded-md p-1.5 text-xs text-ed-text outline-none font-medium shadow-sm"
-                                   >
-                                     <option value="video">Video</option>
-                                     <option value="image">Image</option>
-                                   </select>
+                                   <div className="grid grid-cols-2 gap-1 bg-ed-raised p-1 rounded-md">
+                                     {(['video', 'image'] as const).map((mediaType) => {
+                                       const isActive = globalStockType === mediaType;
+                                       return (
+                                         <button
+                                           key={mediaType}
+                                           type="button"
+                                           onClick={() => { setGlobalStockType(mediaType); setStockSearchResults(null); }}
+                                           className={`flex items-center justify-center gap-1 py-1 rounded text-[11px] font-bold transition-all ${
+                                             isActive ? 'bg-ed-surface text-ed-text shadow-sm' : 'text-ed-text-dim hover:text-ed-text'
+                                           }`}
+                                         >
+                                           {mediaType === 'video' ? <Film size={11} /> : <ImageIcon size={11} />}
+                                           {mediaType === 'video' ? 'Video' : 'Image'}
+                                         </button>
+                                       );
+                                     })}
+                                   </div>
                                  </div>
                                </div>
 
@@ -7290,61 +7524,11 @@ export default function TimelineEditor({
                         )}
                      </div>
 
-                      {/* ── Ken Burns ──
-                          A single checkbox rather than an accordion like Overlay and
-                          Transition: there is nothing to expand into, the effect has
-                          no sub-settings once it's on. Image-only — video scenes carry
-                          their own motion, and the renderer ignores the flag for them.
-                          Deliberately its own control and not a "Transition In" option:
-                          transition is movement BETWEEN scenes, this is movement WITHIN
-                          one, and a scene can have both at once. */}
-                     {selectedScene.custom_media_type !== 'video' && (
-                       <div className="relative">
-                         <div className="flex items-center gap-2 px-3 py-2.5 border border-ed-border rounded-lg shadow-sm bg-ed-well hover:bg-ed-raised transition-colors">
-                           <label className="flex items-center gap-2 flex-1 cursor-pointer">
-                             <input
-                               type="checkbox"
-                               checked={Boolean(selectedScene.ken_burns_enabled)}
-                               onChange={(e) => updateSceneDetails(selectedScene.id, 'ken_burns_enabled', e.target.checked)}
-                               className="accent-ed-accent-text"
-                             />
-                             <span className="text-xs font-bold text-ed-text-dim">Ken Burns pan &amp; zoom</span>
-                           </label>
-                           {/* Bulk sibling of the checkbox above: that one edits THIS
-                               scene, this menu applies the setting to every image scene
-                               in the project in a single action. */}
-                           <button
-                             type="button"
-                             onClick={() => setShowKenBurnsMenu(prev => !prev)}
-                             className="flex items-center gap-0.5 text-[10px] font-bold text-ed-text-faint hover:text-ed-accent-text transition-colors shrink-0"
-                             title="Apply to all image scenes"
-                           >
-                             Bulk <ChevronDown size={12} />
-                           </button>
-                         </div>
-
-                         {showKenBurnsMenu && (
-                           <div className="absolute right-0 top-full mt-1 w-56 bg-ed-surface border border-ed-border rounded-lg shadow-xl py-1 z-50">
-                             <button
-                               onClick={() => applyKenBurnsToAllImageScenes(true)}
-                               className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
-                             >
-                               Enable for all image scenes
-                             </button>
-                             <button
-                               onClick={() => applyKenBurnsToAllImageScenes(false)}
-                               className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
-                             >
-                               Disable for all image scenes
-                             </button>
-                           </div>
-                         )}
-                       </div>
-                     )}
-
-                      {/* ── Transition Accordion ──
+                      {/* ── Transition & Motion Accordion ──
                           The transition belongs to the scene it plays INTO, so the
-                          first scene has nothing to configure. */}
+                          first scene has nothing to configure.
+                          Ken Burns is now merged into this panel for a unified
+                          motion configuration experience. */}
                      {(() => {
                        const sceneIndex = scenes.findIndex(s => s.id === selectedScene.id);
                        const isFirstScene = sceneIndex <= 0;
@@ -7362,12 +7546,56 @@ export default function TimelineEditor({
                              className="w-full flex items-center justify-between px-3 py-2.5 bg-ed-well hover:bg-ed-raised transition-colors text-left"
                            >
                              <span className="flex items-center gap-2 text-xs font-bold text-ed-text-dim">
-                               <Layers size={14} className="text-ed-accent-text" /> Transition In
+                               <Layers size={14} className="text-ed-accent-text" /> Transition & Ken Burns
                              </span>
                              {isTransitionExpanded ? <ChevronDown size={14} className="text-ed-text-faint" /> : <ChevronRight size={14} className="text-ed-text-faint" />}
                            </button>
                            {isTransitionExpanded && (
-                             <div className="p-3 bg-ed-surface border-t border-ed-border space-y-2.5">
+                             <div className="p-3 bg-ed-surface border-t border-ed-border space-y-4">
+                               {/* ── Ken Burns ── */}
+                               {selectedScene.custom_media_type !== 'video' && (
+                                 <div className="relative">
+                                   <label className="block text-[10px] font-bold text-ed-accent-text uppercase tracking-wider mb-1.5">
+                                     Scene Motion
+                                   </label>
+                                   <div className="flex items-center gap-2 px-3 py-2.5 border border-ed-border rounded-lg shadow-sm bg-ed-well hover:bg-ed-raised transition-colors">
+                                     <label className="flex items-center gap-2 flex-1 cursor-pointer">
+                                       <input
+                                         type="checkbox"
+                                         checked={Boolean(selectedScene.ken_burns_enabled)}
+                                         onChange={(e) => updateSceneDetails(selectedScene.id, 'ken_burns_enabled', e.target.checked)}
+                                         className="accent-ed-accent-text"
+                                       />
+                                       <span className="text-xs font-bold text-ed-text-dim">Ken Burns pan &amp; zoom</span>
+                                     </label>
+                                     <button
+                                       type="button"
+                                       onClick={() => setShowKenBurnsMenu(prev => !prev)}
+                                       className="flex items-center gap-0.5 text-[10px] font-bold text-ed-text-faint hover:text-ed-accent-text transition-colors shrink-0"
+                                       title="Apply to all image scenes"
+                                     >
+                                       Bulk <ChevronDown size={12} />
+                                     </button>
+                                   </div>
+
+                                   {showKenBurnsMenu && (
+                                     <div className="absolute right-0 top-full mt-1 w-56 bg-ed-surface border border-ed-border rounded-lg shadow-xl py-1 z-50">
+                                       <button
+                                         onClick={() => applyKenBurnsToAllImageScenes(true)}
+                                         className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
+                                       >
+                                         Enable for all image scenes
+                                       </button>
+                                       <button
+                                         onClick={() => applyKenBurnsToAllImageScenes(false)}
+                                         className="w-full text-left px-3 py-2 text-xs font-semibold text-ed-text-dim hover:bg-ed-well transition-colors"
+                                       >
+                                         Disable for all image scenes
+                                       </button>
+                                     </div>
+                                   )}
+                                 </div>
+                               )}
                                {/* Drag source, independent of `isFirstScene` below on
                                    purpose: these cards target whichever scene block they
                                    land on, not necessarily this selected one, so they
@@ -7451,12 +7679,11 @@ export default function TimelineEditor({
                                      </select>
                                    </div>
 
-                                   {transitionType !== 'none' && (
-                                     <div>
+                                     <div className={transitionType === 'none' ? 'opacity-50 pointer-events-none' : ''}>
                                        <div className="flex items-center justify-between mb-1">
                                          <label className="text-[10px] font-bold text-ed-text-dim">Duration</label>
                                          <span className="text-[10px] font-bold text-ed-accent-text">
-                                           {Math.min(currentSeconds, maxSeconds).toFixed(2)}s
+                                           {transitionType === 'none' ? '0.00' : Math.min(currentSeconds, maxSeconds).toFixed(2)}s
                                          </span>
                                        </div>
                                        {/* Max comes from the same clamp the renderer applies, so the
@@ -7467,16 +7694,15 @@ export default function TimelineEditor({
                                          min={0.1}
                                          max={Math.max(0.1, maxSeconds)}
                                          step={0.05}
-                                         value={Math.min(currentSeconds, Math.max(0.1, maxSeconds))}
+                                         value={transitionType === 'none' ? 0.1 : Math.min(currentSeconds, Math.max(0.1, maxSeconds))}
+                                         disabled={transitionType === 'none'}
                                          onChange={(e) => updateSceneDetails(selectedScene.id, 'transition_duration', Number(e.target.value))}
                                          className="w-full accent-ed-accent-text"
                                        />
                                        <p className="text-[10px] text-ed-text-faint mt-1 leading-relaxed">
-                                         Capped at half the shorter neighbouring scene ({maxSeconds.toFixed(2)}s here).
-                                         Transitions never change total video length.
+                                         {transitionType === 'none' ? 'Select a transition style above to set duration.' : `Capped at half the shorter neighbouring scene (${maxSeconds.toFixed(2)}s here). Transitions never change total video length.`}
                                        </p>
                                      </div>
-                                   )}
                                  </>
                                )}
 
@@ -8126,8 +8352,18 @@ export default function TimelineEditor({
                            {selectedScene.generation_status === 'Simulated'
                              ? 'Simulated Placeholder'
                              : selectedScene.custom_media_url
-                               ? selectedScene.assetId ? 'Local Upload' : 'AI Generated'
+                               ? selectedScene.custom_media_url.includes('pexels') ? 'Pexels Stock'
+                                 : selectedScene.custom_media_url.includes('pixabay') ? 'Pixabay Stock'
+                                 : selectedScene.custom_media_url.includes('wikimedia') ? 'Wikimedia Commons'
+                                 : selectedScene.assetId ? 'Local Upload' : 'AI Generated'
                                : 'Draft (No Media)'}
+                         </span>
+                       </div>
+                       {/* Template */}
+                       <div className="flex items-center justify-between px-3 py-2.5 bg-ed-well border-b border-ed-border">
+                         <span className="text-[10px] font-bold text-ed-text-dim uppercase tracking-wider">Template</span>
+                         <span className="text-[11px] font-semibold text-ed-accent-text">
+                           {COMBO_PRESETS.find(p => p.id === getDetectedComboForScene(selectedScene.id))?.label || 'Clean Cut'}
                          </span>
                        </div>
                        {/* Type */}

@@ -44,6 +44,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
   const [error, setError] = useState<string | null>(null);
   
   const [targetDuration, setTargetDuration] = useState("Short (< 60s)");
+  const [generationMode, setGenerationMode] = useState<"step_by_step" | "autopilot">("step_by_step");
   
   // AI Sidebar state
   const [isAiSidebarOpen, setIsAiSidebarOpen] = useState(false);
@@ -96,6 +97,7 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsSubmitting(true);
+    setIsWiping(true);
     setError(null);
 
     // Only plans the Act structure — the Scene Board runs the agent chain per Act so a
@@ -108,17 +110,16 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
       scriptHook,
       visualAesthetic: visualAesthetic || workspace.visual_aesthetic || "",
       targetDuration,
+      generationMode,
     });
 
     if (result.success && result.projectId) {
-      setIsWiping(true);
-      // Wait a moment for the user to read the loading state before the hard navigation
-      setTimeout(() => {
-        router.push(`/workspaces/${workspace.id}/videos/${result.projectId}/scene-board`);
-      }, 1500);
+      // We've been showing the loading screen during the request, route immediately
+      router.push(`/workspaces/${workspace.id}/videos/${result.projectId}/scene-board`);
       return;
     }
 
+    setIsWiping(false);
     setIsSubmitting(false);
     setError(result.error || "Failed to create video project.");
   };
@@ -262,6 +263,45 @@ export default function NewVideoForm({ workspace }: NewVideoFormProps) {
             </div>
           </div>
 
+
+          {/* Row 4: Generation Mode */}
+          <div className="grid grid-cols-1 gap-6">
+            <div className="flex flex-col">
+              <div>
+                <label className="block text-sm font-bold text-ed-text mb-1">Generation Mode</label>
+                <p className="text-xs text-ed-text-dim mb-2">How do you want to create this video?</p>
+              </div>
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  type="button"
+                  onClick={() => setGenerationMode("step_by_step")}
+                  className={`p-4 rounded-xl border text-sm transition-all flex flex-col items-center justify-center gap-1 ${
+                    generationMode === "step_by_step" 
+                      ? "bg-ed-accent-soft border-ed-accent text-ed-accent-text" 
+                      : "bg-ed-surface border-ed-border text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft"
+                  }`}
+                >
+                  <MonitorPlay size={24} className="mb-1" />
+                  <span className="font-bold">Step-by-Step (Default)</span>
+                  <span className="text-[11px] opacity-80 text-center">Review & approve each scene's script, voice, and media manually.</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setGenerationMode("autopilot")}
+                  className={`p-4 rounded-xl border text-sm transition-all flex flex-col items-center justify-center gap-1 ${
+                    generationMode === "autopilot" 
+                      ? "bg-ed-accent-soft border-ed-accent text-ed-accent-text" 
+                      : "bg-ed-surface border-ed-border text-ed-text-dim hover:border-ed-accent-border hover:bg-ed-accent-soft"
+                  }`}
+                >
+                  <Zap size={24} className="mb-1" />
+                  <span className="font-bold">Autopilot</span>
+                  <span className="text-[11px] opacity-80 text-center">AI does everything automatically after script approval.</span>
+                </button>
+              </div>
+              <input type="hidden" name="generation_mode" value={generationMode} />
+            </div>
+          </div>
 
           {error && (
             <div className="text-ed-danger text-sm font-medium bg-ed-danger-soft p-3 rounded-lg border border-ed-danger-border">{error}</div>

@@ -598,9 +598,11 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
     explanatoryMethod:
       "Explain by evidence chain. Point at a physical object, say what it contains, name who removed or restricted it and when, then show what it resembles today — framed as resemblance, never as proof.",
     register:
-      "Serious and urgent, but grounded. Treat the material as consequential and unresolved, never as settled inspiration. State extraordinary claims plainly — the weight comes from the evidence, not from adjectives. Never Sunday-school gentle, never breathless.",
+      "Forensic, flat, and serious. State facts directly. Do not preach, do not editorialize, and never use flowery or poetic adjectives (e.g., 'solemn mystery', 'stark clarity'). Treat the text as raw data, not a moral fable. Let the evidence carry the weight.",
     forbiddenRegisters: [
-      "sermonising or altar-call language",
+      "rhetorical questions of any kind (e.g., 'Why are these chambers so meticulously crafted?', 'So where does that leave us?')",
+      "sermonising, preaching, or altar-call language",
+      "poetic, theatrical, or flowery adjectives (e.g., 'solemn mystery', 'stark clarity', 'ethereal glow', 'piecemeal revelation')",
       "Sunday-school gentleness or devotional warmth",
       "hype and clickbait phrasing",
       "ranting, or naming a present-day conspiracy",
@@ -775,7 +777,7 @@ const FORENSIC_DOCUMENTARY: FormatProfile = {
   content: {
     lineComposition: "documentary",
     readingLevel:
-      "Plain English, but precise. Prefer the specific noun over the general one.",
+      "8th-grade reading level. Extremely simple, punchy, declarative sentences. Avoid complex academic jargon. Never use archaic language. If a sentence can be shorter, make it shorter. Do not loop or repeat claims across Acts.",
     // Genuinely per-Act. The personal-stake beat used to sit here, but "by the end of Act
     // 2" is a positional instruction and this block is emitted into EVERY Act's prompt —
     // so it is an arcBeat now.

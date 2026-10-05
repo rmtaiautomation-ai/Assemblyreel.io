@@ -68,6 +68,7 @@ export async function createProjectWithActs(params: {
   scriptHook: string;
   visualAesthetic: string;
   targetDuration: string;
+  generationMode?: "step_by_step" | "autopilot";
 }): Promise<CreateProjectResult> {
   const {
     workspaceId,
@@ -77,6 +78,7 @@ export async function createProjectWithActs(params: {
     scriptHook,
     visualAesthetic,
     targetDuration,
+    generationMode = "step_by_step",
   } = params;
 
   if (!topic) return { success: false, error: "Topic is required" };
@@ -95,6 +97,7 @@ export async function createProjectWithActs(params: {
         visual_aesthetic: visualAesthetic,
         status: "pending",
         master_script: "",
+        workflow_mode: generationMode,
       },
     ])
     .select()

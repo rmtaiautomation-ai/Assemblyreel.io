@@ -35,7 +35,7 @@ export function openai(modelId: string) {
  * and a fraction of the cost of the full model, so the format can be re-run freely.
  * Once the settings are locked, raising quality is a one-line change here.
  */
-export const AGENT_MODEL = "gpt-4o-mini";
+export const AGENT_MODEL = "gpt-4o";
 
 /**
  * Model for the long-form script writer and the brainstorm co-writer — the two
@@ -44,7 +44,7 @@ export const AGENT_MODEL = "gpt-4o-mini";
  * Kept separate from `AGENT_MODEL` so script quality can be pushed to `gpt-4o`
  * without also paying the full model price on every per-scene pipeline call.
  */
-export const SCRIPT_MODEL = "gpt-4o-mini";
+export const SCRIPT_MODEL = "gpt-4o";
 
 /**
  * Passed as `providerOptions` on every `generateObject` call.
