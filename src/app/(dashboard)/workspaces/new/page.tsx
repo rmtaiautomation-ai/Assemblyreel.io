@@ -2,7 +2,7 @@
 
 import React from "react";
 import { useRouter } from "next/navigation";
-import WorkspaceForm from "@/components/ui/WorkspaceForm";
+import WorkspaceForm from "@/features/workspaces/components/WorkspaceForm";
 
 export default function NewWorkspacePage() {
   const router = useRouter();

@@ -1,4 +1,8 @@
-# Architecture Blueprint: Assemblyreel.io
+# Archived Architecture Blueprint: Assemblyreel.io
+
+> Historical design document. It predates the current Supabase Storage, AWS Lambda,
+> feature-folder, and rendering-service architecture. Use the repository-root
+> `README.md` and `docs/architecture/schema.md` as the current sources of truth.
 
 ## 1. Core Stack
 - **Framework:** Next.js (App Router, React 19) — the whole app, dashboard and generation pipeline alike. Runs via `npm run dev` on your own desktop/laptop. Not deployed to Vercel; this is a single-machine, single-user tool, not a hosted SaaS.

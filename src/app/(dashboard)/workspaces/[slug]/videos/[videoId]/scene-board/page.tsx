@@ -1,10 +1,10 @@
 import React from "react";
 import Link from "next/link";
 import { ArrowLeft, Clock } from "lucide-react";
-import { loadSceneBoard } from "@/app/actions/scene-board-actions";
-import SceneBoard from "@/components/ui/SceneBoard";
-import VideoTabs from "@/components/ui/VideoTabs";
-import EditableProjectTitle from "@/components/ui/EditableProjectTitle";
+import { loadSceneBoard } from "@/features/scene-board/server/scene-board-actions";
+import SceneBoard from "@/features/scene-board/components/SceneBoard";
+import VideoTabs from "@/features/videos/components/VideoTabs";
+import EditableProjectTitle from "@/features/videos/components/EditableProjectTitle";
 
 /**
  * Home for a project's Scene Board — a real route, a sibling of the Timeline and

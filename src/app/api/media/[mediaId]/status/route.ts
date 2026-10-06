@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { updateMediaStatus } from "@/app/actions/media-actions";
+import { updateMediaStatus } from "@/features/timeline-editor/server/media-actions";
 import { getProvider } from "@/lib/ai/providers/registry";
 import { uploadBufferToSupabase } from "@/lib/supabase/storage";
 import { createClient } from "@/lib/supabase/server";

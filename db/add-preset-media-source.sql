@@ -3,7 +3,7 @@
 -- built-in assets that ship with the app rather than being uploaded or
 -- generated (starting with the 6 transition-sound SFX draggable onto A2,
 -- see src/lib/transition-music-presets.ts and getOrCreatePresetMedia in
--- src/app/actions/media-actions.ts). Each project gets its own `media` row
+-- src/features/timeline-editor/server/media-actions.ts). Each project gets its own `media` row
 -- per preset (media.project_id is a required FK, so there is no shared/global
 -- row), lazily created the first time that project uses a given preset —
 -- 'preset' distinguishes those rows from 'mock', which means something

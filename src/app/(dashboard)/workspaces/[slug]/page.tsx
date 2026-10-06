@@ -2,8 +2,8 @@ import React from "react";
 import Link from "next/link";
 import { Settings, Mic, Palette, MonitorPlay, Activity, CheckCircle2, Ratio, Clock3, Edit3, Loader2, AlertTriangle } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import NewVideoForm from "@/components/ui/NewVideoForm";
-import DeleteProjectButton from "@/components/ui/DeleteProjectButton";
+import NewVideoForm from "@/features/videos/components/NewVideoForm";
+import DeleteProjectButton from "@/features/videos/components/DeleteProjectButton";
 
 function timeAgo(dateString: string) {
   const diffMs = Date.now() - new Date(dateString).getTime();

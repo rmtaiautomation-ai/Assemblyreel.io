@@ -123,7 +123,7 @@ governed by a shared rate limiter (`AI_MIN_CALL_INTERVAL_MS`) rather than concur
 ## The generation pipeline (the process)
 
 Entry points: `createProjectWithActs` → `generateAct` (×N) → `finalizeProjectScript`
-(`src/app/actions/whiteboard-actions.ts`), then per-act narration and approval from the
+(`src/features/video-generation/server/whiteboard-actions.ts`), then per-act narration and approval from the
 timeline editor. `createAndGenerateVideo` (`video-actions.ts`) is the one-call variant that
 delegates to the same `generateAct`.
 
@@ -254,16 +254,17 @@ deterministic placeholders.
 
 ### Stage 8 — Timeline editor
 
-A bespoke browser editor (`src/components/ui/TimelineEditor.tsx`): drag/trim scenes at any
+A bespoke browser editor (`src/features/timeline-editor/components/TimelineEditor.tsx`): drag/trim scenes at any
 zoom, an independent overlay (OV) track, per-act audio blocks with waveform display,
 transition and Ken Burns controls, a blocking export overlay wired to real render progress.
 See [The video engine](#the-video-engine-remotion).
 
 ### Stage 9 — Render
 
-`src/app/api/render-remotion/route.ts` bundles the Remotion project and renders. Local
-rendering runs inline with the machine's Chromium; AWS Lambda rendering is opt-in and
-selected automatically when configured. See [Rendering architecture](#rendering-architecture).
+`src/app/api/render-remotion/route.ts` is the thin HTTP entry point; it delegates to
+`src/server/rendering/` for payload preparation, progress tracking, and the local/Lambda
+backends. Local rendering runs inline with the machine's Chromium; AWS Lambda rendering is
+opt-in and selected automatically when configured. See [Rendering architecture](#rendering-architecture).
 
 ---
 
@@ -425,13 +426,17 @@ src/
   app/
     (dashboard)/        Authenticated UI — workspaces, videos, whiteboard, scene-board,
                         thumbnails, settings
-    actions/            "use server" actions — the real backend, one file per domain
-                        (whiteboard, video, audio, scene, slicer, format, fact, thumbnail,
-                        timeline, overlay-clip, media, workspace, orchestrator)
-    api/                Route handlers — streaming, webhooks, uploads, Remotion render
+    api/                Thin route handlers — streaming, webhooks, uploads, Remotion render
     page.tsx            Marketing landing page (light theme)
-  components/ui/        Client components — TimelineEditor, SceneBoard, Whiteboard,
-                        ChannelFormatSection, ChannelFactsSection, DeleteProjectButton
+  features/             Product code grouped by business capability
+    audio/server/       Narration and TTS server actions
+    channel-settings/   Channel format, identity, and fact-ledger UI/actions
+    scene-board/        Scene Board UI and read model
+    thumbnails/         Thumbnail UI and actions
+    timeline-editor/    Timeline UI plus scene/media/overlay/timeline actions
+    video-generation/   Script, slicing, orchestration, scouting, and approval actions
+    videos/             Video navigation, project controls, and project actions
+    workspaces/         Workspace UI and actions
   lib/
     ai/
       agents/           casting-director, visual-architect, prompt-assembler,
@@ -444,8 +449,8 @@ src/
       format-profile.ts / format-prompt.ts / format-profile-diff.ts / channel-brief.ts
       channel-facts.ts  Fact ledger types + helpers
       concurrency.ts    Shared rate limiter + bounded map
-    render/             lambda-config.ts, lambda-render.ts, s3-sync.ts
     supabase/           client.ts (browser) / server.ts (server components + actions)
+  server/rendering/     Local/Lambda render services, payload prep, cache, progress state
   remotion/             The video engine — index.ts is the bundler entry, loaded BY STRING
                         PATH from api/render-remotion; do not rename
   proxy.ts              Next 16 middleware

@@ -57,12 +57,12 @@ behavior until AWS credentials are set. Only Phase 1's account-side steps remain
   `npx remotion lambda policies validate` + the console, run
   `npx remotion lambda functions deploy` and `npx remotion lambda sites create`,
   then fill in the six `REMOTION_*` vars appended to `.env.local` (currently blank).
-- **Phase 2 — done.** [`src/lib/render/s3-sync.ts`](../src/lib/render/s3-sync.ts)
+- **Phase 2 — done.** [`src/server/rendering/s3-sync.ts`](../src/server/rendering/s3-sync.ts)
   (`syncPayloadMediaToS3`) uploads local + still-remote scene/audio media to S3 and
   returns presigned GET URLs (6h expiry), deduping via `HeadObject` so re-renders
-  don't re-upload unchanged assets. [`lambda-config.ts`](../src/lib/render/lambda-config.ts)
+  don't re-upload unchanged assets. [`lambda-config.ts`](../src/server/rendering/lambda-config.ts)
   holds `isLambdaConfigured()` / `getLambdaConfig()`.
-- **Phase 3 — done.** [`src/lib/render/lambda-render.ts`](../src/lib/render/lambda-render.ts)
+- **Phase 3 — done.** [`src/server/rendering/lambda-render.ts`](../src/server/rendering/lambda-render.ts)
   wraps `renderMediaOnLambda`/`getRenderProgress`.
   [`src/app/api/render-remotion/route.ts`](../src/app/api/render-remotion/route.ts)'s
   POST branches on `isLambdaConfigured()`: false → unchanged local `renderMedia` path;

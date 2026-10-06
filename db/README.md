@@ -5,7 +5,7 @@ migration runner and no `schema_migrations` table — the database's real state 
 and this folder is the reconstructed history of how it got there.
 
 **Filenames are load-bearing.** The app names these files in its own error messages, e.g.
-`src/app/actions/fact-actions.ts` tells you to "Run `db/add-channel-facts.sql`" when a table is
+`src/features/channel-settings/server/fact-actions.ts` tells you to "Run `db/add-channel-facts.sql`" when a table is
 missing. Do not rename or renumber them without updating those strings.
 
 ## Run order

@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
 import fs from "fs/promises";
 import path from "path";
-import { createMediaRecord } from "@/app/actions/media-actions";
+import { createMediaRecord } from "@/features/timeline-editor/server/media-actions";
 import { uploadBufferToSupabase } from "@/lib/supabase/storage";
 
 function guessMediaType(mimeType: string): "video" | "image" | "audio" {

@@ -1,8 +1,8 @@
 import { task, logger } from "@trigger.dev/sdk/v3";
-import { generateActNarration } from "@/app/actions/audio-actions";
+import { generateActNarration } from "@/features/audio/server/audio-actions";
 import { directSceneEdits } from "@/lib/ai/agents/edit-director";
-import { procureSceneMedia } from "@/app/actions/scout-actions";
-import { applyComboToScene } from "@/app/actions/combo-actions";
+import { procureSceneMedia } from "@/features/video-generation/server/scout-actions";
+import { applyComboToScene } from "@/features/timeline-editor/server/combo-actions";
 import { createClient } from "@/lib/supabase/server";
 
 export const runAutopilot = task({

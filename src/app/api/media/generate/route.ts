@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createMediaRecord, updateMediaStatus } from "@/app/actions/media-actions";
+import { createMediaRecord, updateMediaStatus } from "@/features/timeline-editor/server/media-actions";
 import { getProvider, getSourceForModel } from "@/lib/ai/providers/registry";
 
 interface GenerateBody {

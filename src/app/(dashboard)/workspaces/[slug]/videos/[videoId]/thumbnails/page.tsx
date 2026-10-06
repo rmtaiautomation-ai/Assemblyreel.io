@@ -4,9 +4,9 @@ import fs from "fs/promises";
 import path from "path";
 import { ArrowLeft } from "lucide-react";
 import { createClient } from "@/lib/supabase/server";
-import { listThumbnails } from "@/app/actions/thumbnail-actions";
-import ThumbnailPanel from "@/components/ui/ThumbnailPanel";
-import VideoTabs from "@/components/ui/VideoTabs";
+import { listThumbnails } from "@/features/thumbnails/server/thumbnail-actions";
+import ThumbnailPanel from "@/features/thumbnails/components/ThumbnailPanel";
+import VideoTabs from "@/features/videos/components/VideoTabs";
 
 /**
  * Per-video home for the thumbnail generator — a sibling to `whiteboard/`, not a tab on

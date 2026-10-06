@@ -1,10 +1,10 @@
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
-import { getWorkspaceFormatProfile } from "@/app/actions/format-actions";
-import { getWorkspaceChannelSettings } from "@/app/actions/workspace-actions";
-import { getChannelFacts } from "@/app/actions/fact-actions";
+import { getWorkspaceFormatProfile } from "@/features/channel-settings/server/format-actions";
+import { getWorkspaceChannelSettings } from "@/features/workspaces/server/workspace-actions";
+import { getChannelFacts } from "@/features/channel-settings/server/fact-actions";
 import { resolveFormatProfile } from "@/lib/ai/format-profile";
-import SettingsTabs from "@/components/ui/SettingsTabs";
+import SettingsTabs from "@/features/channel-settings/components/SettingsTabs";
 
 /**
  * Workspace Settings — a server component so both tabs start from the workspace's actual
