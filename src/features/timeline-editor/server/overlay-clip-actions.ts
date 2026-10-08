@@ -51,6 +51,7 @@ export async function createOverlayClip(
     origin?: "user" | "ai";
   }
 ) {
+  if (fields.kind === 'scene-template') return { success: false, error: 'Use the Presentation panel to save an attached template.' };
   if (!projectId) {
     return { success: false, error: "Missing projectId" };
   }
@@ -105,6 +106,11 @@ export async function updateOverlayClip(id: string, fields: Record<string, any>)
   if (!id) {
     return { success: false, error: "Missing id" };
   }
+  if (fields.kind === 'scene-template') return { success: false, error: 'Use the Presentation panel to edit an attached template.' };
+  const guardClient = await createClient();
+  const guard = await guardClient.from('overlay_clips').select('kind').eq('id', id).maybeSingle();
+  if (guard.error) return { success: false, error: 'Overlay access could not be verified.' };
+  if (guard.data?.kind === 'scene-template') return { success: false, error: 'Use the Presentation panel to edit an attached template.' };
 
   const payload: Record<string, any> = {};
   for (const key of UPDATABLE_FIELDS) {
@@ -130,6 +136,10 @@ export async function deleteOverlayClip(id: string) {
   if (!id) {
     return { success: false, error: "Missing id" };
   }
+  const guardClient = await createClient();
+  const guard = await guardClient.from('overlay_clips').select('kind').eq('id', id).maybeSingle();
+  if (guard.error) return { success: false, error: 'Overlay access could not be verified.' };
+  if (guard.data?.kind === 'scene-template') return { success: false, error: 'Use the Presentation panel to remove an attached template.' };
 
   const supabase = await createClient();
   const { error } = await supabase.from("overlay_clips").delete().eq("id", id);

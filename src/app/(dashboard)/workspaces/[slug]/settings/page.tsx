@@ -85,6 +85,7 @@ export default async function WorkspaceSettingsPage({
           workspaceId,
           initialProfile,
           initialPresetKey: formatResult.presetKey ?? null,
+          initialRevision: formatResult.revision ?? 0,
           migrationPending: formatResult.migrationPending ?? false,
           // Read-only, so the Format tab's "exact system instruction" preview includes
           // the NAMED SOURCES block generation really sends. Editing happens on Facts.

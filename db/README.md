@@ -8,6 +8,29 @@ and this folder is the reconstructed history of how it got there.
 `src/features/channel-settings/server/fact-actions.ts` tells you to "Run `db/add-channel-facts.sql`" when a table is
 missing. Do not rename or renumber them without updating those strings.
 
+## Billing foundation — draft, not applied
+
+The billing files below are outside the legacy run order. Configuration is deferred;
+do not paste them into the existing database yet.
+
+- `audit-billing-readiness.sql`: read-only metadata audit, not a migration.
+- `add-billing-accounts.sql`: new protected accounts, subscriptions and event records;
+  references `auth.users` without modifying legacy `users`/`profiles`.
+- `add-billing-usage.sql`: new allowance periods, operations and immutable reservation
+  items; requires the accounts migration first.
+- `add-billing-usage-functions.sql`: atomic reserve/settle RPCs; apply after usage tables.
+- `add-billing-usage-windows.sql`: idempotent window provisioning without resetting usage.
+- `add-billing-checkout.sql`: private checkout attempts and customer-binding RPCs.
+- `add-billing-webhook-functions.sql`: account sync leases and atomic subscription/window/event
+  application; requires all preceding billing files. Unsupported-event receipts are retained.
+
+The migrations intentionally **fail if their tables/functions already exist** and run in
+transactions. The legacy section's rerun guidance does not apply to these drafts.
+Review staging schema, roles, grants, ownership and retention before applying them.
+The billing test suite executes these six migrations only inside an ephemeral PGlite
+database. This does not apply them to Supabase or prove existing-schema compatibility
+or multi-connection concurrency. See [billing core](../docs/billing/core-implementation.md).
+
 ## Run order
 
 Ordered by dependency, not by date — see [Ordering traps](#ordering-traps) below for the two

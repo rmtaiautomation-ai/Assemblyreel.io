@@ -3,6 +3,9 @@ import { isLambdaConfigured } from "@/server/rendering/lambda-config";
 import { refreshLambdaProgress, renderViaLambda } from "@/server/rendering/lambda-renderer";
 import { renderLocally } from "@/server/rendering/local-renderer";
 import { isRenderPayload, prepareRenderPayload } from "@/server/rendering/render-payload";
+import { createClient } from '@/lib/supabase/server';
+import { PresentationAccessError, requirePresentationProject } from '@/features/presentations/server/access';
+import { prepareProjectPresentations } from '@/features/presentations/server/export';
 import {
   getRenderProgress,
   isRenderInFlight,
@@ -22,6 +25,8 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({ success: false, error: "Missing projectId" }, { status: 400 });
   }
 
+  try { await requirePresentationProject(await createClient(), projectId); }
+  catch { return NextResponse.json({ success: false, error: 'Project access required.' }, { status: 403 }); }
   await refreshLambdaProgress(projectId);
   const entry = getRenderProgress(projectId);
 
@@ -46,6 +51,7 @@ export async function POST(request: NextRequest) {
     }
 
     const projectId = requestBody.projectId;
+    const authorizedPayload = await prepareProjectPresentations(await createClient(), requestBody);
     if (isRenderInFlight(projectId)) {
       return NextResponse.json(
         { success: false, error: "A render for this project is already in progress." },
@@ -60,7 +66,7 @@ export async function POST(request: NextRequest) {
       startedAt: Date.now(),
     });
 
-    const prepared = prepareRenderPayload(requestBody, request.nextUrl.origin);
+    const prepared = prepareRenderPayload(authorizedPayload, request.nextUrl.origin);
     if (!prepared.success) {
       setRenderProgress(projectId, {
         progress: 0,
@@ -79,6 +85,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result);
   } catch (error) {
     console.error("Remotion Render API Error:", error);
-    return NextResponse.json({ success: false, error: errorMessage(error) }, { status: 500 });
+    return NextResponse.json({ success: false, error: errorMessage(error) }, { status: error instanceof PresentationAccessError ? error.status : 500 });
   }
 }

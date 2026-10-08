@@ -5,6 +5,7 @@ import path from "path";
 import { cacheRemoteMedia } from "./media-cache";
 import { setRenderProgress } from "./render-progress-store";
 import type { PreparedRenderPayload } from "./render-payload";
+import { mapPresentationAssets } from '../../lib/presentations/compiler';
 
 export interface LocalRenderResult {
   success: true;
@@ -33,7 +34,8 @@ export async function renderLocally(
   // this cache is intended to prevent.
   for (const scene of resolvedPayload.scenes) {
     const mediaUrl = await cacheRemoteMedia(scene.mediaUrl, origin);
-    cachedScenes.push({ ...scene, mediaUrl });
+    const presentation = await mapPresentationAssets(scene.presentation, async url => (await cacheRemoteMedia(url, origin)) ?? url);
+    cachedScenes.push({ ...scene, mediaUrl, ...(presentation ? { presentation } : {}) });
   }
 
   const payload = { ...resolvedPayload, scenes: cachedScenes };

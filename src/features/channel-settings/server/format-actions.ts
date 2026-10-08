@@ -77,6 +77,7 @@ async function readWorkspaceFormatColumns(
 }
 
 export interface GetWorkspaceFormatResult {
+  revision?: number;
   success: boolean;
   profile?: FormatProfile;
   presetKey?: string | null;
@@ -117,6 +118,7 @@ export async function getWorkspaceFormatProfile(
     presetKey: data.format_preset_key,
     blueprintOverride: data.format_blueprint,
     migrationPending,
+    revision: data.format_blueprint_version ?? 0,
     error: migrationPending ? MIGRATION_HINT : undefined,
   };
 }
@@ -140,7 +142,7 @@ export interface SaveWorkspaceFormatResult {
  */
 export async function saveWorkspaceFormatProfile(
   workspaceId: string,
-  params: { presetKey?: string; blueprintOverride?: FormatProfileOverride | null }
+  params: { presetKey?: string; blueprintOverride?: FormatProfileOverride | null; expectedRevision: number }
 ): Promise<SaveWorkspaceFormatResult> {
   if (params.presetKey !== undefined && !isFormatPresetKey(params.presetKey)) {
     return { success: false, error: `Unknown preset key: ${params.presetKey}` };
@@ -148,26 +150,14 @@ export async function saveWorkspaceFormatProfile(
 
   const supabase = await createClient();
 
-  const { data: current, error: readError } = await supabase
-    .from("workspaces")
-    .select("format_blueprint_version")
-    .eq("id", workspaceId)
-    .single();
-
-  if (readError) {
-    return { success: false, error: `${readError.message}. ${MIGRATION_HINT}` };
-  }
-
-  const nextVersion = ((current?.format_blueprint_version as number) ?? 0) + 1;
-
-  const update: Record<string, unknown> = { format_blueprint_version: nextVersion };
+  if (!Number.isInteger(params.expectedRevision) || params.expectedRevision < 0) return { success: false, error: 'Reload the channel settings before saving.' };
+  const update: Record<string, unknown> = {};
   if (params.presetKey !== undefined) update.format_preset_key = params.presetKey;
   if (params.blueprintOverride !== undefined) update.format_blueprint = params.blueprintOverride;
 
-  const { error } = await supabase.from("workspaces").update(update).eq("id", workspaceId);
-  if (error) return { success: false, error: error.message };
-
-  return { success: true, version: nextVersion };
+  const { data, error } = await supabase.rpc('save_channel_format_cas', { p_id: workspaceId, p_expected_revision: params.expectedRevision, p_patch: update });
+  if (error) return { success: false, error: error.message.includes('REVISION_CONFLICT') ? 'Format or Visuals changed in another tab. Reload before saving; no changes were overwritten.' : `${error.message}. Phase 2 setup requires db/add-documentary-template-library.sql.` };
+  return { success: true, version: Number(data) };
 }
 
 /* -------------------------------------------------------------------------- */

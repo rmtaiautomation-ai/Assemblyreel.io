@@ -36,6 +36,7 @@ export interface SceneBoardScene {
   /** Agent 5 (Cinematic Director). */
   cameraDirection: string | null;
   mediaUrl: string | null;
+  mediaId?: string | null;
   mediaType: string | null;
   generationStatus: string;
   /** Cast members whose name appears in this scene's narration or prompt. */
@@ -124,6 +125,7 @@ const TARGET_SECONDS_BY_FORM_VALUE: Record<string, { min: number; max: number }>
  * time instead of going blank.
  */
 const SCENE_COLUMN_TIERS = [
+  { columns: "id, sequence_number, act_number, voice_over_beat, scene_type, video_duration, final_video_prompt, environment, lighting, camera_direction, media_id, custom_media_url, custom_media_type, generation_status", missing: null },
   {
     columns:
       "id, sequence_number, act_number, voice_over_beat, scene_type, video_duration, final_video_prompt, environment, lighting, camera_direction, custom_media_url, custom_media_type, generation_status",
@@ -131,16 +133,18 @@ const SCENE_COLUMN_TIERS = [
   },
   {
     columns:
-      "id, sequence_number, act_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_url, custom_media_type, generation_status",
+      "id, sequence_number, act_number, voice_over_beat, scene_type, video_duration, final_video_prompt, media_id, custom_media_url, custom_media_type, generation_status",
     missing:
       "Camera, lighting and environment are hidden — run db/add-agent-pipeline-columns.sql to see them.",
   },
   {
     columns:
-      "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_url, custom_media_type, generation_status",
+      "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt, media_id, custom_media_url, custom_media_type, generation_status",
     missing:
       "Every scene is grouped under Act 1 — run db/add-act-persistence.sql to restore act grouping.",
   },
+  { columns: "id, sequence_number, act_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_url, custom_media_type, generation_status", missing: "Camera, lighting and environment are hidden — run db/add-agent-pipeline-columns.sql to see them." },
+  { columns: "id, sequence_number, voice_over_beat, scene_type, video_duration, final_video_prompt, custom_media_url, custom_media_type, generation_status", missing: "Every scene is grouped under Act 1 — run db/add-act-persistence.sql to restore act grouping." },
 ] as const;
 
 /** Matches a cast member to a scene by name mention. Cheap, and good enough to label a card. */
@@ -196,10 +200,15 @@ export async function loadSceneBoard(
 
   /* ── Cast (Agent 3) ────────────────────────────────────────────────────────── */
 
+  const mediaIds = sceneRows.map(row => row.media_id).filter((id): id is string => typeof id === 'string');
+  const sceneMedia = mediaIds.length ? await supabase.from('media').select('id,url,media_type,status').eq('project_id',projectId).in('id',mediaIds) : { data: [],error: null };
+  if (sceneMedia.error) warnings.push('Some linked scene media could not be resolved. Existing custom media remains visible.');
+
   const blueprints = (project.character_blueprints as CharacterBlueprints | null) ?? null;
   const cast: CharacterBlueprint[] = blueprints ? Object.values(blueprints) : [];
 
   const scenes: SceneBoardScene[] = sceneRows.map((row) => {
+    const linked = sceneMedia.data?.find(media => media.id === row.media_id && media.status === 'ready');
     const voiceOverText = (row.voice_over_beat as string) ?? "";
     const finalVideoPrompt = (row.final_video_prompt as string) ?? "";
     return {
@@ -213,8 +222,9 @@ export async function loadSceneBoard(
       environment: (row.environment as string) || null,
       lighting: (row.lighting as string) || null,
       cameraDirection: (row.camera_direction as string) || null,
-      mediaUrl: (row.custom_media_url as string) || null,
-      mediaType: (row.custom_media_type as string) || null,
+      mediaUrl: linked?.url || (row.custom_media_url as string) || null,
+      mediaId: (row.media_id as string) || null,
+      mediaType: linked?.media_type || (row.custom_media_type as string) || null,
       generationStatus: (row.generation_status as string) ?? "Pending",
       castNames: castNamesInScene(cast, voiceOverText, finalVideoPrompt),
     };

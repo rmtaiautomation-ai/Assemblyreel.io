@@ -365,6 +365,8 @@ export interface FormatContent {
 }
 
 export interface FormatVisual {
+  /** Optional documentary module defaults, frozen with the existing project snapshot. */
+  presentation?: import('../presentations/visual-settings').VisualSettings;
   /** Shot-selection guidance for the Scene Slicer. Was NicheProfile.visualBias. */
   visualBias: string;
   /**

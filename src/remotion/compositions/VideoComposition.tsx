@@ -11,6 +11,7 @@ import {
   continueRender,
 } from 'remotion';
 import { waitForFonts } from '../fonts';
+import { normalizeLegacyCard } from '../../lib/presentations/legacy';
 import type { DimScrimData, FilmDamageData, LightBeamData, LightSweepData, OverlayClipData, OverlayClipKind, ParticleFieldData, SceneOverlay, VideoCompositionProps } from '../types';
 import { isEnvironmentalKind } from '../types';
 import { layoutScenes } from '../timeline';
@@ -26,6 +27,7 @@ import { ParticleField } from '../templates/ParticleField';
 import { LightBeam } from '../templates/LightBeam';
 import { LightSweep } from '../templates/LightSweep';
 import { FilmDamage } from '../templates/FilmDamage';
+import { ScenePresentation } from '../presentations/ScenePresentation';
 
 /**
  * Paint order within the OV track. A scrim must sit under the light it's
@@ -107,6 +109,10 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
   // cost behind visible playback jank. `scenes` doesn't change frame-to-frame, so this
   // only needs to recompute when the project's scene list itself changes.
   const { segments } = useMemo(() => layoutScenes(scenes, fps), [scenes, fps]);
+  const compatibleOverlayClips = useMemo(
+    () => (overlayClips ?? []).map(normalizeLegacyCard),
+    [overlayClips],
+  );
 
   const renderOverlay = (overlay: SceneOverlay, nominalDurationInFrames: number) => (
     <OverlayFrame defaultAlign={defaultAlignForPreset(overlay.preset)}>
@@ -386,12 +392,13 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
                     {renderOverlay(scene.overlay, segment.durationInFrames)}
                   </Sequence>
                 )}
+                {scene.presentation && <ScenePresentation presentation={scene.presentation} preRollFrames={transitionInFrames} captions={Boolean(showCaptions && captionWords?.length)} />}
               </AbsoluteFill>
             </SceneTransition>
           </Sequence>
         );
       }),
-    [segments, fps]
+    [segments, fps, showCaptions, captionWords]
   );
 
   return (
@@ -407,7 +414,8 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           created in, not a deliberate z-order the user controls. Sorted with a
           copy — `overlayClips` is a prop and sorting in place would mutate the
           caller's array. */}
-      {[...(overlayClips ?? [])]
+      {[...compatibleOverlayClips]
+        .filter(clip => clip.kind !== 'scene-template')
         .sort((a, b) => zRank(a.kind) - zRank(b.kind))
         .map(renderOverlayClip)}
 
@@ -417,7 +425,7 @@ export const VideoComposition: React.FC<VideoCompositionProps> = ({
           own absolute timeline, so transitions (which never move nominal scene
           boundaries) cannot desync them. */}
       {showCaptions && captionWords && captionWords.length > 0 && (
-        <CaptionTrack words={captionWords} />
+        <CaptionTrack words={captionWords} documentary={scenes.some(scene => scene.presentation && scene.presentation.envelope.templateId !== 'clean')} />
       )}
 
       {/* Global audio track (voiceover / narration) — always starts at frame 0.

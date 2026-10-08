@@ -2,6 +2,7 @@
  * Shared types for Remotion compositions.
  * These mirror the scene data from the Timeline Editor.
  */
+import type { ResolvedPresentation } from '../lib/presentations/schema';
 
 export type OverlayPreset =
   | 'slide'
@@ -36,6 +37,7 @@ export interface SceneOverlay {
  * `OverlayPreset`.
  */
 export type OverlayClipKind =
+  | 'scene-template'
   | 'text'
   | 'checklist-card'
   | 'title-cutout-card'
@@ -313,6 +315,8 @@ export interface CompositionScene {
    * scene animates identically on every preview and export.
    */
   kenBurnsEnabled?: boolean;
+  /** Compiled scene-local presentation. Never also draw this on the global OV track. */
+  presentation?: ResolvedPresentation;
 }
 
 /**

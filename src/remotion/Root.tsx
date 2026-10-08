@@ -4,6 +4,7 @@ import { VideoComposition } from './compositions/VideoComposition';
 import { StyleSheet, type StyleSheetProps } from './dev/StyleSheet';
 import type { VideoCompositionProps, CompositionScene } from './types';
 import { layoutScenes } from './timeline';
+import { DOCUMENTARY_COMPOSITION_ID, DOCUMENTARY_V2_COMPOSITION_ID, DOCUMENTARY_V3_COMPOSITION_ID, DOCUMENTARY_V4_COMPOSITION_ID } from '../lib/presentations/registry';
 
 /**
  * Remotion Root — registers all compositions.
@@ -26,8 +27,9 @@ const defaultScene: CompositionScene = {
 export const RemotionRoot: React.FC = () => {
   return (
     <>
-      <Composition
-        id="MainVideo"
+      {['MainVideo', DOCUMENTARY_COMPOSITION_ID, DOCUMENTARY_V2_COMPOSITION_ID, DOCUMENTARY_V3_COMPOSITION_ID, DOCUMENTARY_V4_COMPOSITION_ID].map(id => <Composition
+        key={id}
+        id={id}
         component={VideoComposition}
         durationInFrames={150}
         fps={30}
@@ -62,7 +64,7 @@ export const RemotionRoot: React.FC = () => {
           width: 1080,
           height: 1920,
         } satisfies VideoCompositionProps}
-      />
+      />)}
 
       {/*
         Design harness for the card style library. Not used by the app — the

@@ -1,16 +1,15 @@
 import { renderMediaOnLambda, getRenderProgress } from "@remotion/lambda/client";
 import type { AwsRegion } from "@remotion/lambda/client";
 import { getLambdaConfig } from "./lambda-config";
+import { presentationCompositionId } from '../../lib/presentations/registry';
 
 /**
  * Phase 3 of implementation_plans/10-aws-lambda-cloud-rendering.md — thin
  * wrapper around @remotion/lambda so the render route doesn't deal with the
- * SDK's input shape directly. Composition id matches the one already used by
- * the local render path (`getCompositions(...).find(c => c.id === "MainVideo")`
- * in render-remotion/route.ts) — the Lambda site bundle exposes the same
- * Remotion project, so the composition id is identical.
+ * SDK's input shape directly. Attached presentations use a versioned composition
+ * alias: a stale deployed site fails with a missing composition instead of
+ * exporting a video that silently leaves the presentation out.
  */
-const COMPOSITION_ID = "MainVideo";
 
 export interface LambdaRenderHandle {
   renderId: string;
@@ -40,7 +39,7 @@ export async function startLambdaRender(inputProps: Record<string, unknown>): Pr
     region: region as AwsRegion,
     functionName,
     serveUrl,
-    composition: COMPOSITION_ID,
+    composition: presentationCompositionId(Array.isArray(inputProps.scenes) ? inputProps.scenes : []),
     inputProps,
     codec: "h264",
     framesPerLambda: 500, // Increased to 500 to keep chunk count < 200 for 34+ minute videos

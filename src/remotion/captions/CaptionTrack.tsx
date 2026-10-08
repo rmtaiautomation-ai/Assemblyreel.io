@@ -9,6 +9,7 @@ import {
 } from 'remotion';
 import { createTikTokStyleCaptions, type Caption, type TikTokPage } from '@remotion/captions';
 import type { CaptionWord } from '../types';
+import { CAPTION_BOTTOM_PERCENT, documentaryCaptionLayout } from './layout';
 
 /**
  * CapCut / TikTok-style burned-in captions.
@@ -27,16 +28,16 @@ import type { CaptionWord } from '../types';
 const PAGE_GROUPING_MS = 1200;
 
 /** Vertical placement, as a percentage from the top. Clear of the CapCut UI zone. */
-const CAPTION_BOTTOM_PERCENT = 18;
 
 const ACTIVE_WORD_COLOR = '#FFD60A';
 const INACTIVE_WORD_COLOR = '#FFFFFF';
 
 export interface CaptionTrackProps {
   words: CaptionWord[];
+  documentary?: boolean;
 }
 
-export const CaptionTrack: React.FC<CaptionTrackProps> = ({ words }) => {
+export const CaptionTrack: React.FC<CaptionTrackProps> = ({ words, documentary = false }) => {
   const { fps } = useVideoConfig();
 
   const pages = useMemo(() => {
@@ -76,7 +77,7 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({ words }) => {
             durationInFrames={durationInFrames}
             layout="none"
           >
-            <CaptionPage page={page} />
+            <CaptionPage page={page} documentary={documentary} />
           </Sequence>
         );
       })}
@@ -84,9 +85,10 @@ export const CaptionTrack: React.FC<CaptionTrackProps> = ({ words }) => {
   );
 };
 
-const CaptionPage: React.FC<{ page: TikTokPage }> = ({ page }) => {
+const CaptionPage: React.FC<{ page: TikTokPage; documentary: boolean }> = ({ page, documentary }) => {
   const frame = useCurrentFrame();
-  const { fps } = useVideoConfig();
+  const { fps, width, height } = useVideoConfig();
+  const layout = documentaryCaptionLayout(width, height);
 
   // useCurrentFrame() is Sequence-relative, but token timings are absolute to the
   // whole narration — rebase before comparing, or every page after the first
@@ -107,7 +109,7 @@ const CaptionPage: React.FC<{ page: TikTokPage }> = ({ page }) => {
       style={{
         justifyContent: 'flex-end',
         alignItems: 'center',
-        paddingBottom: `${CAPTION_BOTTOM_PERCENT}%`,
+        paddingBottom: documentary ? layout.bottom : `${CAPTION_BOTTOM_PERCENT}%`,
         paddingLeft: '8%',
         paddingRight: '8%',
       }}
@@ -121,7 +123,7 @@ const CaptionPage: React.FC<{ page: TikTokPage }> = ({ page }) => {
           transform: `scale(${scale})`,
           // Sized in vw-ish terms via em on the container so the same component reads
           // correctly at both 1080x1920 and 1920x1080 without per-format tuning.
-          fontSize: '5.2em',
+          fontSize: documentary ? layout.fontSize : '5.2em',
           fontFamily:
             'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif',
           fontWeight: 900,

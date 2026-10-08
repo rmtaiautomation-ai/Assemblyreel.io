@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState } from "react";
+import { VisualSettingsPanel } from '@/features/presentations/components/VisualSettingsPanel';
 import { Sliders, Sparkles, BookMarked } from "lucide-react";
 import ChannelFormatSection, {
   type ChannelFormatSectionProps,
@@ -40,6 +41,7 @@ import ChannelFactsSection, {
 const TABS = [
   { id: "channel", label: "Channel", icon: Sparkles, blurb: "Identity, look, voice" },
   { id: "format", label: "Format", icon: Sliders, blurb: "How every script is written" },
+  { id: "visuals", label: "Visuals", icon: Sparkles, blurb: "Documentary presentation defaults" },
   { id: "facts", label: "Facts", icon: BookMarked, blurb: "Sources it may name" },
 ] as const;
 
@@ -64,7 +66,7 @@ export default function SettingsTabs({
         filled pill makes the current section unmistakable from across a 1600px layout,
         and it has room for the one-line blurb that says what each tab actually contains.
       */}
-      <div className="mb-8 inline-flex gap-1 rounded-xl border border-ed-border bg-ed-well p-1">
+      <div className="mb-8 inline-flex flex-wrap gap-1 rounded-xl border border-ed-border bg-ed-well p-1">
         {TABS.map((tab) => {
           const active = tab.id === activeTab;
           const Icon = tab.icon;
@@ -104,6 +106,7 @@ export default function SettingsTabs({
       <div className={activeTab === "facts" ? "block" : "hidden"}>
         <ChannelFactsSection {...channelFactsProps} />
       </div>
+      <div className={activeTab === 'visuals' ? 'block' : 'hidden'}><VisualSettingsPanel scope="workspace" id={channelIdentityProps.workspaceId} /></div>
     </div>
   );
 }

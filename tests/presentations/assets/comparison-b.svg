@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1080" viewBox="0 0 720 1080">
+  <rect width="720" height="1080" fill="#334547"/><rect x="100" y="110" width="520" height="810" rx="15" fill="#dac9a5" stroke="#bbaa85" stroke-width="18"/>
+  <g fill="none" stroke="#81674a" stroke-width="12"><path d="M180 240H540M180 310H470M180 380H530M180 450H420M180 520H540M180 590H460M180 660H530M180 730H490M180 800H540"/><path d="M250 200V830M350 200V830M450 200V830" opacity=".2"/></g>
+  <text x="360" y="985" font-family="sans-serif" font-size="23" text-anchor="middle" fill="#dac9a5">SYNTHETIC TEST FIXTURE</text>
+</svg>

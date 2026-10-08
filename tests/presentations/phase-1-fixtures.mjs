@@ -1,0 +1,10 @@
+import { loadSource } from './load-source.mjs';
+export const schema = await loadSource(new URL('../../src/lib/presentations/schema.ts', import.meta.url));
+export const actorId = '10000000-0000-4000-8000-000000000001';
+export const otherActorId = '10000000-0000-4000-8000-000000000002';
+export const projectId = '20000000-0000-4000-8000-000000000001';
+export const sceneId = '30000000-0000-4000-8000-000000000001';
+export const mediaIds = ['40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000002'];
+export const envelope = schema.createComparisonDraft(mediaIds);
+export const timing = { start_time: 0.5, duration: 5.5, duration_mode: 'scene-remainder' };
+export const assets = mediaIds.map((id, index) => ({ id, projectId, name: `Image ${index + 1}`, url: `/media/fixture-${index + 1}.svg`, mediaType: 'image', status: 'ready' }));

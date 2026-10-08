@@ -4,6 +4,7 @@ import fs from "fs/promises";
 import path from "path";
 import crypto from "crypto";
 import { getLambdaConfig } from "./lambda-config";
+import { mapPresentationAssets } from '../../lib/presentations/compiler';
 
 /**
  * Phase 2 of implementation_plans/10-aws-lambda-cloud-rendering.md.
@@ -180,7 +181,8 @@ export async function syncPayloadMediaToS3(payload: any, origin: string): Promis
   const sync = (url: string | undefined) => syncMediaUrlToS3(url, origin, region, bucketName);
 
   const scenes = await runInChunks(payload.scenes ?? [], 10, async (scene: any) => {
-    return { ...scene, mediaUrl: await sync(scene.mediaUrl) };
+    return { ...scene, mediaUrl: await sync(scene.mediaUrl),
+      ...(scene.presentation ? { presentation: await mapPresentationAssets(scene.presentation, async url => (await sync(url)) ?? url) } : {}) };
   });
 
   const audioClips = await runInChunks(payload.audioClips ?? [], 10, async (clip: any) => {

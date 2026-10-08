@@ -1,6 +1,9 @@
+import type { ResolvedPresentation } from '../../lib/presentations/schema';
+
 interface RenderScene {
   id: string;
   mediaUrl?: string;
+  presentation?: ResolvedPresentation;
   [key: string]: unknown;
 }
 
@@ -56,7 +59,14 @@ export function prepareRenderPayload(
       mediaUrl = "https://test-videos.co.uk/vids/bigbuckbunny/mp4/h264/360/Big_Buck_Bunny_360_10s_1MB.mp4";
     }
 
-    return { ...scene, mediaUrl };
+    const presentation = scene.presentation ? {
+      ...scene.presentation,
+      assets: scene.presentation.assets.map(asset => {
+        recordBlobUrl(asset.url, `presentation image ${asset.itemId}`);
+        return { ...asset, url: absolutize(asset.url) ?? '' };
+      }),
+    } : undefined;
+    return { ...scene, mediaUrl, ...(presentation ? { presentation } : {}) };
   });
 
   const audioClips = (payload.audioClips ?? []).map((clip) => {

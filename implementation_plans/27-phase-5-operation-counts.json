@@ -1,0 +1,73 @@
+{
+  "note": "Operation counts from actual extracted source; excludes React commits, layout, decoding and browser latency.",
+  "playback": {
+    "before": {
+      "syntheticFrames": 600,
+      "editorStateUpdateCalls": 600,
+      "directSyncCalls": 0
+    },
+    "after": {
+      "syntheticFrames": 600,
+      "editorStateUpdateCalls": 0,
+      "directSyncCalls": 600
+    }
+  },
+  "presentations": [
+    {
+      "before": {
+        "sceneCount": 25,
+        "presentationRowIdReads": 650,
+        "referenceArrays": 50,
+        "referenceRows": 1250
+      },
+      "after": {
+        "sceneCount": 25,
+        "presentationRowIdReads": 75,
+        "referenceArrays": 1,
+        "referenceRows": 25
+      }
+    },
+    {
+      "before": {
+        "sceneCount": 100,
+        "presentationRowIdReads": 10100,
+        "referenceArrays": 200,
+        "referenceRows": 20000
+      },
+      "after": {
+        "sceneCount": 100,
+        "presentationRowIdReads": 300,
+        "referenceArrays": 1,
+        "referenceRows": 100
+      }
+    },
+    {
+      "before": {
+        "sceneCount": 250,
+        "presentationRowIdReads": 62750,
+        "referenceArrays": 500,
+        "referenceRows": 125000
+      },
+      "after": {
+        "sceneCount": 250,
+        "presentationRowIdReads": 750,
+        "referenceArrays": 1,
+        "referenceRows": 250
+      }
+    },
+    {
+      "before": {
+        "sceneCount": 500,
+        "presentationRowIdReads": 250500,
+        "referenceArrays": 1000,
+        "referenceRows": 500000
+      },
+      "after": {
+        "sceneCount": 500,
+        "presentationRowIdReads": 1500,
+        "referenceArrays": 1,
+        "referenceRows": 500
+      }
+    }
+  ]
+}

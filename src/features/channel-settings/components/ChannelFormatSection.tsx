@@ -158,6 +158,7 @@ function Field({
 }
 
 export interface ChannelFormatSectionProps {
+  initialRevision: number;
   workspaceId: string;
   /** Resolved on the server via getWorkspaceFormatProfile — preset + override merged. */
   initialProfile: FormatProfile;
@@ -182,7 +183,9 @@ export default function ChannelFormatSection({
   initialPresetKey,
   migrationPending,
   verifiedFacts,
+  initialRevision,
 }: ChannelFormatSectionProps) {
+  const [revision, setRevision] = useState(initialRevision);
   // The starting preset for "modified from preset" comparisons. Does NOT change when
   // the user edits fields — only when they explicitly pick a different preset from the
   // dropdown, which also resets `profile` below to match.
@@ -237,8 +240,10 @@ export default function ChannelFormatSection({
     const result = await saveWorkspaceFormatProfile(workspaceId, {
       presetKey,
       blueprintOverride: override,
+      expectedRevision: revision,
     });
     if (result.success) {
+      setRevision(result.version ?? revision);
       setSaveState("saved");
     } else {
       setSaveState("error");

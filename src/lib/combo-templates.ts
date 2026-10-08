@@ -1,9 +1,10 @@
-import { ComboId } from "./ai/agents/edit-director";
-import { OverlayClipKind, OverlayPreset } from "@/remotion/types";
+import type { ComboId } from "./ai/agents/edit-director";
+import type { ChecklistCardData, OverlayClipKind, OverlayPreset, TitleCutoutCardData } from "@/remotion/types";
 
 export interface ComboOverlayConfig {
   kind: OverlayClipKind;
   preset: OverlayPreset;
+  text?: string;
   dimBackground?: boolean;
   templateData?: Record<string, unknown>;
 }
@@ -26,40 +27,40 @@ export function getComboConfigs(comboId: ComboId, text?: string): ComboOverlayCo
   switch (comboId) {
     case "title_reveal":
       configs.push({ kind: "dim-scrim", preset: "none" });
-      configs.push({ kind: "title-cutout-card", preset: "pop", templateData: { style: "default", text: cleanText } });
+      configs.push({ kind: "title-cutout-card", preset: "pop", text: cleanText, templateData: { styleId: "cutout-hero" } satisfies TitleCutoutCardData });
       configs.push({ kind: "light-sweep", preset: "none" });
       break;
     case "motion_text":
-      configs.push({ kind: "text", preset: "cinematic-reveal" });
+      configs.push({ kind: "text", preset: "cinematic-reveal", text: cleanText });
       break;
     case "checklist": {
       const parsedItems = text && text.includes('\n')
         ? text.split('\n').map(s => s.trim()).filter(Boolean)
         : text && text.includes('.')
         ? text.split('.').map(s => s.trim()).filter(Boolean).slice(0, 4)
-        : ["Key Point 1", "Key Point 2", "Key Point 3"];
+        : text?.trim() ? [text.trim()] : ["Key Point 1", "Key Point 2", "Key Point 3"];
       const items = parsedItems.length > 0 ? parsedItems : ["Key Point 1", "Key Point 2", "Key Point 3"];
       configs.push({ kind: "dim-scrim", preset: "none" });
-      configs.push({ kind: "checklist-card", preset: "slide", templateData: { style: "default", items } });
+      configs.push({ kind: "checklist-card", preset: "slide", text: "", templateData: { styleId: "ledger-classic", bullets: items } satisfies ChecklistCardData });
       break;
     }
     case "quote":
       configs.push({ kind: "dim-scrim", preset: "none" });
-      configs.push({ kind: "title-cutout-card", preset: "slide", templateData: { style: "quote-card", text: cleanText } });
+      configs.push({ kind: "title-cutout-card", preset: "slide", text: cleanText, templateData: { styleId: "quote-card" } satisfies TitleCutoutCardData });
       break;
     case "chapter_open":
       configs.push({ kind: "film-damage", preset: "none" });
-      configs.push({ kind: "text", preset: "chapter-card" });
+      configs.push({ kind: "text", preset: "chapter-card", text: cleanText });
       configs.push({ kind: "particles", preset: "none" });
       break;
     case "divine":
       configs.push({ kind: "light-beam", preset: "none" });
       configs.push({ kind: "particles", preset: "none" });
-      configs.push({ kind: "text", preset: "line-wipe" });
+      configs.push({ kind: "text", preset: "line-wipe", text: cleanText });
       break;
     case "archive":
       configs.push({ kind: "film-damage", preset: "none" });
-      configs.push({ kind: "text", preset: "lower-third" });
+      configs.push({ kind: "text", preset: "lower-third", text: cleanText });
       break;
     case "clean":
       // No overlays, just media + ken burns

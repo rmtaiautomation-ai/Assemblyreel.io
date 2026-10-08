@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1080" height="720" viewBox="0 0 1080 720">
+  <path d="M80 620V310l110-110 110 110v310Z" fill="#4d3e30"/>
+  <path d="M780 630V440l130-100 130 100v190Z" fill="#756348"/>
+  <text x="540" y="620" fill="#fff" font-family="sans-serif" font-size="24" text-anchor="middle">PREPARED TRANSPARENT TEST LAYER</text>
+</svg>

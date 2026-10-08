@@ -27,13 +27,12 @@ export async function applyComboToScene(
 
   const configs = getComboConfigs(comboId, text);
   const createdClips = [];
-  const displayText = text && text.trim().length > 0 ? text.trim() : "Headline Statement";
 
   for (const config of configs) {
     const res = await createOverlayClip(projectId, {
       kind: config.kind,
       preset: config.preset,
-      text: config.kind === 'text' ? displayText : "",
+      text: config.text ?? "",
       dimBackground: config.dimBackground,
       templateData: config.templateData,
       startTime,
@@ -92,4 +91,3 @@ export async function autoDirectSingleSceneAction(
     return { success: false, error: error.message || "Failed to auto-direct scene" };
   }
 }
-

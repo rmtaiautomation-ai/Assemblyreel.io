@@ -4,6 +4,15 @@ import React, { useState, useRef, useEffect, useLayoutEffect, useMemo, useCallba
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { validateTimelineInput } from '../validation';
+import { createTimelineCursor, startTimelinePlayback } from '../playback';
+import { useCommittedEvent } from '../use-committed-event';
+import { TransitionControl } from './TransitionControl';
+import { SceneBlock } from './SceneBlock';
+import { EditorRecovery, EditorPanelContent, PreviewFailure } from './EditorRecovery';
+import { OrdinarySaveQueue, type SaveStatus } from '../save-queue';
+import { startPointerGesture } from '../pointer-gesture';
+import { shouldHandleTimelineShortcut, traceTimelineInteraction } from '../interaction';
 import VideoTabs from "@/features/videos/components/VideoTabs";
 import { resolveDurationProfile } from "@/lib/ai/generation-rules";
 import { Play, Pause, Image as ImageIcon, Volume2, Wand2, Clock, Maximize2, SkipBack, Type, Music, Loader2, Upload, LayoutTemplate, Settings, FolderOpen, Film, Layers, MonitorPlay, ChevronDown, ChevronRight, Trash2, Lock, Unlock, VolumeX, Download, Info, ArrowLeft, AlertTriangle, CheckCircle2, Mic, Repeat, RefreshCw, Check, X, ArrowRightLeft, ZoomIn, Zap, Sun, Clapperboard, Contrast, Sparkles, Sunrise, AlignLeft, FileText, BookOpen, Quote, ListChecks, ListOrdered, CheckSquare, PanelRight, FileSearch, Cloud, ExternalLink, Copy } from "lucide-react";
@@ -18,6 +27,15 @@ import { getOrCreatePresetMedia } from "@/features/timeline-editor/server/media-
 import { createOverlayClip, updateOverlayClip, deleteOverlayClip } from "@/features/timeline-editor/server/overlay-clip-actions";
 import { applyComboToScene, autoDirectSingleSceneAction } from "@/features/timeline-editor/server/combo-actions";
 import { COMBO_PRESETS } from "@/lib/combo-templates";
+import { normalizeLegacyCard, withCanonicalCardContent } from '@/lib/presentations/legacy';
+import { PresentationPanel } from '@/features/presentations/components/PresentationPanel';
+import { SuggestionReview } from '@/features/presentations/components/SuggestionReview';
+import { VisualSettingsPanel } from '@/features/presentations/components/VisualSettingsPanel';
+import { applyVisualSettings, defaultVisualSettings, visualSettingsSchema, visualSettingsFromSnapshot, type VisualSettings } from '@/lib/presentations/visual-settings';
+import { saveScenePresentation } from '@/features/presentations/server/actions';
+import { presentationRowSchema } from '@/lib/presentations/schema';
+import type { PresentationAsset, PresentationEnvelope, PresentationMutation, PresentationRow, PresentationTiming } from '@/lib/presentations/schema';
+import { presentationFrameRange, resolvePresentation } from '@/lib/presentations/compiler';
 import type { ComboId } from "@/lib/ai/agents/edit-director";
 import { TRANSITION_MUSIC_PRESETS, getTransitionMusicPreset } from "@/lib/transition-music-presets";
 import { Rnd } from "react-rnd";
@@ -120,9 +138,11 @@ interface OverlayClip {
    */
   templateData?: OverlayClipData['templateData'];
   origin: 'user' | 'ai';
+  /** Derived display-only owner for an attached presentation. */
+  sceneId?: string;
 }
 
-const overlayRowToClip = (row: any): OverlayClip => ({
+const overlayRowToClip = (row: any): OverlayClip => normalizeLegacyCard<OverlayClip>({
   id: row.id,
   kind: (row.kind || 'text') as OverlayClipKind,
   text: row.text ?? '',
@@ -181,6 +201,7 @@ const OVERLAY_PRESET_OPTIONS: { value: OverlayPreset; label: string }[] = [
  * override.
  */
 const OVERLAY_KIND_ACCENT: Record<OverlayClipKind, { stripe: string; icon: string }> = {
+  'scene-template': { stripe: 'bg-ed-accent', icon: 'text-ed-accent-text' },
   'text': { stripe: 'bg-ed-ov', icon: 'text-ed-ov' },
   'checklist-card': { stripe: 'bg-ed-ok', icon: 'text-ed-ok' },
   'title-cutout-card': { stripe: 'bg-ed-info', icon: 'text-ed-info' },
@@ -552,19 +573,9 @@ const FILMSTRIP_THUMB_WIDTH = 80;
 // where useLayoutEffect logs a warning. Effects never run there anyway.
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
 
-/** Selected blocks are drawn proud of the track. Applied through the same inline
- *  `transform` that positions them, because an inline transform overrides Tailwind's
- *  `scale-*` class entirely — the two cannot coexist on one element.
- *
- *  This IS the selection signal now (the violet ring and wash are gone), so it has to
- *  be big enough to read at a glance. 1.02 was too subtle to notice. Kept under ~1.08
- *  because the block only has 10% headroom above and below inside an h-16 track, and a
- *  wide block scales sideways into its neighbours — the point is "lifted", not
- *  "overlapping the scene next door". */
-const SELECTED_BLOCK_SCALE = 1.07;
-
-function blockTransform(leftPx: number, scaled: boolean) {
-  return `translate3d(${leftPx}px, 0, 0)${scaled ? ` scale(${SELECTED_BLOCK_SCALE})` : ''}`;
+/** Selection never changes timestamp-derived hit rectangles. */
+function blockTransform(leftPx: number, _selected: boolean) {
+  return `translate3d(${leftPx}px, 0, 0)`;
 }
 
 /**
@@ -642,7 +653,22 @@ function computeClipResize(args: {
   return { duration, trimStart, startTime };
 }
 
-export default function TimelineEditor({
+export default function TimelineEditor(props: React.ComponentProps<typeof TimelineEditorContent>) {
+  const errors = validateTimelineInput({ project: props.initialProject, scenes: props.initialScenes,
+    media: props.initialMedia ?? [], items: props.initialTimelineItems ?? [], overlays: props.initialOverlayClips ?? [] });
+  if (errors.length) return <div className="h-full flex flex-col items-center justify-center gap-4 bg-ed-well text-ed-text p-6">
+    <div role="alert" className="text-center space-y-2 max-w-lg">
+      <p className="font-semibold">This timeline contains invalid data.</p>
+      <p className="text-sm">{errors.slice(0, 3).join(' ')}</p>
+      <p className="text-xs text-ed-text-dim">Editing is paused to protect scene timing. Reload after correcting the data.</p>
+    </div>
+    <button className="underline" onClick={() => window.location.reload()}>Reload timeline</button>
+    <Link className="underline" href={`/workspaces/${props.workspaceId}`}>Back to workspace</Link>
+  </div>;
+  return <TimelineEditorContent {...props} />;
+}
+
+function TimelineEditorContent({
   workspaceId,
   initialProject,
   initialScenes,
@@ -676,31 +702,85 @@ export default function TimelineEditor({
       .filter((c): c is TimelineClip => c !== null);
   });
   const [overlayClips, setOverlayClips] = useState<OverlayClip[]>(
-    () => initialOverlayClips.map(overlayRowToClip)
+    () => initialOverlayClips.filter(row => row.kind !== 'scene-template').map(overlayRowToClip)
   );
+  const [presentationRows, setPresentationRows] = useState<PresentationRow[]>(() => initialOverlayClips
+    .filter(row => row.kind === 'scene-template')
+    .flatMap(row => { const parsed = presentationRowSchema.safeParse(row); return parsed.success ? [parsed.data] : []; }));
+  const [unsupportedPresentationScenes] = useState<string[]>(() => initialOverlayClips
+    .filter(row => row.kind === 'scene-template' && !presentationRowSchema.safeParse(row).success)
+    .map(row => String(row.scene_id ?? 'unknown')));
+  const [presentationUndo, setPresentationUndo] = useState<Record<string, { previous: PresentationRow | null; after: PresentationRow | null }>>({});
+  const [presentationVisualSettings, setPresentationVisualSettings] = useState<VisualSettings>(() => {
+    try { return initialProject.presentation_visual_settings ? visualSettingsSchema.parse(initialProject.presentation_visual_settings) : visualSettingsFromSnapshot(initialProject.format_blueprint_snapshot) ?? defaultVisualSettings(); }
+    catch { return defaultVisualSettings(); }
+  });
+  const presentationRequests = useRef<Record<string, { fingerprint: string; operationId: string }>>({});
+  const sceneById = useMemo(() => new Map<string, (typeof scenes)[number]>(scenes.map(scene => [scene.id, scene])), [scenes]);
+  const presentationBySceneId = useMemo(() => {
+    const index = new Map<string, PresentationRow>();
+    // Preserve find()'s first-row behavior for any legacy duplicate records.
+    for (const row of presentationRows) if (!index.has(row.scene_id)) index.set(row.scene_id, row);
+    return index;
+  }, [presentationRows]);
+  const sceneReferences = useMemo(() => scenes.map(item => ({
+    id: item.id, sequence: item.sequence_number, mediaId: item.media_id ?? null,
+  })), [scenes]);
   const [selectedOverlayClipId, setSelectedOverlayClipId] = useState<string | null>(null);
   // While dragging/trimming an OV clip, the V1 scene-boundary time it's
   // currently snapped to — drives the CapCut-style vertical alignment guide
   // line spanning the OV and V1 rows. Null whenever not snapped to anything.
   const [overlaySnapGuideTime, setOverlaySnapGuideTime] = useState<number | null>(null);
-  const [selectedScene, setSelectedScene] = useState<any | null>(null);
+  const [selectedSceneId, setSelectedSceneId] = useState<string | null>(null);
+  const selectedSceneIdRef = useRef(selectedSceneId);
+  selectedSceneIdRef.current = selectedSceneId;
+  const scenesRef = useRef(scenes);
+  scenesRef.current = scenes;
+  const selectedScene = sceneById.get(selectedSceneId ?? '') ?? null;
+  // Compatibility adapter: only identity is stored; the inspector always reads the current row.
+  const setSelectedScene = useCallback((value: any | ((previous: any) => any)) => {
+    setSelectedSceneId(previousId => {
+      const previous = scenesRef.current.find(scene => scene.id === previousId) ?? null;
+      const next = typeof value === 'function' ? value(previous) : value;
+      return typeof next?.id === 'string' ? next.id : null;
+    });
+  }, []);
   const [selectedSceneTrack, setSelectedSceneTrack] = useState<'V1' | 'A1' | 'A2' | null>(null);
-  const [selectedTimelineClip, setSelectedTimelineClip] = useState<TimelineClip | null>(null);
+  const [selectedTimelineClipId, setSelectedTimelineClipId] = useState<string | null>(null);
+  const timelineClipsRef = useRef(timelineClips);
+  timelineClipsRef.current = timelineClips;
+  const selectedTimelineClip = timelineClips.find(clip => clip.id === selectedTimelineClipId) ?? null;
+  const setSelectedTimelineClip = useCallback((value: React.SetStateAction<TimelineClip | null>) => {
+    setSelectedTimelineClipId(previousId => {
+      const previous = timelineClipsRef.current.find(clip => clip.id === previousId) ?? null;
+      const next = typeof value === 'function' ? value(previous) : value;
+      return next?.id ?? null;
+    });
+  }, []);
   const [selectedSceneKeys, setSelectedSceneKeys] = useState<string[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<MediaAsset | null>(null);
   
-  const [cursorPosition, setCursorPosition] = useState<number>(0);
-  // Authoritative position for the playback RAF loop. Reading `cursorPosition` from a
-  // `setCursorPosition(prev => ...)` updater worked for computing the next value, but
-  // hid the "have we reached the end" decision inside that updater where it couldn't
-  // reliably control whether the next frame gets scheduled — `requestAnimationFrame`
-  // was being called unconditionally, once even in the same tick the end was reached.
-  // This ref lets `animate` decide synchronously, in its own scope, before scheduling.
-  const cursorPositionRef = useRef(cursorPosition);
+  useEffect(() => {
+    if (selectedSceneId && !scenes.some(scene => scene.id === selectedSceneId)) setSelectedSceneId(null);
+    if (selectedTimelineClipId && !timelineClips.some(clip => clip.id === selectedTimelineClipId)) setSelectedTimelineClipId(null);
+    if (selectedOverlayClipId && !overlayClips.some(clip => clip.id === selectedOverlayClipId)) setSelectedOverlayClipId(null);
+    setSelectedSceneKeys(previous => {
+      const next = previous.filter(key => scenes.some(scene => key === scene.id + '_V1' || key === scene.id + '_A1')
+        || timelineClips.some(clip => key === clip.id + '_' + clip.trackId));
+      return next.length === previous.length ? previous : next;
+    });
+  }, [scenes, timelineClips, overlayClips, selectedSceneId, selectedTimelineClipId, selectedOverlayClipId]);
+
+  const [timelineCursor] = useState(createTimelineCursor);
+  const cursorPositionRef = timelineCursor.positionRef;
+  const setCursorPosition = timelineCursor.seek;
   const [timelineHeight, setTimelineHeight] = useState(320);
   const [isPlaying, setIsPlaying] = useState(false);
-  const lastTimeRef = useRef<number>(0);
-  const animationRef = useRef<number | null>(null);
+  const [previewAttempt, setPreviewAttempt] = useState(0);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  const handlePreviewFailure = useCallback(() => { setIsPlaying(false); setPreviewFailed(true); }, []);
+  const retryPreview = useCallback(() => { setPreviewFailed(false); setPreviewAttempt(previous => previous + 1); }, []);
+
   // Trimming a clip edge and dragging the timeline panel's height are separate
   // gestures — sharing one flag let a clip trim also resize the panel.
   const [isResizing, setIsResizing] = useState(false);
@@ -736,6 +816,18 @@ export default function TimelineEditor({
   // what lets Act 5 be replaced without re-synthesising the other 22 minutes.
   const [actNarrations, setActNarrations] = useState<ActNarration[]>([]);
   const [selectedActNumber, setSelectedActNumber] = useState<number | null>(null);
+  const focusSelection = useCallback((kind: 'scene' | 'clip' | 'overlay' | 'act' | 'asset' | null) => {
+    if (kind !== 'scene') setSelectedSceneId(null);
+    if (kind !== 'clip') setSelectedTimelineClipId(null);
+    if (kind !== 'overlay') setSelectedOverlayClipId(null);
+    if (kind !== 'act') setSelectedActNumber(null);
+    if (kind !== 'asset') setSelectedAsset(null);
+    if (kind !== 'scene' && kind !== 'clip') {
+      setSelectedSceneTrack(null);
+      setSelectedSceneKeys([]);
+    }
+  }, []);
+
   // Shared by both "generate this Act's audio for the first time" (from an empty
   // placeholder block) and "re-record" (an Act that already has audio) — both are the
   // same underlying call (`regenerateActNarration` reads whatever text is currently
@@ -812,6 +904,7 @@ export default function TimelineEditor({
   }, [initialProject.id]);
 
   const handleApproveActVisuals = async (actNumber: number) => {
+    try {
     setApprovingActNumber(actNumber);
     try {
       const res = await approveActVisuals({
@@ -830,9 +923,14 @@ export default function TimelineEditor({
     } finally {
       setApprovingActNumber(null);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const handleRegenerateActVisuals = async (actNumber: number) => {
+    try {
     setApprovingActNumber(actNumber);
     try {
       const res = await regenerateActVisuals({
@@ -850,11 +948,16 @@ export default function TimelineEditor({
     } finally {
       setApprovingActNumber(null);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const [isApproving, setIsApproving] = useState(false);
 
   const handleApproveAndGenerateVisuals = async () => {
+    try {
     setIsApproving(true);
     try {
       const res = await approveAndGenerateVisuals({
@@ -881,9 +984,14 @@ export default function TimelineEditor({
     } finally {
       setIsApproving(false);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const handleRegenerateAct = async (actNumber: number) => {
+    try {
     setRegeneratingActNumber(actNumber);
     try {
       const res = await regenerateActNarration({ projectId: initialProject.id, actNumber });
@@ -907,6 +1015,10 @@ export default function TimelineEditor({
       if (res.warnings.length > 0) alert(res.warnings.join("\n\n"));
     } finally {
       setRegeneratingActNumber(null);
+    }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
   const [masterAudioDuration, setMasterAudioDuration] = useState<number>(0);
@@ -994,6 +1106,7 @@ export default function TimelineEditor({
     sceneId: string;
     results: StockResult[];
   } | null>(null);
+  const stockSearchRequestRef = useRef(0);
   const [isSearchingStock, setIsSearchingStock] = useState(false);
   // A thumbnail click only stages a pick for preview; nothing is downloaded or
   // persisted until the user hits Apply, so browsing results doesn't burn storage.
@@ -1147,6 +1260,7 @@ export default function TimelineEditor({
   const remotionPlayerRef = useRef<PlayerRef>(null);
   
   const [draggingAsset, setDraggingAsset] = useState<MediaAsset | null>(null);
+  const scenePressRef = useRef<{ x: number; y: number } | null>(null);
   const [draggingScene, setDraggingScene] = useState<{ id: string, track: string, duration: number } | null>(null);
   const [v1DragInsertIndex, setV1DragInsertIndex] = useState<number | null>(null);
   const [a1DragInsertIndex, setA1DragInsertIndex] = useState<number | null>(null);
@@ -1164,32 +1278,20 @@ export default function TimelineEditor({
   // the user — but it still says it, rather than failing silently the way the
   // narration_url column did.
   const [persistenceWarning, setPersistenceWarning] = useState<string | null>(null);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>({ state: 'saved', pending: 0, errors: [] });
+  const [saveQueue] = useState(() => new OrdinarySaveQueue());
+  useEffect(() => {
+    const unsubscribe = saveQueue.subscribe(setSaveStatus);
+    return () => { unsubscribe(); saveQueue.dispose(); };
+  }, [saveQueue]);
 
-  const saveTrackStatesTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // The effect below runs on mount too, which would write identical state back to
-  // the DB on every page load — pure noise, and a guaranteed error every load if
-  // the column is missing. Only persist once the user has actually changed something.
+
   const trackStatesDirtyRef = useRef(false);
-
   useEffect(() => {
     if (!trackStatesDirtyRef.current) return;
-
-    if (saveTrackStatesTimerRef.current) clearTimeout(saveTrackStatesTimerRef.current);
-    saveTrackStatesTimerRef.current = setTimeout(async () => {
-      const res = await updateProjectTrackStates(initialProject.id, trackStates);
-      if (!res.success) {
-        setPersistenceWarning(
-          `Track volume/mute settings aren't being saved: ${res.error}. ` +
-          `If this persists, run add-track-states-column.sql in the Supabase SQL editor.`
-        );
-      } else {
-        setPersistenceWarning(null);
-      }
-    }, 1000);
-    return () => {
-      if (saveTrackStatesTimerRef.current) clearTimeout(saveTrackStatesTimerRef.current);
-    };
-  }, [trackStates, initialProject.id]);
+    saveQueue.enqueue('tracks:' + initialProject.id, { trackStates },
+      payload => updateProjectTrackStates(initialProject.id, payload.trackStates as TrackStates), 1000);
+  }, [trackStates, initialProject.id, saveQueue]);
 
   const toggleTrackState = (trackId: TrackId, key: 'locked' | 'muted') => {
     trackStatesDirtyRef.current = true;
@@ -1372,7 +1474,15 @@ export default function TimelineEditor({
   const mediaRefs = useRef<{ [id: string]: HTMLMediaElement | null }>({});
 
   // Timeline scaling and zooming
-  const [scale, setScale] = useState(30); // 1 Second = 30px width
+  const [scale, setScaleState] = useState(30);
+  const sceneResizeCancelRef = useRef<(() => void) | null>(null);
+  const setScale = (next: number) => {
+    activePointerGestureRef.current?.();
+    sceneResizeCancelRef.current?.();
+    // Zoom changes pixels per second while keeping the playhead at the same time.
+    cursorPositionRef.current = cursorPositionRef.current / scale * next;
+    setScaleState(next);
+  }; // 1 Second = 30px width
 
   /** How many filmstrip thumbnails fit across a block of the given duration. */
   const filmstripCount = (durationSeconds: number) =>
@@ -1396,6 +1506,8 @@ export default function TimelineEditor({
     node: HTMLElement;
     baseLeftPx: number;
     scaled: boolean;
+    /** Transition boundaries move with a scene, but keep their own duration width. */
+    resizeWidth?: boolean;
     /**
      * The exact inline `transform`/`width` React had rendered onto this node
      * when the gesture began — i.e. the values React still BELIEVES are on the
@@ -1411,6 +1523,8 @@ export default function TimelineEditor({
     track: string;
     edge: 'left' | 'right';
     startClientX: number;
+    pointerId: number;
+    pointerTarget: Element | null;
     scale: number;
     initialDuration: number;
     initialTrimStart: number;
@@ -1431,8 +1545,7 @@ export default function TimelineEditor({
   // handlePointerMove records the values it lands on so handlePointerUp can persist
   // them once, on release, without reading state from inside a setter.
   const lastResizeValuesRef = useRef<Record<string, any> | null>(null);
-  // Scene block DOM nodes, keyed `${sceneId}_V1` / `${sceneId}_A1` to match the
-  // existing `selectedSceneKeys` convention.
+  // Scene blocks and incoming transition controls, keyed by scene ID and track/kind.
   const blockRefs = useRef<Record<string, HTMLElement | null>>({});
   // Number of filmstrip thumbnails a block was showing when its gesture began. The
   // count is normally derived from the block's pixel width, so resizing would mount
@@ -1456,6 +1569,7 @@ export default function TimelineEditor({
     e.stopPropagation();
     e.preventDefault();
 
+    if (trackStates[track.replace('_clip', '') as TrackId]?.locked) return;
     const isClip = track === 'A1_clip' || track === 'A2_clip';
     const resizeTargets: GestureTarget[] = [];
     const shiftTargets: GestureTarget[] = [];
@@ -1486,9 +1600,9 @@ export default function TimelineEditor({
       // The trimmed scene renders on both V1 and A1; so does everything after it.
       // Resolved once here so the move handler never touches React state or the DOM
       // tree — it only writes to nodes it already holds.
-      for (const suffix of ['V1', 'A1'] as const) {
+      for (const suffix of ['V1', 'A1', 'transition'] as const) {
         const own = readTarget(`${sceneId}_${suffix}`);
-        if (own) resizeTargets.push(own);
+        if (own) resizeTargets.push({ ...own, resizeWidth: suffix !== 'transition' });
         for (let i = sceneIndex + 1; i < scenes.length; i++) {
           const following = readTarget(`${scenes[i].id}_${suffix}`);
           if (following) shiftTargets.push(following);
@@ -1520,6 +1634,8 @@ export default function TimelineEditor({
       track,
       edge,
       startClientX: e.clientX,
+      pointerId: e.pointerId,
+      pointerTarget: e.currentTarget ?? null,
       scale,
       initialDuration: duration,
       initialTrimStart: trimStart,
@@ -1559,7 +1675,7 @@ export default function TimelineEditor({
     const widthPx = duration * g.scale;
 
     for (const t of g.resizeTargets) {
-      t.node.style.width = `${widthPx}px`;
+      if (t.resizeWidth !== false) t.node.style.width = `${widthPx}px`;
       // A left-edge trim keeps the right edge pinned, so the block's own left moves
       // by the inverse of the size change. A right-edge trim leaves it where it is.
       t.node.style.transform = blockTransform(g.edge === 'left' ? t.baseLeftPx - deltaPx : t.baseLeftPx, t.scaled);
@@ -1634,6 +1750,9 @@ export default function TimelineEditor({
     };
 
     const handlePointerMove = (e: PointerEvent) => {
+      const current = gestureRef.current;
+      if (!current || e.pointerId !== current.pointerId) return;
+      if (!gestureMovedRef.current && Math.abs(e.clientX - current.startClientX) < 3) return;
       e.preventDefault();
       // Coalesce to one update per frame. Everything the work needs lives in refs,
       // so the listener itself stays a couple of assignments.
@@ -1644,7 +1763,11 @@ export default function TimelineEditor({
       }
     };
 
-    const handlePointerUp = () => {
+    const handlePointerUp = (event?: PointerEvent) => {
+      if (event && event.pointerId !== gestureRef.current?.pointerId) return;
+      if (event && gestureMovedRef.current) gesturePointerXRef.current = event.clientX;
+      // Resolve the last coalesced sample before cancelling its scheduled frame.
+      if (gestureMovedRef.current) runFrame();
       if (gestureFrameRef.current !== null) {
         cancelAnimationFrame(gestureFrameRef.current);
         gestureFrameRef.current = null;
@@ -1698,20 +1821,46 @@ export default function TimelineEditor({
       setIsResizing(false);
     };
 
+    const handleCancel = () => {
+      const current = gestureRef.current;
+      if (current) {
+        clearGestureDom(current);
+        if (current.kind === 'clip') setTimelineClips(previous => previous.map(clip => clip.id === current.id
+          ? { ...clip, startTime: current.initialStartTime, duration: current.initialDuration, trimStart: current.initialTrimStart } : clip));
+      }
+      gestureRef.current = null;
+      lastResizeValuesRef.current = null;
+      gestureMovedRef.current = false;
+      if (gestureFrameRef.current !== null) { cancelAnimationFrame(gestureFrameRef.current); gestureFrameRef.current = null; }
+      setFrozenStrip(null);
+      setIsResizing(false);
+    };
+    const handlePointerCancel = (event: PointerEvent) => {
+      if (event.pointerId === gestureRef.current?.pointerId) handleCancel();
+    };
+    const handleEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') handleCancel(); };
+    sceneResizeCancelRef.current = handleCancel;
+    const pointerTarget = gestureRef.current.pointerTarget;
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
-    // Without this a gesture interrupted by the browser (dragged out of the window,
-    // a touch turned into a scroll) would leave the inline overrides painted on and
-    // the trim never committed.
-    window.addEventListener('pointercancel', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerCancel);
+    window.addEventListener('blur', handleCancel);
+    window.addEventListener('scroll', handleCancel, true);
+    window.addEventListener('resize', handleCancel);
+    window.addEventListener('keydown', handleEscape);
+    pointerTarget?.addEventListener('lostpointercapture', handlePointerCancel as EventListener);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
-      window.removeEventListener('pointercancel', handlePointerUp);
-      if (gestureFrameRef.current !== null) {
-        cancelAnimationFrame(gestureFrameRef.current);
-        gestureFrameRef.current = null;
-      }
+      window.removeEventListener('pointercancel', handlePointerCancel);
+      window.removeEventListener('blur', handleCancel);
+      window.removeEventListener('scroll', handleCancel, true);
+      window.removeEventListener('resize', handleCancel);
+      sceneResizeCancelRef.current = null;
+      window.removeEventListener('keydown', handleEscape);
+      pointerTarget?.removeEventListener('lostpointercapture', handlePointerCancel as EventListener);
+      if (gestureRef.current) handleCancel();
+      if (gestureFrameRef.current !== null) { cancelAnimationFrame(gestureFrameRef.current); gestureFrameRef.current = null; }
     };
     // Everything the handlers read lives in refs, so this subscribes once per
     // gesture rather than re-binding as values change mid-drag.
@@ -1805,6 +1954,7 @@ export default function TimelineEditor({
   };
 
   const handleDrop = async (e: React.DragEvent, trackId: string) => {
+    try {
     e.preventDefault();
     setV1DragInsertIndex(null);
     setA1DragInsertIndex(null);
@@ -2038,11 +2188,12 @@ export default function TimelineEditor({
             if (res.success && res.scene) {
               // Swap the temp id for the real UUID so future edits/deletes can persist.
               setScenes(prev => prev.map(s => s.id === tempSceneId ? { ...s, id: res.scene.id } : s));
+              setSelectedSceneId(prev => prev === tempSceneId ? res.scene.id : prev);
+              setSelectedSceneKeys(prev => prev.map(key => key.startsWith(tempSceneId + '_') ? res.scene.id + key.slice(tempSceneId.length) : key));
 
               // The insert shifted every scene at/after insertIndex. Persist the whole
               // ordering, or those siblings keep stale sequence_numbers and collide.
-              const finalOrder = [...scenes];
-              finalOrder.splice(insertIndex, 0, { id: res.scene.id });
+              const finalOrder = scenesRef.current.map(scene => scene.id === tempSceneId ? { ...scene, id: res.scene.id } : scene);
               reorderScenes(
                 finalOrder
                   .map((s, idx) => ({ id: s.id, sequence_number: idx + 1 }))
@@ -2065,9 +2216,14 @@ export default function TimelineEditor({
         console.error("Failed to parse dropped asset data", err);
       }
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const handleGenerateAllAudio = async () => {
+    try {
     setIsGeneratingAll(true);
     for (const scene of scenes) {
       if (!scene.audio_url) {
@@ -2076,7 +2232,7 @@ export default function TimelineEditor({
         if (res.success) {
           setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, audio_url: res.audioUrl } : s));
           if (selectedScene?.id === scene.id) {
-            setSelectedScene((prev: any) => ({ ...prev, audio_url: res.audioUrl }));
+            setSelectedScene((prev: any) => prev?.id === scene.id ? { ...prev, audio_url: res.audioUrl } : prev);
           }
         } else {
           alert(`Error on Scene ${scene.sequence_number}: ${res.error}`);
@@ -2086,10 +2242,16 @@ export default function TimelineEditor({
     }
     setGeneratingSceneId(null);
     setIsGeneratingAll(false);
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+      setGeneratingSceneId(null); setIsGeneratingAll(false);
+    }
   };
 
   // Generates ONE continuous narration WAV and places it as a single A1 block
   const handleGenerateFullNarration = async () => {
+    try {
     setIsGeneratingNarration(true);
     const res = await generateFullNarration(initialProject.id, scenes, selectedVoiceId || undefined);
     if (res.success && res.audioUrl) {
@@ -2108,49 +2270,39 @@ export default function TimelineEditor({
       alert(`Narration error: ${res.error}`);
     }
     setIsGeneratingNarration(false);
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+      setIsGeneratingNarration(false);
+    }
   };
 
   const handleRegenerateSingleAudio = async (sceneId: string, voiceOver: string) => {
+    try {
     setGeneratingSceneId(sceneId);
     const res = await generateSceneAudio(sceneId, voiceOver, selectedVoiceId || undefined);
     if (res.success) {
       setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, audio_url: res.audioUrl } : s));
-      setSelectedScene((prev: any) => ({ ...prev, audio_url: res.audioUrl }));
+      setSelectedScene((prev: any) => prev?.id === sceneId ? { ...prev, audio_url: res.audioUrl } : prev);
     }
     setGeneratingSceneId(null);
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+      setGeneratingSceneId(null);
+    }
   };
 
-  // Pending writes are merged per scene so a debounced textarea save never drops
-  // a field that was changed while the timer was running.
-  const pendingSavesRef = useRef<{ [sceneId: string]: Record<string, any> }>({});
-  const saveTimersRef = useRef<{ [sceneId: string]: ReturnType<typeof setTimeout> }>({});
-
   const persistSceneFields = (sceneId: string, fields: Record<string, any>, debounce = false) => {
-    if (!isPersistedScene(sceneId)) return;
-
-    pendingSavesRef.current[sceneId] = { ...pendingSavesRef.current[sceneId], ...fields };
-
-    const flush = () => {
-      const payload = pendingSavesRef.current[sceneId];
-      delete pendingSavesRef.current[sceneId];
-      delete saveTimersRef.current[sceneId];
-      if (!payload || Object.keys(payload).length === 0) return;
-      updateScene(sceneId, payload).then(res => {
-        if (!res.success) console.error("[Scene Save]", res.error);
-      });
-    };
-
-    if (saveTimersRef.current[sceneId]) clearTimeout(saveTimersRef.current[sceneId]);
-    if (debounce) {
-      saveTimersRef.current[sceneId] = setTimeout(flush, 800);
-    } else {
-      flush();
-    }
+    if (!isPersistedScene(sceneId) || !scenesRef.current.some(scene => scene.id === sceneId)) return;
+    saveQueue.enqueue('scene:' + sceneId, fields, payload => updateScene(sceneId, payload), debounce ? 800 : 0);
   };
 
   const updateSceneDetails = (sceneId: string, field: string, value: any) => {
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, [field]: value } : s));
-    setSelectedScene((prev: any) => ({ ...prev, [field]: value }));
+    setSelectedScene((prev: any) =>
+      prev?.id === sceneId ? { ...prev, [field]: value } : prev
+    );
     // Typing debounces; dropdowns save straight away.
     const isFreeText = field === 'voice_over_beat' || field === 'final_video_prompt';
     persistSceneFields(sceneId, { [field]: value }, isFreeText);
@@ -2182,6 +2334,41 @@ export default function TimelineEditor({
     () => projectVisualAssets.filter(m => m.type === 'image'),
     [projectVisualAssets]
   );
+  const presentationAssets: PresentationAsset[] = useMemo(() => {
+    const persisted = initialMedia.map(row => ({ id: row.id, projectId: row.project_id, name: row.original_filename || 'Project image',
+      url: row.url || '', mediaType: row.media_type, status: row.status || 'ready' }));
+    const uploaded = mediaAssets.filter(asset => asset.mediaId && asset.persistedUrl && asset.uploadStatus !== 'uploading').map(asset => ({
+      id: asset.mediaId!, projectId: initialProject.id as string, name: asset.name,
+      url: asset.persistedUrl!, mediaType: asset.type, status: asset.uploadStatus === 'failed' ? 'failed' : 'ready',
+    }));
+    return [...new Map([...persisted, ...uploaded].map(asset => [asset.id, asset])).values()];
+  }, [initialMedia, mediaAssets, initialProject.id]);
+
+  const mutatePresentation = async (sceneId: string, envelope: PresentationEnvelope | undefined, timing: PresentationTiming, locked: boolean, action: 'save' | 'delete', undo = false): Promise<string | undefined> => {
+    const current = presentationBySceneId.get(sceneId) ?? null;
+    const input: PresentationMutation = { projectId: initialProject.id, sceneId, action, envelope, timing, locked,
+      expectedId: current?.id ?? null, expectedRevision: current?.revision ?? 0, operationId: crypto.randomUUID() };
+    const fingerprint = JSON.stringify({ ...input, operationId: undefined });
+    const previousRequest = presentationRequests.current[sceneId];
+    if (previousRequest?.fingerprint === fingerprint) input.operationId = previousRequest.operationId;
+    presentationRequests.current[sceneId] = { fingerprint, operationId: input.operationId };
+    const result = await saveScenePresentation(input);
+    if (!result.success) return result.error;
+    delete presentationRequests.current[sceneId];
+    setPresentationRows(previous => [...previous.filter(row => row.scene_id !== sceneId), ...(result.row ? [result.row] : [])]);
+    if (undo) setPresentationUndo(previous => { const next = { ...previous }; delete next[sceneId]; return next; });
+    else setPresentationUndo(previous => ({ ...previous, [sceneId]: { previous: result.previous ?? current, after: result.row } }));
+    return undefined;
+  };
+
+  const undoPresentation = async (sceneId: string): Promise<string | undefined> => {
+    const undo = presentationUndo[sceneId];
+    if (!undo) return 'No presentation change to undo.';
+    const current = presentationBySceneId.get(sceneId) ?? null;
+    if (current?.id !== undo.after?.id || current?.revision !== undo.after?.revision) return 'The presentation changed after this action. Reload to review it.';
+    const restore = undo.previous;
+    return mutatePresentation(sceneId, restore?.template_data, restore ?? { start_time: 0, duration: 3, duration_mode: 'scene-remainder' }, restore?.locked ?? true, restore ? 'save' : 'delete', true);
+  };
 
   /**
    * The unapplied pick standing in for a scene's media, from either picker.
@@ -2273,9 +2460,7 @@ export default function TimelineEditor({
     // Lock in this mode as the default for any future scenes created in the project.
     setGlobalGenerationMode(mode);
     setSelectedAiModel(model);
-    updateProjectDefaultGenerationMode(initialProject.id, mode, model).catch(e => {
-      console.error('[Apply Visual Setup] Failed to save project default generation mode', e);
-    });
+    saveQueue.enqueue('generation-default:' + initialProject.id, { mode, model }, payload => updateProjectDefaultGenerationMode(initialProject.id, payload.mode as string, payload.model as string));
 
     setScenes(prev => prev.map(s => {
       if (!targetIds.has(s.id)) return s;
@@ -2283,7 +2468,7 @@ export default function TimelineEditor({
       if (mediaType && !s.custom_media_url) fields.custom_media_type = mediaType;
       return { ...s, ...fields };
     }));
-    setSelectedScene((prev: any) => prev ? { ...prev, generation_mode: mode, ai_model: model } : prev);
+    setSelectedScene((prev: any) => prev && targetIds.has(prev.id) ? { ...prev, generation_mode: mode, ai_model: model } : prev);
 
     scenes.filter(s => targetIds.has(s.id)).forEach(s => {
       const fields: Record<string, any> = { generation_mode: mode, ai_model: model };
@@ -2322,62 +2507,17 @@ export default function TimelineEditor({
     }, 900);
   };
 
-  // Same merge-and-debounce shape as persistSceneFields, for timeline_items rows.
-  const pendingTimelineSavesRef = useRef<{ [clipId: string]: Record<string, any> }>({});
-  const timelineSaveTimersRef = useRef<{ [clipId: string]: ReturnType<typeof setTimeout> }>({});
-
   const persistTimelineItemFields = (clipId: string, fields: Record<string, any>, debounce = false) => {
-    if (!isPersistedScene(clipId)) return;
-
-    pendingTimelineSavesRef.current[clipId] = { ...pendingTimelineSavesRef.current[clipId], ...fields };
-
-    const flush = () => {
-      const payload = pendingTimelineSavesRef.current[clipId];
-      delete pendingTimelineSavesRef.current[clipId];
-      delete timelineSaveTimersRef.current[clipId];
-      if (!payload || Object.keys(payload).length === 0) return;
-      updateTimelineItem(clipId, payload).then(res => {
-        if (!res.success) console.error("[Timeline Item Save]", res.error);
-      });
-    };
-
-    if (timelineSaveTimersRef.current[clipId]) clearTimeout(timelineSaveTimersRef.current[clipId]);
-    if (debounce) {
-      timelineSaveTimersRef.current[clipId] = setTimeout(flush, 800);
-    } else {
-      flush();
-    }
+    if (!isPersistedScene(clipId) || !timelineClipsRef.current.some(clip => clip.id === clipId)) return;
+    saveQueue.enqueue('clip:' + clipId, fields, payload => updateTimelineItem(clipId, payload), debounce ? 800 : 0);
   };
-
-  /* ── OV track: overlay clips ─────────────────────────────────────────────
-     Same merge-and-debounce shape as the two persisters above, for
-     overlay_clips rows. Debouncing matters more here than anywhere else in
-     this file: dragging an overlay around the preview fires a position update
-     on every pointer move. */
-  const pendingOverlaySavesRef = useRef<{ [clipId: string]: Record<string, any> }>({});
-  const overlaySaveTimersRef = useRef<{ [clipId: string]: ReturnType<typeof setTimeout> }>({});
 
   const persistOverlayClipFields = (clipId: string, fields: Record<string, any>, debounce = false) => {
     if (!isPersistedScene(clipId)) return;
-
-    pendingOverlaySavesRef.current[clipId] = { ...pendingOverlaySavesRef.current[clipId], ...fields };
-
-    const flush = () => {
-      const payload = pendingOverlaySavesRef.current[clipId];
-      delete pendingOverlaySavesRef.current[clipId];
-      delete overlaySaveTimersRef.current[clipId];
-      if (!payload || Object.keys(payload).length === 0) return;
-      updateOverlayClip(clipId, payload).then(res => {
-        if (!res.success) console.error("[Overlay Clip Save]", res.error);
-      });
-    };
-
-    if (overlaySaveTimersRef.current[clipId]) clearTimeout(overlaySaveTimersRef.current[clipId]);
-    if (debounce) {
-      overlaySaveTimersRef.current[clipId] = setTimeout(flush, 800);
-    } else {
-      flush();
-    }
+    const clip = overlayClips.find(clip => clip.id === clipId);
+    if (!clip) return;
+    const contentFields = withCanonicalCardContent(clip, fields);
+    saveQueue.enqueue('overlay:' + clipId, { ...contentFields, ...saveQueue.pendingPayload('overlay:' + clipId), ...fields }, payload => updateOverlayClip(clipId, payload), debounce ? 800 : 0);
   };
 
   /** Local state + persistence for one field of one overlay clip. */
@@ -2515,7 +2655,8 @@ export default function TimelineEditor({
    * `isPersistedScene` gates every write, so the temp id never reaches the DB.
    */
   const handleAddOverlayClip = async (kind: OverlayClipKind = 'text') => {
-    const startTime = Math.max(0, cursorPosition / scale);
+    try {
+    const startTime = Math.max(0, cursorPositionRef.current / scale);
     const duration = 3;
     const tempId = Math.random().toString(36).substring(7);
     const { text, color, templateData } = overlayClipDefaultsForKind(kind);
@@ -2535,7 +2676,7 @@ export default function TimelineEditor({
       origin: 'user',
     };
     setOverlayClips(prev => [...prev, optimistic]);
-    setSelectedOverlayClipId(tempId);
+    focusSelection('overlay'); setSelectedOverlayClipId(tempId);
     // A brand-new clip starts exactly at the playhead (frame 0 of its own
     // Sequence — its entrance animation's very start), which isn't the most
     // useful first frame to land on. Force the jump to its settled midpoint
@@ -2566,6 +2707,10 @@ export default function TimelineEditor({
       setOverlayClips(prev => prev.filter(c => c.id !== tempId));
       setSelectedOverlayClipId(prev => (prev === tempId ? null : prev));
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   /**
@@ -2582,6 +2727,44 @@ export default function TimelineEditor({
   const [playerStageRect, setPlayerStageRect] = useState({ left: 0, top: 0, width: 0, height: 0 });
   // The measuring effect itself lives further down, next to `remotionDimensions`
   // — it needs the composition's aspect ratio, which isn't computed until then.
+
+  const activePointerGestureRef = useRef<(() => void) | null>(null);
+  useEffect(() => () => { activePointerGestureRef.current?.(); }, []);
+  const beginPointerGesture = (event: React.PointerEvent, onMove: (event: PointerEvent) => void,
+    onFinish: (result: { cancelled: boolean; moved: boolean }) => void) => {
+    activePointerGestureRef.current?.();
+    activePointerGestureRef.current = startPointerGesture({
+      event, target: event.currentTarget as HTMLElement, onMove,
+      onFinish: result => { activePointerGestureRef.current = null; onFinish(result); },
+      onError: error => setPersistenceWarning('Gesture stopped: ' + (error instanceof Error ? error.message : 'unexpected error')),
+    });
+  };
+
+  const handleTransitionResizeStart = (e: React.PointerEvent, scene: any, index: number, edge: 'left' | 'right') => {
+    e.stopPropagation(); e.preventDefault();
+    if (trackStates.V1.locked) return;
+    const target = e.currentTarget as HTMLElement;
+    const control = target.parentElement;
+    const initialWidth = control?.style.width ?? '';
+    const initialLeft = control?.style.left ?? '';
+    const startDuration = scene.transition_duration || 0.5;
+    const startX = e.clientX;
+    const maximum = maxTransitionSeconds(remotionScenes, index, remotionFps);
+    let duration = startDuration;
+    delete target.dataset.newDuration;
+    beginPointerGesture(e, pointer => {
+      const delta = (edge === 'left' ? startX - pointer.clientX : pointer.clientX - startX) / scale * 2;
+      duration = Math.min(maximum, Math.max(Math.min(0.1, maximum), startDuration + delta));
+      if (control) {
+        control.style.width = duration * scale + 'px';
+        control.style.left = -(duration * scale) / 2 + 'px';
+      }
+    }, ({ cancelled, moved }) => {
+      delete target.dataset.newDuration;
+      if (control) { control.style.width = initialWidth; control.style.left = initialLeft; }
+      if (!cancelled && moved && duration !== startDuration) updateSceneDetails(scene.id, 'transition_duration', duration);
+    });
+  };
 
   /**
    * Drag an overlay around the preview.
@@ -2618,19 +2801,18 @@ export default function TimelineEditor({
         xPercent: Math.min(100, Math.max(0, snap(rawX))),
         yPercent: Math.min(100, Math.max(0, snap(rawY))),
       };
-      setOverlayClipPosition(clip.id, latest.xPercent, latest.yPercent, true);
+      setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, ...latest } : c));
     };
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+    const onUp = ({ cancelled, moved }: { cancelled: boolean; moved: boolean }) => {
+      if (cancelled) setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, xPercent: clip.xPercent, yPercent: clip.yPercent } : c));
+      if (cancelled || !moved) return;
       // Final, un-debounced write so the last position can't be lost to a
       // pending timer if the user navigates away immediately after dropping.
       persistOverlayClipFields(clip.id, { x_percent: latest.xPercent, y_percent: latest.yPercent });
     };
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    beginPointerGesture(e, onMove, onUp);
   };
 
   /** Min/max an overlay's font size can be dragged or typed to. */
@@ -2658,7 +2840,7 @@ export default function TimelineEditor({
   const seekIntoOverlayClip = (clip: { startTime: number; duration: number }, force = false) => {
     const startPx = clip.startTime * scale;
     const endPx = (clip.startTime + clip.duration) * scale;
-    if (force || cursorPosition < startPx || cursorPosition > endPx) {
+    if (force || cursorPositionRef.current < startPx || cursorPositionRef.current > endPx) {
       setCursorPosition(startPx + (endPx - startPx) / 2);
     }
   };
@@ -2690,19 +2872,18 @@ export default function TimelineEditor({
       const onMove = (moveEvent: PointerEvent) => {
         const deltaX = moveEvent.clientX - startX;
         latest = Math.min(MAX_OVERLAY_CARD_SCALE, Math.max(MIN_OVERLAY_CARD_SCALE, startScale + deltaX * 0.005));
-        updateOverlayClipTemplateData(clip.id, { scale: latest });
+        setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, templateData: { ...c.templateData, scale: latest } } : c));
       };
 
-      const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
+      const onUp = ({ cancelled, moved }: { cancelled: boolean; moved: boolean }) => {
+        if (cancelled) setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, templateData: { ...c.templateData, scale: startScale } } : c));
+        if (cancelled || !moved || latest === startScale) return;
         // Un-debounced final flush, matching the font-size/position drags below.
         const nextTemplateData = { ...(clip.templateData || {}), scale: latest };
         persistOverlayClipFields(clip.id, { template_data: nextTemplateData });
       };
 
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
+      beginPointerGesture(e, onMove, onUp);
       return;
     }
 
@@ -2712,17 +2893,16 @@ export default function TimelineEditor({
     const onMove = (moveEvent: PointerEvent) => {
       const deltaX = moveEvent.clientX - startX;
       latest = Math.min(MAX_OVERLAY_FONT_SIZE, Math.max(MIN_OVERLAY_FONT_SIZE, Math.round(startFontSize + deltaX * 0.5)));
-      updateOverlayClipField(clip.id, 'fontSize', latest, 'font_size', true);
+      setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, fontSize: latest } : c));
     };
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+    const onUp = ({ cancelled, moved }: { cancelled: boolean; moved: boolean }) => {
+      if (cancelled) setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, fontSize: clip.fontSize } : c));
+      if (cancelled || !moved || latest === startFontSize) return;
       persistOverlayClipFields(clip.id, { font_size: latest });
     };
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    beginPointerGesture(e, onMove, onUp);
   };
 
   /** Writes both position axes at once — used by the preset buttons and the drag. */
@@ -2760,7 +2940,7 @@ export default function TimelineEditor({
         candidateStart = startSnap;
         setOverlaySnapGuideTime(startSnap);
       } else if (endSnap !== null) {
-        candidateStart = endSnap - clip.duration;
+        candidateStart = Math.max(0, endSnap - clip.duration);
         setOverlaySnapGuideTime(endSnap);
       } else {
         setOverlaySnapGuideTime(null);
@@ -2770,15 +2950,15 @@ export default function TimelineEditor({
       setOverlayClips(prev => prev.map(c => (c.id === clip.id ? { ...c, startTime: latestStart } : c)));
     };
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+    const onUp = ({ cancelled, moved }: { cancelled: boolean; moved: boolean }) => {
+      if (cancelled) setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: originalStart } : c));
+      setOverlaySnapGuideTime(null);
+      if (cancelled || !moved || latestStart === originalStart) return;
       setOverlaySnapGuideTime(null);
       persistOverlayClipFields(clip.id, { start_time: latestStart });
     };
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    beginPointerGesture(e, onMove, onUp);
   };
 
   /**
@@ -2811,7 +2991,7 @@ export default function TimelineEditor({
         let candidateStart = originalStart + shift;
         const snap = nearestV1BoundaryTime(candidateStart);
         if (snap !== null) {
-          candidateStart = snap;
+          candidateStart = Math.max(0, Math.min(originalStart + maxShift, snap));
           shift = candidateStart - originalStart;
           setOverlaySnapGuideTime(snap);
         } else {
@@ -2834,9 +3014,10 @@ export default function TimelineEditor({
       setOverlayClips(prev => prev.map(c => (c.id === clip.id ? { ...c, ...latest } : c)));
     };
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', onUp);
+    const onUp = ({ cancelled, moved }: { cancelled: boolean; moved: boolean }) => {
+      if (cancelled) setOverlayClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: originalStart, duration: originalDuration } : c));
+      setOverlaySnapGuideTime(null);
+      if (cancelled || !moved || (latest.startTime === originalStart && latest.duration === originalDuration)) return;
       setOverlaySnapGuideTime(null);
       persistOverlayClipFields(clip.id, {
         start_time: latest.startTime,
@@ -2844,17 +3025,17 @@ export default function TimelineEditor({
       });
     };
 
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', onUp);
+    beginPointerGesture(e, onMove, onUp);
   };
 
   const handleDeleteOverlayClip = (clipId: string) => {
+    saveQueue.forget('overlay:' + clipId);
     setOverlayClips(prev => prev.filter(c => c.id !== clipId));
     setSelectedOverlayClipId(prev => (prev === clipId ? null : prev));
     if (isPersistedScene(clipId)) {
-      deleteOverlayClip(clipId).then(res => {
-        if (!res.success) console.error('[handleDeleteOverlayClip]', res.error);
-      });
+      void deleteOverlayClip(clipId).then(res => {
+        if (!res.success) setPersistenceWarning('Could not delete the overlay: ' + res.error);
+      }).catch(error => setPersistenceWarning('Could not delete the overlay: ' + (error instanceof Error ? error.message : 'unexpected error')));
     }
   };
 
@@ -2891,6 +3072,8 @@ export default function TimelineEditor({
       const res = await createTimelineItem(initialProject.id, mediaId, { trackId, startTime, duration });
       if (res.success && res.timelineItem) {
         setTimelineClips(prev => prev.map(c => c.id === tempClipId ? { ...c, id: res.timelineItem.id } : c));
+        setSelectedTimelineClipId(prev => prev === tempClipId ? res.timelineItem.id : prev);
+        setSelectedSceneKeys(prev => prev.map(key => key.startsWith(tempClipId + '_') ? res.timelineItem.id + key.slice(tempClipId.length) : key));
       } else {
         console.error('[addTimelineClip] Failed to persist timeline item:', res.error);
       }
@@ -2907,7 +3090,7 @@ export default function TimelineEditor({
     return tempClipId;
   };
 
-  const handleSelectSceneBlock = (e: React.MouseEvent, scene: any, track: 'V1' | 'A1', index: number) => {
+  const handleSelectSceneBlock = (e: React.MouseEvent | React.KeyboardEvent, scene: any, track: 'V1' | 'A1', index: number) => {
     e.stopPropagation();
     setSelectedAsset(null);
     setSelectedTimelineClip(null);
@@ -2925,7 +3108,7 @@ export default function TimelineEditor({
     } else {
       setSelectedSceneKeys([key]);
     }
-    setSelectedScene(scene);
+    focusSelection('scene'); setSelectedScene(scene);
     setSelectedSceneTrack(track);
     // An Act and a scene are different selection kinds sharing one Inspector, so
     // selecting either must clear the other or the panel shows two things at once.
@@ -2949,7 +3132,7 @@ export default function TimelineEditor({
     setSelectedAsset(null);
     setSelectedTimelineClip(null);
     setSelectedSceneKeys([`${sceneId}_V1`]);
-    setSelectedScene(scenes[index]);
+    focusSelection('scene'); setSelectedScene(scenes[index]);
     setSelectedSceneTrack('V1');
     setActiveTab('scene');
     setIsVisualExpanded(true);
@@ -2978,7 +3161,7 @@ export default function TimelineEditor({
   // visual. Select-all + Delete previously wiped an entire project's script with no
   // prompt at all. Anyone who only wants the picture gone wants `clearSceneVisuals`.
   const removeScenesAndPersist = (idsToDelete: string[]) => {
-    if (idsToDelete.length === 0) return;
+    if (trackStates.V1.locked || idsToDelete.length === 0) return false;
 
     const count = idsToDelete.length;
     const confirmed = window.confirm(
@@ -2986,28 +3169,30 @@ export default function TimelineEditor({
       `This removes the script/voice-over text too, and cannot be undone.\n\n` +
       `If you only want to redo the visual, cancel and use "Clear visual" instead — that keeps the script.`
     );
-    if (!confirmed) return;
+    if (!confirmed) return false;
 
     const renumbered = scenes
       .filter(s => !idsToDelete.includes(s.id))
       .map((s, idx) => ({ ...s, sequence_number: idx + 1 }));
 
+    idsToDelete.forEach(id => saveQueue.forget('scene:' + id));
     setScenes(renumbered);
 
     const persistedDeletes = idsToDelete.filter(isPersistedScene);
-    if (persistedDeletes.length === 0) return;
+    if (persistedDeletes.length === 0) return true;
 
     deleteScenes(persistedDeletes).then(res => {
       if (!res.success) {
-        console.error('[removeScenesAndPersist] Delete failed:', res.error);
+        setPersistenceWarning('Could not delete scenes: ' + res.error);
         return;
       }
-      reorderScenes(
+      return reorderScenes(
         renumbered
           .map(s => ({ id: s.id, sequence_number: s.sequence_number }))
           .filter(u => isPersistedScene(u.id))
       );
-    });
+    }).catch(error => setPersistenceWarning('Could not delete/reorder scenes: ' + (error instanceof Error ? error.message : 'unexpected error')));
+    return true;
   };
 
   /**
@@ -3029,55 +3214,37 @@ export default function TimelineEditor({
     const persisted = sceneIds.filter(isPersistedScene);
     if (persisted.length === 0) return;
 
-    clearSceneVisuals(persisted).then(res => {
-      if (!res.success) {
-        setPersistenceWarning(`Couldn't clear the visual: ${res.error}`);
-      }
-    });
+    void clearSceneVisuals(persisted).then(res => {
+      if (!res.success) setPersistenceWarning('Could not clear the visual: ' + res.error);
+    }).catch(error => setPersistenceWarning('Could not clear the visual: ' + (error instanceof Error ? error.message : 'unexpected error')));
+  };
+
+  const deleteClipAndPersist = (clipId: string) => {
+    saveQueue.forget('clip:' + clipId);
+    setTimelineClips(previous => previous.filter(clip => clip.id !== clipId));
+    if (isPersistedScene(clipId)) {
+      void deleteTimelineItem(clipId).then(result => {
+        if (!result.success) setPersistenceWarning('Could not delete the audio clip: ' + result.error);
+      }).catch(error => setPersistenceWarning('Could not delete the audio clip: ' + (error instanceof Error ? error.message : 'unexpected error')));
+    }
   };
 
   const handleDeleteSelectedScenes = () => {
-    if (selectedSceneKeys.length === 0) return;
-
-    const v1IdsToDelete = selectedSceneKeys
-      .filter(k => k.endsWith('_V1'))
-      .map(k => k.split('_')[0]);
-
-    const a1IdsToDelete = selectedSceneKeys
-      .filter(k => k.endsWith('_A1'))
-      .map(k => k.split('_')[0]);
-
-    // Deleting on V1 removes the whole scene; deleting on A1 only clears its
-    // narration, leaving the visual in place.
-    if (v1IdsToDelete.length > 0) {
-      removeScenesAndPersist(v1IdsToDelete);
-    }
-
-    if (a1IdsToDelete.length > 0) {
-      setScenes(prev => prev.map(s => a1IdsToDelete.includes(s.id) ? { ...s, audio_url: undefined } : s));
-      a1IdsToDelete.filter(isPersistedScene).forEach(id => persistSceneFields(id, { audio_url: null }));
-    }
-
-    const clipIdsToDelete = selectedSceneKeys
-      .filter(k => k.endsWith('_A2') || k.endsWith('_V1_clip') || k.endsWith('_A1_clip'))
-      .map(k => k.split('_')[0]);
-
-    if (clipIdsToDelete.length > 0) {
-      setTimelineClips(prev => prev.filter(c => !clipIdsToDelete.includes(c.id)));
-      clipIdsToDelete.filter(isPersistedScene).forEach(id => { deleteTimelineItem(id); });
-      if (selectedTimelineClip && clipIdsToDelete.includes(selectedTimelineClip.id)) {
-        setSelectedTimelineClip(null);
-      }
-    }
-
-    setSelectedSceneKeys([]);
-    setSelectedScene(null);
-    setSelectedSceneTrack(null);
+    const visualIds = trackStates.V1.locked ? [] : scenes.filter(scene => selectedSceneKeys.includes(scene.id + '_V1')).map(scene => scene.id);
+    const narrationIds = trackStates.A1.locked ? [] : scenes.filter(scene => selectedSceneKeys.includes(scene.id + '_A1')).map(scene => scene.id);
+    const clips = timelineClips.filter(clip => !trackStates[clip.trackId as 'A1' | 'A2']?.locked
+      && selectedSceneKeys.includes(clip.id + '_' + clip.trackId));
+    if (visualIds.length && !removeScenesAndPersist(visualIds)) return;
+    const remainingNarrationIds = narrationIds.filter(id => !visualIds.includes(id));
+    setScenes(previous => previous.map(scene => remainingNarrationIds.includes(scene.id) ? { ...scene, audio_url: undefined } : scene));
+    remainingNarrationIds.forEach(id => persistSceneFields(id, { audio_url: null }));
+    clips.forEach(clip => deleteClipAndPersist(clip.id));
+    focusSelection(null);
   };
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA', 'SELECT'].includes((e.target as HTMLElement)?.tagName)) {
+      if (!shouldHandleTimelineShortcut(e)) {
         return;
       }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a') {
@@ -3087,48 +3254,17 @@ export default function TimelineEditor({
           ...scenes.map(s => `${s.id}_A1`),
           ...timelineClips.map(c => `${c.id}_${c.trackId}`)
         ];
-        setSelectedSceneKeys(allKeys);
+        focusSelection(null); setSelectedSceneKeys(allKeys);
         return;
       }
       if ((e.key === 'Delete' || e.key === 'Backspace') && selectedSceneKeys.length > 0) {
         e.preventDefault();
-        const v1IdsToDelete = selectedSceneKeys
-          .filter(k => k.endsWith('_V1'))
-          .map(k => k.split('_')[0]);
-
-        const a1IdsToDelete = selectedSceneKeys
-          .filter(k => k.endsWith('_A1'))
-          .map(k => k.split('_')[0]);
-
-        const clipIdsToDelete = selectedSceneKeys
-          .filter(k => k.endsWith('_A2') || k.endsWith('_V1_clip') || k.endsWith('_A1_clip'))
-          .map(k => k.split('_')[0]);
-
-        if (v1IdsToDelete.length > 0) {
-          removeScenesAndPersist(v1IdsToDelete);
-        }
-
-        if (a1IdsToDelete.length > 0) {
-          setScenes(prev => prev.map(s => a1IdsToDelete.includes(s.id) ? { ...s, audio_url: undefined } : s));
-          a1IdsToDelete.filter(isPersistedScene).forEach(id => persistSceneFields(id, { audio_url: null }));
-        }
-
-        if (clipIdsToDelete.length > 0) {
-          setTimelineClips(prev => prev.filter(c => !clipIdsToDelete.includes(c.id)));
-          clipIdsToDelete.filter(isPersistedScene).forEach(id => { deleteTimelineItem(id); });
-          if (selectedTimelineClip && clipIdsToDelete.includes(selectedTimelineClip.id)) {
-            setSelectedTimelineClip(null);
-          }
-        }
-
-        setSelectedSceneKeys([]);
-        setSelectedScene(null);
-        setSelectedSceneTrack(null);
+        handleDeleteSelectedScenes();
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedSceneKeys, scenes, timelineClips, selectedTimelineClip]);
+  }, [selectedSceneKeys, scenes, timelineClips, selectedTimelineClip, trackStates]);
 
   // Polls /api/media/[mediaId]/status until the generation reaches a terminal
   // state. Only entered for genuinely async providers (real Fal.ai); everything
@@ -3148,6 +3284,7 @@ export default function TimelineEditor({
   };
 
   const handleGenerateSceneVisual = async (sceneId: string, prompt: string, modelToUse = selectedAiModel, requestedDuration = 5) => {
+    try {
     setIsGeneratingVisualId(sceneId);
 
     const sceneToGen = scenes.find(s => s.id === sceneId);
@@ -3166,14 +3303,14 @@ export default function TimelineEditor({
 
     setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Rendering' } : s));
     if (selectedScene?.id === sceneId) {
-      setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Rendering' }));
+      setSelectedScene((prev: any) => prev?.id === sceneId ? { ...prev, generation_status: 'Rendering' } : prev);
     }
 
     const applyFailure = (message: string) => {
       alert("Visual Generation Error: " + message);
       setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, generation_status: 'Failed' } : s));
       if (selectedScene?.id === sceneId) {
-        setSelectedScene((prev: any) => ({ ...prev, generation_status: 'Failed' }));
+        setSelectedScene((prev: any) => prev?.id === sceneId ? { ...prev, generation_status: 'Failed' } : prev);
       }
       persistSceneFields(sceneId, { generation_status: 'Failed' });
     };
@@ -3216,7 +3353,7 @@ export default function TimelineEditor({
       };
       setScenes(prev => prev.map(s => s.id === sceneId ? { ...s, ...result } : s));
       if (selectedScene?.id === sceneId) {
-        setSelectedScene((prev: any) => ({ ...prev, ...result }));
+        setSelectedScene((prev: any) => prev?.id === sceneId ? { ...prev, ...result } : prev);
       }
       persistSceneFields(sceneId, result);
     } catch (err: any) {
@@ -3224,23 +3361,33 @@ export default function TimelineEditor({
     } finally {
       setIsGeneratingVisualId(null);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   /** Fetches stock results for one scene into the picker grid. */
   const handleStockSearch = async (sceneId: string, query: string) => {
+    try {
     if (!query.trim()) return;
+    const request = ++stockSearchRequestRef.current;
     setIsSearchingStock(true);
     try {
       const res = await fetch(
         `/api/stock-media?query=${encodeURIComponent(query)}&provider=${globalStockProvider}&type=${globalStockType}`
       );
       const data = await res.json();
-      setStockSearchResults({ sceneId, results: data.success ? data.results || [] : [] });
+      if (request === stockSearchRequestRef.current) setStockSearchResults({ sceneId, results: data.success ? data.results || [] : [] });
     } catch (e) {
       console.error('[Stock Search] failed:', e);
-      setStockSearchResults({ sceneId, results: [] });
+      if (request === stockSearchRequestRef.current) setStockSearchResults({ sceneId, results: [] });
     } finally {
-      setIsSearchingStock(false);
+      if (request === stockSearchRequestRef.current) setIsSearchingStock(false);
+    }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
 
@@ -3251,6 +3398,7 @@ export default function TimelineEditor({
 
   /** Downloads the approved pick onto our own storage, then persists it to the scene. */
   const handleApplyStockResult = async (sceneId: string, result: StockResult) => {
+    try {
     setIsApplyingStock(true);
     try {
       const res = await fetch('/api/media/from-url', {
@@ -3266,12 +3414,16 @@ export default function TimelineEditor({
       updateSceneDetails(sceneId, 'custom_media_url', data.url);
       updateSceneDetails(sceneId, 'custom_media_type', result.type);
       updateSceneDetails(sceneId, 'generation_status', 'Completed');
-      setPendingStockPick(null);
+      setPendingStockPick(previous => previous?.sceneId === sceneId ? null : previous);
     } catch (e: any) {
       console.error('[Stock Apply] failed:', e);
       alert('Failed to save this pick — check your connection and try again.');
     } finally {
       setIsApplyingStock(false);
+    }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
 
@@ -3285,7 +3437,7 @@ export default function TimelineEditor({
     const sceneClips = overlayClips.filter(c => c.startTime >= start - 0.05 && c.startTime < start + dur);
     if (sceneClips.some(c => c.kind === 'checklist-card')) return 'checklist';
     if (sceneClips.some(c => c.kind === 'light-beam')) return 'divine';
-    if (sceneClips.some(c => c.kind === 'title-cutout-card' && (c.templateData as any)?.style === 'quote-card')) return 'quote';
+    if (sceneClips.some(c => c.kind === 'title-cutout-card' && readStyleId(c.templateData) === 'quote-card')) return 'quote';
     if (sceneClips.some(c => c.kind === 'title-cutout-card')) return 'title_reveal';
     if (sceneClips.some(c => c.kind === 'film-damage' && sceneClips.some(k => k.preset === 'chapter-card'))) return 'chapter_open';
     if (sceneClips.some(c => c.kind === 'film-damage')) return 'archive';
@@ -3295,6 +3447,7 @@ export default function TimelineEditor({
 
   /** Applies an Edit Director combo template to a scene, updating overlay clips and seeking preview. */
   const handleApplyCombo = async (sceneId: string, comboId: ComboId | 'auto') => {
+    try {
     const targetScene = scenes.find(s => s.id === sceneId);
     if (!targetScene) return;
 
@@ -3337,6 +3490,7 @@ export default function TimelineEditor({
       }
 
       if (res && res.success) {
+        if (!scenesRef.current.some(scene => scene.id === sceneId)) return;
         const createdClips = (res.createdClips || []).map(overlayRowToClip);
         setOverlayClips(prev => [
           ...prev.filter(c => !replaceClipIds.includes(c.id)),
@@ -3346,7 +3500,7 @@ export default function TimelineEditor({
 
         // Seek playhead to 0.8s into the scene so the animated entrance is settled and visible
         const previewTime = sceneStartTime + Math.min(0.8, sceneDuration / 2);
-        setCursorPosition(previewTime * scale);
+        if (selectedSceneIdRef.current === sceneId) setCursorPosition(previewTime * scale);
       } else {
         console.error('[handleApplyCombo] failed:', res?.error);
         alert(res?.error || 'Failed to apply template combo.');
@@ -3357,10 +3511,15 @@ export default function TimelineEditor({
     } finally {
       setIsApplyingCombo(false);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
 
   const handleGenerateAllVisuals = async () => {
+    try {
     // Scoped to the selected scene's own Act on long-form — this used to loop over
     // every scene in the whole project, which for a long-form video meant it would
     // reach into Acts that haven't even been narrated yet and burn real provider
@@ -3428,7 +3587,7 @@ export default function TimelineEditor({
                 };
                 setScenes(prev => prev.map(s => s.id === scene.id ? { ...s, ...result } : s));
                 if (selectedScene?.id === scene.id) {
-                  setSelectedScene((prev: any) => ({ ...prev, ...result }));
+                  setSelectedScene((prev: any) => prev?.id === scene.id ? { ...prev, ...result } : prev);
                 }
                 persistSceneFields(scene.id, result);
               } else {
@@ -3462,6 +3621,10 @@ export default function TimelineEditor({
       }
     } finally {
       setIsGeneratingAllVisuals(false);
+    }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
 
@@ -3548,6 +3711,7 @@ export default function TimelineEditor({
   };
 
   const handleSyncToCloud = async () => {
+    try {
     setIsSyncingCloud(true);
     setSyncStatus({ checked: 0, uploaded: 0, failed: 0, message: "Checking and uploading missing assets..." });
     try {
@@ -3574,9 +3738,20 @@ export default function TimelineEditor({
     } finally {
       setIsSyncingCloud(false);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const handleRenderVideo = async () => {
+    try {
+
+    if (!(await saveQueue.flushAll())) { setPersistenceWarning('Save failed. Retry your edits before exporting.'); return; }
+    if (presentationIssues.length) {
+      setPersistenceWarning(presentationIssues.join(' '));
+      return;
+    }
     setIsRendering(true);
     setRenderStatusMessage("Submitting render job to Remotion engine...");
     setRenderOutputPath(null);
@@ -3652,9 +3827,14 @@ export default function TimelineEditor({
       setRenderStatusMessage("Render Error: " + (err.message || "Failed to submit request"));
       setIsRendering(false);
     }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
   };
 
   const handleCopyLink = async () => {
+    try {
     if (!renderOutputPath) return;
     try {
       await navigator.clipboard.writeText(renderOutputPath);
@@ -3669,6 +3849,10 @@ export default function TimelineEditor({
       document.body.removeChild(textArea);
       setCopiedLink(true);
       setTimeout(() => setCopiedLink(false), 2500);
+    }
+
+    } catch (error) {
+      setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
 
@@ -3731,14 +3915,14 @@ export default function TimelineEditor({
   // own generic prompt regardless of any custom text set here, and there is no way to
   // block browser back/forward navigation the way the in-app Links below are blocked.
   useEffect(() => {
-    if (!isRendering) return;
+    if (!isRendering && saveStatus.pending === 0) return;
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
       e.preventDefault();
       e.returnValue = '';
     };
     window.addEventListener('beforeunload', handleBeforeUnload);
     return () => window.removeEventListener('beforeunload', handleBeforeUnload);
-  }, [isRendering]);
+  }, [isRendering, saveStatus.pending]);
 
   // Panel height only — scene/clip trimming is handled by the pointer effect above.
   useEffect(() => {
@@ -3760,7 +3944,7 @@ export default function TimelineEditor({
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) {
+      if (!shouldHandleTimelineShortcut(e)) {
         return;
       }
       if (e.code === 'Space') {
@@ -3779,12 +3963,7 @@ export default function TimelineEditor({
           setActiveVolumePopup(null);
           return;
         }
-        setSelectedScene(null);
-        setSelectedSceneTrack(null);
-        setSelectedSceneKeys([]);
-        setSelectedTimelineClip(null);
-        setSelectedOverlayClipId(null);
-        setSelectedAsset(null);
+        focusSelection(null);
       }
     };
     window.addEventListener('keydown', handleKeyDown);
@@ -3802,10 +3981,28 @@ export default function TimelineEditor({
   }, []);
 
   /** Leaves the editor for the Scene Board route. */
-  const openSceneBoard = () => {
-    setContextMenu(null);
-    router.push(sceneBoardHref);
+  const navigationPendingRef = useRef(false);
+  const navigateAfterSave = async (href: string) => {
+    if (isRendering || navigationPendingRef.current) return;
+    activePointerGestureRef.current?.();
+    if (gestureRef.current) {
+      setPersistenceWarning('Finish or cancel the trim before leaving.');
+      return;
+    }
+    if (mediaAssets.some(asset => asset.uploadStatus === 'uploading') || scenes.some(scene => !isPersistedScene(scene.id)) || timelineClips.some(clip => !isPersistedScene(clip.id)) || overlayClips.some(clip => !isPersistedScene(clip.id))) {
+      setPersistenceWarning('Wait for new clips and uploads to finish saving before leaving.'); return;
+    }
+    navigationPendingRef.current = true;
+    try {
+      const saved = await saveQueue.flushAll();
+      if (!saved) { setPersistenceWarning('Some edits could not be saved. Retry the failed saves before leaving.'); return; }
+      setIsPlaying(false);
+      router.push(href);
+    } catch (error) {
+      setPersistenceWarning('Could not leave the editor: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    } finally { navigationPendingRef.current = false; }
   };
+  const openSceneBoard = () => { setContextMenu(null); void navigateAfterSave(sceneBoardHref); };
 
   const handleDeleteItem = () => {
     if (!contextMenu) return;
@@ -3819,14 +4016,13 @@ export default function TimelineEditor({
         setScenes(prev => prev.map(s => s.id === contextMenu.id ? { ...s, audio_url: undefined } : s));
         if (isPersistedScene(contextMenu.id)) persistSceneFields(contextMenu.id, { audio_url: null });
       } else {
-        removeScenesAndPersist([contextMenu.id]);
+        if (!removeScenesAndPersist([contextMenu.id])) { setContextMenu(null); return; }
       }
       if (selectedScene?.id === contextMenu.id) {
          setSelectedScene(null);
       }
     } else if (contextMenu.type === 'clip') {
-      setTimelineClips(prev => prev.filter(c => c.id !== contextMenu.id));
-      if (isPersistedScene(contextMenu.id)) deleteTimelineItem(contextMenu.id);
+      deleteClipAndPersist(contextMenu.id);
     } else if (contextMenu.type === 'overlay') {
       handleDeleteOverlayClip(contextMenu.id);
     } else if (contextMenu.type === 'narration') {
@@ -3859,13 +4055,6 @@ export default function TimelineEditor({
   // last frame.
   const playbackEndDuration = Math.max(contentDuration, masterAudioDuration || 0, actNarrationDuration, clipsMaxTime);
 
-  // Keeps the ref current for every OTHER way cursorPosition changes (click-to-seek,
-  // drag, reset-on-drag-start) so the playback loop below always resumes from the
-  // real position instead of a stale one captured when it last ran.
-  useEffect(() => {
-    cursorPositionRef.current = cursorPosition;
-  }, [cursorPosition]);
-
   // Identifies whichever narration audio element is the authoritative clock for a
   // given moment — the per-Act narration overlapping `time` for long-form, or the
   // single master-narration file otherwise. Returns null when nothing should drive
@@ -3881,72 +4070,16 @@ export default function TimelineEditor({
     return masterAudioUrl ? "master-narration" : null;
   }, [isLongForm, actNarrations, masterAudioUrl]);
 
-  useEffect(() => {
-    if (!isPlaying) {
-      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
-      return;
-    }
-
-    lastTimeRef.current = performance.now();
-    const maxPos = playbackEndDuration * scale;
-
-    const animate = (time: number) => {
-      const delta = (time - lastTimeRef.current) / 1000;
-      lastTimeRef.current = time;
-
-      // The narration audio's own hardware-clocked playback is a far steadier clock
-      // than requestAnimationFrame deltas — reading it directly here (rather than
-      // independently accumulating time and later force-correcting the audio to
-      // match) is what stops the cursor and the narration from fighting each other.
-      // Previously both ticked forward on their own, and every time they drifted
-      // past 0.3s the sync effect below would snap the audio backward to match —
-      // audible as the narration "getting back," i.e. periodically jumping backward.
-      const masterKey = getMasterAudioKey(cursorPositionRef.current / scale);
-      const masterEl = masterKey ? mediaRefs.current[masterKey] : null;
-      let newPos: number;
-      if (masterEl && !masterEl.paused && !masterEl.seeking && masterEl.readyState >= 1) {
-        const masterStart = parseFloat(masterEl.dataset.start || "0");
-        const masterTrimStart = parseFloat(masterEl.dataset.trimStart || "0");
-        newPos = (masterStart + (masterEl.currentTime - masterTrimStart)) * scale;
-      } else {
-        newPos = cursorPositionRef.current + delta * scale;
-      }
-
-      if (newPos >= maxPos) {
-        // Stop exactly at the end of the timeline width, and — critically — do not
-        // schedule another frame. The old version scheduled unconditionally here, so
-        // once `prev` was clamped to `maxPos`, every subsequent frame recomputed the
-        // same clamped value and rescheduled again, spinning until React's `isPlaying`
-        // update was processed and the effect below could finally cancel it.
-        cursorPositionRef.current = maxPos;
-        setCursorPosition(maxPos);
-        setIsPlaying(false);
-        return;
-      }
-
-      cursorPositionRef.current = newPos;
-      setCursorPosition(newPos);
-      animationRef.current = requestAnimationFrame(animate);
-    };
-
-    animationRef.current = requestAnimationFrame(animate);
-
-    return () => {
-      if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
-    };
-  }, [isPlaying, scale, playbackEndDuration, getMasterAudioKey]);
-
-  // Synchronized Playback Logic
-  const currentTime = cursorPosition / scale;
-
-  useEffect(() => {
+  const syncPlayback = useCallback((position: number, explicitSeek = false) => {
+    const currentTime = position / scale;
     // Isolated preview renders a one-scene composition that starts at frame 0, so
     // every absolute-timeline seek below would be meaningless here — and, because
-    // this effect runs on each cursor change, would drag the looping scene back to
+    // synchronization runs on each cursor change, would drag the looping scene back to
     // the wrong frame continuously. The native elements carry narration for the whole
     // timeline, which has no position inside a single looping scene either, so pause
     // them rather than leaving them running untracked behind the isolated view.
-    if (isolatedSceneId) {
+    if (isolatedSceneId || previewFailed) {
+      if (previewFailed) setIsPlaying(false);
       Object.values(mediaRefs.current).forEach(media => {
         if (media && !media.paused) media.pause();
       });
@@ -3955,6 +4088,7 @@ export default function TimelineEditor({
 
     // 1. Sync the Remotion Player
     if (remotionPlayerRef.current) {
+      try {
       // The Player carries V1 scene-video audio only (narration is stripped from
       // remotionPreviewProps), so the V1 track's mute button governs it.
       if (trackStates.V1.muted || trackStates.V1.volume === 0) {
@@ -3977,6 +4111,10 @@ export default function TimelineEditor({
         remotionPlayerRef.current.pause();
         remotionPlayerRef.current.seekTo(currentFrame);
       }
+      } catch (error) {
+        handlePreviewFailure();
+        setPersistenceWarning('Preview stopped: ' + (error instanceof Error ? error.message : 'unexpected error'));
+      }
     }
 
     // 2. Sync Native DOM Media Elements
@@ -3996,7 +4134,8 @@ export default function TimelineEditor({
       // lets small natural jitter free-run (no stutter) while still fixing a
       // genuinely wrong starting position (a real jump, not jitter).
       const isMaster = isPlaying && mediaKey === masterAudioKey;
-      const driftThreshold = isMaster ? 2 : 0.3;
+      // A user seek is intentional even inside the master clock's jitter tolerance.
+      const driftThreshold = explicitSeek ? 0.1 : isMaster ? 2 : 0.3;
 
       const track = media.dataset.track as 'V1' | 'A1' | 'A2';
       if (track && trackStates[track]) {
@@ -4031,15 +4170,11 @@ export default function TimelineEditor({
          if (media.paused) {
             const playPromise = media.play();
             if (playPromise !== undefined) {
-               playPromise.catch(e => {
-                  console.log("Playback pending metadata load:", e);
-                  const retryPlay = () => {
-                     media.play().catch(() => {});
-                     media.removeEventListener('loadedmetadata', retryPlay);
-                     media.removeEventListener('canplay', retryPlay);
-                  };
-                  media.addEventListener('loadedmetadata', retryPlay);
-                  media.addEventListener('canplay', retryPlay);
+               playPromise.catch(error => {
+                  if (error?.name === 'NotAllowedError' || error?.name === 'NotSupportedError') {
+                    setIsPlaying(false);
+                    setPersistenceWarning('Audio playback stopped: ' + error.message);
+                  }
                });
             }
          }
@@ -4057,7 +4192,29 @@ export default function TimelineEditor({
          }
       }
     });
-  }, [cursorPosition, isPlaying, scale, trackStates, scenes, timelineClips, selectedAsset, exportQuality, isolatedSceneId, getMasterAudioKey]);
+  }, [isPlaying, scale, trackStates, exportQuality, isolatedSceneId, getMasterAudioKey, previewFailed, handlePreviewFailure]);
+
+  // Publish the latest committed configuration before any RAF or user seek can run.
+  // Relevant media/configuration changes still get an immediate synchronization pass.
+  useLayoutEffect(() => {
+    timelineCursor.syncRef.current = syncPlayback;
+    timelineCursor.paint();
+    syncPlayback(cursorPositionRef.current);
+    return () => { timelineCursor.syncRef.current = null; };
+  }, [timelineCursor, cursorPositionRef, syncPlayback, scenes, timelineClips, selectedAsset, previewAttempt]);
+
+  useEffect(() => {
+    if (!isPlaying || previewFailed || isolatedSceneId) return;
+    return startTimelinePlayback({
+      positionRef: cursorPositionRef, scale, endSeconds: playbackEndDuration,
+      readMaster: time => {
+        const key = getMasterAudioKey(time);
+        return key ? mediaRefs.current[key] : null;
+      },
+      advance: timelineCursor.advance,
+      stop: () => setIsPlaying(false),
+    });
+  }, [isPlaying, previewFailed, isolatedSceneId, scale, playbackEndDuration, getMasterAudioKey, timelineCursor, cursorPositionRef]);
 
   const getSceneColor = (status: string) => {
     if (status === 'Completed') return 'border-ed-border-strong bg-ed-ok-soft text-ed-ok';
@@ -4147,10 +4304,21 @@ export default function TimelineEditor({
       } : undefined,
       // Passed through regardless of media type; the renderer ignores it for video.
       kenBurnsEnabled: Boolean(s.ken_burns_enabled),
+      presentation: (() => {
+        const row = presentationBySceneId.get(s.id);
+        return row ? resolvePresentation(row.template_data, row, s.video_duration || 5, remotionFps, presentationAssets, initialProject.id, { sceneId: s.id, scenes: sceneReferences }).presentation : undefined;
+      })(),
       };
     }),
-    [scenes, pendingStockPick, pendingProjectPick]
+    [scenes, pendingStockPick, pendingProjectPick, presentationBySceneId, sceneReferences, remotionFps, presentationAssets, initialProject.id]
   );
+  const presentationIssues = useMemo(() => [
+    ...unsupportedPresentationScenes.map(() => 'A saved presentation uses an unsupported version.'),
+    ...presentationRows.flatMap(row => {
+      const scene = sceneById.get(row.scene_id);
+      return scene ? resolvePresentation(row.template_data, row, scene.video_duration || 5, remotionFps, presentationAssets, initialProject.id, { sceneId: scene.id, scenes: sceneReferences }).issues : [];
+    }),
+  ], [presentationRows, sceneById, sceneReferences, remotionFps, presentationAssets, initialProject.id, unsupportedPresentationScenes]);
 
   // A1/A2 audio clips for the *render*. Two rules matter here:
   //
@@ -4211,12 +4379,25 @@ export default function TimelineEditor({
     })),
     [overlayClips]
   );
+  const displayOverlayClips: OverlayClip[] = useMemo(() => {
+    const { segments } = layoutScenes(remotionScenes, remotionFps);
+    const attached = presentationRows.flatMap(row => {
+      const segment = segments.find(item => item.scene.id === row.scene_id);
+      if (!segment) return [];
+      const range = presentationFrameRange(row, segment.durationInFrames / remotionFps, remotionFps);
+      return [{ id: row.id, sceneId: row.scene_id, kind: 'scene-template' as const,
+        text: row.template_data.templateId === 'clean' ? 'Clean media' : 'Image Comparison',
+        preset: 'none' as const, color: '#D5A35C', xPercent: 50, yPercent: 50, dimBackground: false,
+        startTime: (segment.from + range.startFrame) / remotionFps, duration: Math.max(0.1, range.durationInFrames / remotionFps), origin: row.origin }];
+    });
+    return [...overlayClips, ...attached];
+  }, [overlayClips, presentationRows, remotionScenes, remotionFps]);
 
   // Which OV lane each clip sits in, so overlapping clips never render stacked
   // on top of each other in the timeline. Derived, never stored.
   const { laneByClipId: overlayLaneByClipId, laneCount: overlayLaneCount } = useMemo(
-    () => packOverlayLanes(overlayClips),
-    [overlayClips]
+    () => packOverlayLanes(displayOverlayClips),
+    [displayOverlayClips]
   );
 
   const selectedOverlayClip = useMemo(
@@ -4400,7 +4581,8 @@ export default function TimelineEditor({
   // start or stop the Player — drive it directly on the mode change instead.
   useEffect(() => {
     const player = remotionPlayerRef.current;
-    if (!player) return;
+    if (!player || previewFailed) return;
+    try {
 
     if (isolatedSceneId) {
       // Stop the timeline's own playhead loop; it has no meaning while a single
@@ -4411,7 +4593,11 @@ export default function TimelineEditor({
     } else {
       player.pause();
     }
-  }, [isolatedSceneId]);
+    } catch (error) {
+      handlePreviewFailure();
+      setPersistenceWarning('Preview stopped: ' + (error instanceof Error ? error.message : 'unexpected error'));
+    }
+  }, [isolatedSceneId, previewFailed, previewAttempt, handlePreviewFailure]);
 
   // Deleting the isolated scene would otherwise strand the editor showing an empty
   // composition, with the only way out being a menu on a block that no longer exists.
@@ -4560,11 +4746,48 @@ export default function TimelineEditor({
       .sort((a, b) => a.actNumber - b.actNumber);
   }, [scenes, scale, isLongForm, narratedActNumbers, v1DragInsertIndex, draggingAsset, draggingScene]);
 
-  // Scene blocks are memoized independent of cursorPosition/isPlaying/currentTime so
-  // scrubbing and playback (which tick cursorPosition up to 60x/sec) don't force React
-  // to re-run scenes.map() and re-diff every block on every tick. A 250-scene long-form
-  // project was re-rendering all 250 blocks per frame purely because the playhead moved.
-                    const v1SceneBlocks = useMemo(() => visibleSceneEntries.map(({ scene, idx }) => {
+  const selectTransition = useCommittedEvent((event: React.MouseEvent, sceneId: string, index: number) => {
+    const scene = sceneById.get(sceneId);
+    if (!scene || trackStates.V1.locked) return;
+    handleSelectSceneBlock(event, scene, 'V1', index);
+    setIsTransitionExpanded(true);
+  });
+  const resizeTransition = useCommittedEvent((event: React.PointerEvent, sceneId: string, index: number, edge: 'left' | 'right') => {
+    const scene = sceneById.get(sceneId);
+    if (scene) handleTransitionResizeStart(event, scene, index, edge);
+  });
+  const applyTransition = useCommittedEvent((sceneId: string, type: string) => applyTransitionToScene(sceneId, type as TransitionType));
+
+  type SceneDetailTarget = { id: string; track: 'V1' | 'A1'; left: number; top: number };
+  const [hoveredSceneDetail, setHoveredSceneDetail] = useState<SceneDetailTarget | null>(null);
+  const [focusedSceneDetail, setFocusedSceneDetail] = useState<SceneDetailTarget | null>(null);
+  const sceneDetail = hoveredSceneDetail ?? focusedSceneDetail;
+  const sceneDetailIndex = sceneDetail ? scenes.findIndex(scene => scene.id === sceneDetail.id) : -1;
+  const detailScene = scenes[sceneDetailIndex];
+  const showSceneDetail = (element: HTMLElement, sceneId: string, track: 'V1' | 'A1', focus = false) => {
+    const rectangle = element.getBoundingClientRect();
+    const detail = { id: sceneId, track, left: Math.max(8, Math.min(rectangle.left, window.innerWidth - 328)),
+      top: Math.min(window.innerHeight - 8, Math.max(window.innerHeight / 2, rectangle.top - 8)) };
+    if (focus) setFocusedSceneDetail(detail); else setHoveredSceneDetail(detail);
+  };
+  // Hide anchored details when viewport geometry changes or a gesture starts.
+  useEffect(() => {
+    const hide = () => { setHoveredSceneDetail(null); setFocusedSceneDetail(null); };
+    window.addEventListener('scroll', hide, true);
+    window.addEventListener('resize', hide);
+    window.addEventListener('blur', hide);
+    hide();
+    return () => {
+      window.removeEventListener('scroll', hide, true);
+      window.removeEventListener('resize', hide);
+      window.removeEventListener('blur', hide);
+    };
+  }, [scale, isResizing, isReordering]);
+
+  // Playback bypasses this render path. Memoized visual children keep unchanged
+  // filmstrips and transition controls intact during selection. Build hit targets
+  // from this render so handlers and reorder geometry cannot capture stale state.
+                    const v1SceneBlocks = visibleSceneEntries.map(({ scene, idx }) => {
                       const leftPx = getSceneLeftPosition('V1', idx);
                       const isSelected = selectedSceneKeys.includes(`${scene.id}_V1`)
                         || (selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && selectedSceneKeys.length === 0);
@@ -4581,18 +4804,9 @@ export default function TimelineEditor({
                       const pendingHere = pendingPickFor(scene.id);
                       const previewMediaUrl = pendingHere ? pendingHere.mediaUrl : scene.custom_media_url;
                       const previewMediaType = pendingHere ? pendingHere.type : scene.custom_media_type;
-                      // Selection reads as DEPTH, not colour. The old violet ring + violet
-                      // wash fought with everything else on the block: it tinted the status
-                      // colour underneath (a selected Failed scene stopped looking red), and
-                      // violet is already the app's primary-action colour, so it said
-                      // "button" as much as "selected". Scale + a lifted drop shadow says
-                      // "this one is picked up" without spending a hue.
-                      //
-                      // The neutral dark outline carries it at low zoom, where a narrow
-                      // block is only a few px wide and a 7% scale is a couple of pixels.
-                      // Delete the ring-* classes for a pure zoom-only selection.
+                      // Inset decoration keeps neighboring scenes clickable.
                       const ringClass = isSelected
-                        ? 'ring-2 ring-ed-border-strong ring-offset-1 ring-offset-white z-30 shadow-[0_8px_18px_-6px_rgba(15,23,42,0.55)]'
+                        ? 'ring-2 ring-inset ring-ed-accent z-30 brightness-110'
                         : 'hover:brightness-95 z-10';
                       const hasTransition = idx > 0 && Boolean(scene.transition_type) && scene.transition_type !== 'none';
                       // The seam this scene's incoming transition lives at is its own
@@ -4611,51 +4825,19 @@ export default function TimelineEditor({
                               : hasTransition
                                 ? 'set'
                                 : 'empty';
-                      return (
-                       <div
-                         key={`video-${scene.id}`}
-                         ref={el => { blockRefs.current[`${scene.id}_V1`] = el; }}
-                         data-base-left={leftPx}
-                         data-scaled={isSelected ? '1' : '0'}
-                         draggable={!trackStates.V1.locked}
-                         onDragStart={(e) => {
-                            if (trackStates.V1.locked) {
-                               e.preventDefault();
-                               return;
-                            }
-                            const sceneData = { type: 'reorder', track: 'V1', sceneId: scene.id, index: idx };
-                            e.dataTransfer.setData('text/plain', JSON.stringify(sceneData));
-                            setDraggingScene({ id: scene.id, track: 'V1', duration: getSceneDuration(scene) });
-                            e.dataTransfer.effectAllowed = 'copyMove';
-                         }}
-                         onDragEnd={() => {
-                            setDraggingScene(null);
-                            setV1DragInsertIndex(null);
-                         }}
-                         // Lights up the amber drop-target ring while a transition card is
-                         // over THIS block specifically. Only `.types` is readable during
-                         // dragover (see the card's onDragStart comment), so this checks
-                         // for the marker MIME type rather than decoding the JSON payload.
-                         onDragOver={(e) => {
+                      const handleTransitionDragOver = (e: React.DragEvent<HTMLDivElement>) => {
                            if (trackStates.V1.locked || idx === 0) return;
                            if (e.dataTransfer.types.includes('application/x-transition-card')) {
                              e.preventDefault();
                              if (transitionDragOverSceneId !== scene.id) setTransitionDragOverSceneId(scene.id);
                            }
-                         }}
-                         onDragLeave={(e) => {
+                      };
+                      const handleTransitionDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
                            if (!e.currentTarget.contains(e.relatedTarget as Node)) {
                              setTransitionDragOverSceneId(prev => (prev === scene.id ? null : prev));
                            }
-                         }}
-                         // Precise transition-card targeting: dropping a card from the
-                         // Transition In accordion onto THIS scene sets its transition,
-                         // no matter which scene (if any) is currently selected. Stops
-                         // propagation so the track's own onDrop — which otherwise reads
-                         // every drop as "insert a new scene near this X position" —
-                         // never sees it. Any other payload (a Media panel asset, a
-                         // scene being reordered) is left alone to bubble up as before.
-                         onDrop={(e) => {
+                      };
+                      const handleTransitionDrop = (e: React.DragEvent<HTMLDivElement>) => {
                            if (trackStates.V1.locked) return;
                            const dataStr = e.dataTransfer.getData('text/plain');
                            if (!dataStr) return;
@@ -4674,7 +4856,64 @@ export default function TimelineEditor({
                            // accordion's own rule for it.
                            if (idx === 0) return;
                            applyTransitionToScene(scene.id, data.transitionType);
+                      };
+                      // Sibling controls share the track stacking context with both scenes.
+                      return (
+                       <React.Fragment key={`video-${scene.id}`}>
+                       <div
+                         ref={el => { blockRefs.current[`${scene.id}_V1`] = el; }}
+                         data-base-left={leftPx}
+                         data-timeline-scene={scene.id}
+                         role="button"
+                         tabIndex={0}
+                         aria-label={`Scene ${getVisualSequenceNumber('V1', idx)}, video${trackStates.V1.locked ? ', track locked' : ''}`}
+                         aria-pressed={isSelected}
+                         aria-disabled={trackStates.V1.locked}
+                         aria-describedby={sceneDetail?.id === scene.id && sceneDetail?.track === 'V1' ? 'timeline-scene-detail' : undefined}
+                         onMouseEnter={e => showSceneDetail(e.currentTarget, scene.id, 'V1')}
+                         onMouseLeave={() => setHoveredSceneDetail(null)}
+                         onFocus={e => { if (e.target === e.currentTarget) showSceneDetail(e.currentTarget, scene.id, 'V1', true); }}
+                         onBlur={() => setFocusedSceneDetail(null)}
+                         onKeyDown={e => {
+                           if (e.target !== e.currentTarget) return;
+                           if (e.key === 'Escape') { setHoveredSceneDetail(null); setFocusedSceneDetail(null); }
+                           if (e.key === 'Enter' || e.code === 'Space') {
+                             e.preventDefault(); e.stopPropagation();
+                             if (!trackStates.V1.locked) handleSelectSceneBlock(e, scene, 'V1', idx);
+                           }
                          }}
+                         data-scaled={isSelected ? '1' : '0'}
+                         draggable={!trackStates.V1.locked}
+                         onPointerDown={(e) => { scenePressRef.current = { x: e.clientX, y: e.clientY }; }}
+                         onDragStart={(e) => {
+                            if (!scenePressRef.current || Math.hypot(e.clientX - scenePressRef.current.x, e.clientY - scenePressRef.current.y) < 3) { e.preventDefault(); return; }
+                            if (trackStates.V1.locked) {
+                               e.preventDefault();
+                               return;
+                            }
+                            const sceneData = { type: 'reorder', track: 'V1', sceneId: scene.id, index: idx };
+                            e.dataTransfer.setData('text/plain', JSON.stringify(sceneData));
+                            setDraggingScene({ id: scene.id, track: 'V1', duration: getSceneDuration(scene) });
+                            e.dataTransfer.effectAllowed = 'copyMove';
+                         }}
+                         onDragEnd={() => {
+                            setDraggingScene(null);
+                            setV1DragInsertIndex(null);
+                         }}
+                         // Lights up the amber drop-target ring while a transition card is
+                         // over THIS block specifically. Only `.types` is readable during
+                         // dragover (see the card's onDragStart comment), so this checks
+                         // for the marker MIME type rather than decoding the JSON payload.
+                         onDragOver={handleTransitionDragOver}
+                         onDragLeave={handleTransitionDragLeave}
+                         // Precise transition-card targeting: dropping a card from the
+                         // Transition In accordion onto THIS scene sets its transition,
+                         // no matter which scene (if any) is currently selected. Stops
+                         // propagation so the track's own onDrop — which otherwise reads
+                         // every drop as "insert a new scene near this X position" —
+                         // never sees it. Any other payload (a Media panel asset, a
+                         // scene being reordered) is left alone to bubble up as before.
+                         onDrop={handleTransitionDrop}
                          onClick={(e) => {
                            if (trackStates.V1.locked) return;
                            handleSelectSceneBlock(e, scene, 'V1', idx);
@@ -4684,189 +4923,20 @@ export default function TimelineEditor({
                            if (trackStates.V1.locked) return;
                            setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'V1' });
                          }}
-                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors group/block shadow-sm ${ringClass}`}
+                         className={`h-[80%] absolute top-[10%] left-0 rounded-md border ${getSceneColor(scene.generation_status)} cursor-pointer transition-colors group/block shadow-sm overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ed-accent ${ringClass}`}
                          style={{
                            // Positioned by transform rather than `left` so a move stays on
                            // the compositor instead of forcing layout on the whole track.
-                           // The selection "pop" rides along in the same transform — an
-                           // inline one would override Tailwind's scale-* class outright.
+                           // Selection decoration stays inside this exact rectangle.
                            transform: blockTransform(leftPx, isSelected),
                            width: `${getSceneDuration(scene) * scale}px`,
                            opacity: draggingScene?.id === scene.id ? 0.001 : 1,
                            transition: slidesAside ? REORDER_SLIDE : undefined
                          }}
                        >
-                         <div className="w-full h-full p-1.5 flex flex-col relative">
-                            {/* Over a thumbnail the label needs its own scrim to
-                                survive a bright frame, so it keeps white + the
-                                `ed-media` chip. On a bare block it inherits the
-                                status colour from getSceneColor, which is already
-                                the quiet step — the extra `opacity-90` on top only
-                                pushed it down toward the wash sitting over it. */}
-                            <div className={`flex items-center gap-1.5 mb-1 z-10 ${previewMediaUrl ? 'text-white drop-shadow-[0_1px_2px_rgba(0,0,0,0.8)] bg-ed-media/50 w-fit px-1.5 py-0.5 rounded-sm' : ''}`}>
-                               {previewMediaType === 'video' ? <Film size={10} /> : <ImageIcon size={10} />}
-                               <span className="text-[9px] font-bold truncate">Sc {getVisualSequenceNumber('V1', idx)} {previewMediaUrl ? `(${scene.voice_over_beat})` : ''}</span>
-                               {pendingHere && (
-                                 <span className="text-[8px] font-bold text-ed-warn">•preview</span>
-                               )}
-                            </div>
-                            {previewMediaUrl && (
-                               <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
-                                  {previewMediaType === 'video' ? (
-                                     /* No video filmstrip: rendering 100+ <video> tags concurrently crashes the browser via OOM. */
-                                     <div className="w-full h-full bg-ed-media/10" />
-                                  ) : (
-                                     Array.from({ length: stripCount }).map((_, i, arr) => (
-                                        <img
-                                          key={i}
-                                          src={previewMediaUrl}
-                                          className="h-full object-cover shrink-0 border-r border-ed-text/20"
-                                          style={{ width: `${100 / arr.length}%` }}
-                                        />
-                                     ))
-                                  )}
-                               </div>
-                            )}
-                         </div>
-                                   {seamIndicator && (() => {
-                           const TransitionIcon = TRANSITION_ICONS[scene.transition_type ?? ''] ?? Layers;
-                           const isDragOver = seamIndicator === 'drag-over';
-                           const transitionWidth = hasTransition ? (scene.transition_duration || 0.5) * scale : 16;
-                           
-                           return (
-                             <div
-                               className={`absolute top-0 bottom-0 z-40 cursor-pointer flex items-center justify-center group/seam transition-colors ${
-                                 hasTransition ? 'bg-white/10 hover:bg-white/20 backdrop-blur-sm border border-white/40 shadow-sm' : ''
-                               } ${isDragOver ? 'bg-ed-warn/50' : ''}`}
-                               style={{
-                                 width: `${transitionWidth}px`,
-                                 left: `-${transitionWidth / 2}px`,
-                                 borderRadius: hasTransition ? '2px' : '0px'
-                               }}
-                               title={hasTransition ? `Transition in: ${scene.transition_type}` : 'Click to add a transition'}
-                               onClick={(e) => {
-                                 e.stopPropagation();
-                                 if (trackStates.V1.locked) return;
-                                 handleSelectSceneBlock(e, scene, 'V1', idx);
-                                 setIsTransitionExpanded(true);
-                               }}
-                             >
-                               {!hasTransition && (
-                                 <div className="w-[2px] h-[80%] bg-white opacity-0 group-hover/seam:opacity-80 transition-opacity rounded-full shadow-sm" />
-                               )}
-                               
-                               {hasTransition && (
-                                 <div className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 z-10 pointer-events-none">
-                                   <TransitionIcon size={12} className="text-white drop-shadow-md opacity-80" strokeWidth={2.5} />
-                                 </div>
-                               )}
-
-                               {/* Left Drag Handle */}
-                               {hasTransition && (
-                                 <div
-                                   className="absolute left-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/60 opacity-0 group-hover/seam:opacity-100 transition-opacity rounded-l-[2px]"
-                                   onPointerDown={(e) => {
-                                     e.stopPropagation();
-                                     e.preventDefault();
-                                     if (trackStates.V1.locked) return;
-                                     const target = e.currentTarget;
-                                     target.setPointerCapture(e.pointerId);
-                                     const startX = e.clientX;
-                                     const startDuration = scene.transition_duration || 0.5;
-                                     const max = maxTransitionSeconds(remotionScenes, idx, remotionFps);
-                                     
-                                     target.onpointermove = (ev) => {
-                                       const deltaX = startX - ev.clientX; // moving left increases width
-                                       const deltaDuration = (deltaX / scale) * 2;
-                                       let newDuration = startDuration + deltaDuration;
-                                       newDuration = Math.max(0.1, Math.min(newDuration, max));
-                                       if (target.parentElement) {
-                                          target.parentElement.style.width = `${newDuration * scale}px`;
-                                          target.parentElement.style.left = `-${(newDuration * scale) / 2}px`;
-                                       }
-                                       target.dataset.newDuration = newDuration.toString();
-                                     };
-                                     
-                                     target.onpointerup = (ev) => {
-                                       target.onpointermove = null;
-                                       target.onpointerup = null;
-                                       target.releasePointerCapture(ev.pointerId);
-                                       const final = parseFloat(target.dataset.newDuration || startDuration.toString());
-                                       updateSceneDetails(scene.id, 'transition_duration', final);
-                                     };
-                                   }}
-                                 />
-                               )}
-
-                               {/* Right Drag Handle */}
-                               {hasTransition && (
-                                 <div
-                                   className="absolute right-0 top-0 bottom-0 w-2.5 cursor-ew-resize hover:bg-white/60 opacity-0 group-hover/seam:opacity-100 transition-opacity rounded-r-[2px]"
-                                   onPointerDown={(e) => {
-                                     e.stopPropagation();
-                                     e.preventDefault();
-                                     if (trackStates.V1.locked) return;
-                                     const target = e.currentTarget;
-                                     target.setPointerCapture(e.pointerId);
-                                     const startX = e.clientX;
-                                     const startDuration = scene.transition_duration || 0.5;
-                                     const max = maxTransitionSeconds(remotionScenes, idx, remotionFps);
-                                     
-                                     target.onpointermove = (ev) => {
-                                       const deltaX = ev.clientX - startX; // moving right increases width
-                                       const deltaDuration = (deltaX / scale) * 2;
-                                       let newDuration = startDuration + deltaDuration;
-                                       newDuration = Math.max(0.1, Math.min(newDuration, max));
-                                       if (target.parentElement) {
-                                          target.parentElement.style.width = `${newDuration * scale}px`;
-                                          target.parentElement.style.left = `-${(newDuration * scale) / 2}px`;
-                                       }
-                                       target.dataset.newDuration = newDuration.toString();
-                                     };
-                                     
-                                     target.onpointerup = (ev) => {
-                                       target.onpointermove = null;
-                                       target.onpointerup = null;
-                                       target.releasePointerCapture(ev.pointerId);
-                                       const final = parseFloat(target.dataset.newDuration || startDuration.toString());
-                                       updateSceneDetails(scene.id, 'transition_duration', final);
-                                     };
-                                   }}
-                                 />
-                               )}
-                             </div>
-                           );
-                         })()}
-                         {/* Awaiting-visuals overlay — long-form only. `environment` is
-                             written exclusively by agents 4-7 (never by the Scene
-                             Slicer), so its absence means this scene's Act has not
-                             been visually approved yet. Every scene in an unapproved
-                             Act carries this, which is what turns the V1 track into a
-                             legible per-Act progress readout during the interleaved
-                             audio/visual workflow rather than a wall of empty-looking
-                             blocks with no explanation. pointer-events-none so it never
-                             steals the click/drag/resize handlers above. */}
-                         {isLongForm && scene.environment == null && !previewMediaUrl && (
-                           <div
-                             className="absolute inset-0 z-30 pointer-events-none flex items-center justify-center bg-ed-text-faint/15"
-                             style={{
-                               // White-alpha hatching, not black. Black stripes at 6%
-                               // over a dark block are arithmetically invisible — the
-                               // "unapproved" state was reading as a plain empty block,
-                               // which is exactly the confusion this overlay exists to
-                               // prevent. The flat wash also dropped 25% → 15%: with a
-                               // hatch that actually shows, the wash only needs to tint.
-                               backgroundImage:
-                                 'repeating-linear-gradient(135deg, rgba(237,237,239,0.10) 0px, rgba(237,237,239,0.10) 6px, transparent 6px, transparent 12px)',
-                             }}
-                           >
-                             {getSceneDuration(scene) * scale > 40 && (
-                               <span className="text-[8px] font-bold text-ed-text bg-ed-surface/90 px-1 py-0.5 rounded-sm whitespace-nowrap">
-                                 Awaiting visuals
-                               </span>
-                             )}
-                           </div>
-                         )}
+                         <SceneBlock track="V1" number={getVisualSequenceNumber('V1', idx)} width={getSceneDuration(scene) * scale}
+                           mediaUrl={previewMediaUrl} mediaType={previewMediaType} stripCount={stripCount} pending={Boolean(pendingHere)}
+                           awaitingVisuals={isLongForm && scene.environment == null && !previewMediaUrl} />
                          {/* Resize Handles */}
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
                             <>
@@ -4881,10 +4951,17 @@ export default function TimelineEditor({
                             </>
                          )}
                        </div>
+                       {seamIndicator && <TransitionControl sceneId={scene.id} index={idx} transitionType={scene.transition_type}
+                         hasTransition={hasTransition} transitionWidth={hasTransition ? (scene.transition_duration || 0.5) * scale : 16}
+                         leftPx={leftPx} isDragOver={seamIndicator === 'drag-over'} hidden={draggingScene?.id === scene.id}
+                         locked={trackStates.V1.locked} slideTransition={slidesAside ? REORDER_SLIDE : undefined}
+                         TransitionIcon={TRANSITION_ICONS[scene.transition_type ?? ''] ?? Layers} blockRefs={blockRefs}
+                         onSelect={selectTransition} onResize={resizeTransition} onApply={applyTransition} onDragOverScene={setTransitionDragOverSceneId} />}
+                       </React.Fragment>
                       );
-                    }), [visibleSceneEntries, trackStates, selectedSceneKeys, selectedScene, selectedSceneTrack, frozenStrip, isReordering, draggingScene, draggingAsset, isResizing, transitionDragOverSceneId, transitionJustAppliedId, isLongForm, scale, pendingStockPick, pendingProjectPick]);
+                    });
 
-                     const a1SceneBlocks = useMemo(() => visibleSceneEntries.map(({ scene, idx }) => {
+                     const a1SceneBlocks = visibleSceneEntries.map(({ scene, idx }) => {
                         const leftPx = getSceneLeftPosition('A1', idx);
                         const isSelected = selectedSceneKeys.includes(`${scene.id}_A1`)
                           || (selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && selectedSceneKeys.length === 0);
@@ -4893,9 +4970,30 @@ export default function TimelineEditor({
                           key={`audio-${scene.id}`}
                           ref={el => { blockRefs.current[`${scene.id}_A1`] = el; }}
                           data-base-left={leftPx}
+                          data-timeline-scene={scene.id}
+                          role="button"
+                          tabIndex={0}
+                          aria-label={`Scene ${getVisualSequenceNumber('A1', idx)}, narration${trackStates.A1.locked ? ', track locked' : ''}`}
+                          aria-pressed={isSelected}
+                          aria-disabled={trackStates.A1.locked}
+                          aria-describedby={sceneDetail?.id === scene.id && sceneDetail?.track === 'A1' ? 'timeline-scene-detail' : undefined}
+                          onMouseEnter={e => showSceneDetail(e.currentTarget, scene.id, 'A1')}
+                          onMouseLeave={() => setHoveredSceneDetail(null)}
+                          onFocus={e => { if (e.target === e.currentTarget) showSceneDetail(e.currentTarget, scene.id, 'A1', true); }}
+                          onBlur={() => setFocusedSceneDetail(null)}
+                          onKeyDown={e => {
+                            if (e.target !== e.currentTarget) return;
+                            if (e.key === 'Escape') { setHoveredSceneDetail(null); setFocusedSceneDetail(null); }
+                            if (e.key === 'Enter' || e.code === 'Space') {
+                              e.preventDefault(); e.stopPropagation();
+                              if (!trackStates.A1.locked) handleSelectSceneBlock(e, scene, 'A1', idx);
+                            }
+                          }}
                           data-scaled={isSelected ? '1' : '0'}
                           draggable={!trackStates.A1.locked}
+                          onPointerDown={(e) => { scenePressRef.current = { x: e.clientX, y: e.clientY }; }}
                           onDragStart={(e) => {
+                             if (!scenePressRef.current || Math.hypot(e.clientX - scenePressRef.current.x, e.clientY - scenePressRef.current.y) < 3) { e.preventDefault(); return; }
                              if (trackStates.A1.locked) { e.preventDefault(); return; }
                              e.dataTransfer.setData('text/plain', JSON.stringify({ type: 'reorder', track: 'A1', sceneId: scene.id, index: idx }));
                              setDraggingScene({ id: scene.id, track: 'A1', duration: scene.video_duration || 5 });
@@ -4907,9 +5005,9 @@ export default function TimelineEditor({
                             e.preventDefault();
                             if (!trackStates.A1.locked) setContextMenu({ x: e.pageX, y: e.pageY, type: 'scene', id: scene.id, trackId: 'A1' });
                           }}
-                          className={`h-[70%] absolute top-[15%] left-0 rounded-md border border-ed-border-strong bg-ed-accent-soft text-ed-accent-text cursor-pointer transition-colors overflow-hidden p-1 shadow-sm ${
+                          className={`h-[70%] absolute top-[15%] left-0 rounded-md border border-ed-border-strong bg-ed-accent-soft text-ed-accent-text cursor-pointer transition-colors overflow-hidden p-1 shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ed-accent ${
                             isSelected
-                              ? 'ring-2 ring-ed-border-strong ring-offset-1 z-20 bg-ed-accent-soft'
+                              ? 'ring-2 ring-inset ring-ed-accent z-20 bg-ed-accent-soft'
                               : 'hover:bg-ed-accent-soft z-10'
                           }`}
                           style={{
@@ -4919,25 +5017,7 @@ export default function TimelineEditor({
                             transition: isReordering && draggingScene?.id !== scene.id ? REORDER_SLIDE : undefined
                           }}
                         >
-                          <div className="flex items-center gap-1.5 opacity-90 mb-0.5">
-                             <Volume2 size={9} />
-                             <span className="text-[8px] font-bold truncate block whitespace-nowrap">{scene.voice_over_beat}</span>
-                          </div>
-                          {/* Waveform. The two strokes were hardcoded violets left
-                              over from the pre-token palette, then dimmed to 60% —
-                              so an A1 block read as neither an A1 colour nor a
-                              legible one. `ed-a1` is the track's own identity token,
-                              and the has-audio / no-audio distinction now rides on
-                              opacity instead of a second invented hex. */}
-                          <div className="absolute inset-x-1 bottom-1 top-4 flex items-center overflow-hidden pointer-events-none">
-                            <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
-                              <path suppressHydrationWarning
-                                d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
-                                stroke="var(--color-ed-a1)" strokeOpacity={scene.audio_url ? 0.95 : 0.45}
-                                strokeWidth="2.5" strokeLinecap="round"
-                              />
-                            </svg>
-                          </div>
+                          <SceneBlock track="A1" number={getVisualSequenceNumber('A1', idx)} width={(scene.video_duration || 5) * scale} hasAudio={Boolean(scene.audio_url)} />
                           {!trackStates.A1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'A1' && (
                             <>
                               <div className="absolute left-0 top-0 bottom-0 w-1.5 cursor-ew-resize bg-ed-accent/80 hover:bg-ed-accent z-50 rounded-l-md" onPointerDown={(e) => handleResizeStart(e, scene.id, 'A1', 'left', scene.video_duration || 5, scene.trim_start || 0)} />
@@ -4946,10 +5026,29 @@ export default function TimelineEditor({
                           )}
                         </div>
                         );
-                     }), [visibleSceneEntries, trackStates, selectedSceneKeys, selectedScene, selectedSceneTrack, draggingScene, draggingAsset, isResizing, isReordering, scale]);
+                     });
 
   return (
-    <div className="flex flex-col h-full bg-ed-well text-ed-text">
+    <div data-timeline-editor="true" tabIndex={-1} className="flex flex-col h-full bg-ed-well text-ed-text outline-none"
+      onPointerDownCapture={event => {
+        setHoveredSceneDetail(null); setFocusedSceneDetail(null);
+        // Non-focusable clips give keyboard ownership to the editor after a mouse click.
+        if (event.target instanceof Element && !event.target.closest('input, textarea, select, button, a, [contenteditable]:not([contenteditable="false"]), [role="dialog"]')) {
+          event.currentTarget.focus({ preventScroll: true });
+        }
+        traceTimelineInteraction(event, selectedScene?.id ?? selectedTimelineClip?.id ?? selectedOverlayClipId, gestureRef.current?.kind ?? (activePointerGestureRef.current ? 'overlay/transition' : null));
+      }}
+      onPointerUpCapture={event => traceTimelineInteraction(event, selectedScene?.id ?? selectedTimelineClip?.id ?? selectedOverlayClipId, gestureRef.current?.kind ?? (activePointerGestureRef.current ? 'overlay/transition' : null))}
+      onClickCapture={(event) => {
+        traceTimelineInteraction(event, selectedScene?.id ?? selectedTimelineClip?.id ?? selectedOverlayClipId, gestureRef.current?.kind ?? (activePointerGestureRef.current ? 'overlay/transition' : null));
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        const link = event.target instanceof Element ? event.target.closest('a[href]') : null;
+        if (!(link instanceof HTMLAnchorElement) || link.target === '_blank' || link.hasAttribute('download')) return;
+        const href = new URL(link.href, window.location.href);
+        if (href.origin !== window.location.origin || href.pathname === window.location.pathname) return;
+        event.preventDefault(); event.stopPropagation();
+        void navigateAfterSave(href.pathname + href.search + href.hash);
+      }}>
       {/* Editor header. Lives here rather than in the server page so its actions can
           reach real editor state — that separation is why the old buttons were dead. */}
       <header className="flex items-center justify-between px-3 h-12 flex-none bg-ed-surface border-b border-ed-border shadow-sm z-30">
@@ -4994,7 +5093,22 @@ export default function TimelineEditor({
           </span>
           {/* All three per-video surfaces are routes now, so the editor shows the same
               tab group they do rather than its own one-off pair of buttons. */}
+          <div className="flex items-center gap-2 text-[11px] shrink-0" role="status" aria-live="polite">
+            <span className={saveStatus.state === 'failed' ? 'text-ed-warn' : 'text-ed-text-dim'}>
+              {saveStatus.state === 'failed' ? 'Edits not saved' : saveStatus.state === 'saving' ? 'Saving…' : 'Saved'}
+            </span>
+            {saveStatus.state === 'failed' && <button className="text-ed-warn underline" onClick={() => { void saveQueue.flushAll(true); }}>Retry saves</button>}
+          </div>
           <VideoTabs workspaceId={workspaceId} videoId={initialProject.id} active="timeline" />
+          <details className="relative"><summary className="cursor-pointer rounded-md border border-ed-border px-3 py-1.5 text-xs">Visuals</summary><div className="absolute right-0 top-9 z-50 max-h-[80vh] w-[min(600px,90vw)] overflow-y-auto rounded-xl bg-ed-base shadow-2xl"><VisualSettingsPanel scope="project" id={initialProject.id} onSaved={setPresentationVisualSettings} onRestyle={async (settings, mode) => {
+            const targets = presentationRows.filter(row => !row.locked && row.template_data.templateId !== 'clean' && (mode === 'unlocked' || row.scene_id === selectedScene?.id));
+            let saved = 0; const failures: string[] = [];
+            for (const row of targets) {
+              const failure = await mutatePresentation(row.scene_id, applyVisualSettings(row.template_data, settings), row, false, 'save');
+              if (failure) failures.push(failure); else saved++;
+            }
+            return `${saved} presentation(s) restyled. Locked and clean scenes were skipped.${failures.length ? ` ${failures.length} failed: ${failures[0]}` : ''}`;
+          }} /></div></details>
           <button
             onClick={() => setActiveTab('export')}
             disabled={isRendering}
@@ -5053,6 +5167,9 @@ export default function TimelineEditor({
 
       {/* Background-persistence failures. Floating rather than inline so it never
           shifts the timeline layout, and dismissible so it can't trap the user. */}
+      {saveStatus.state === 'failed' && <div role="alert" className="flex-none px-3 py-2 text-xs text-ed-warn bg-ed-warn-soft border-b border-ed-warn-border">
+        {saveStatus.pending} pending save(s). Your edits are retained in this session. {saveStatus.errors[0]}
+      </div>}
       {persistenceWarning && (
         <div className="fixed bottom-4 right-4 z-[200] max-w-sm bg-ed-warn-soft border border-ed-warn-border rounded-lg shadow-lg p-3 flex items-start gap-2.5">
           <Info size={15} className="text-ed-warn shrink-0 mt-0.5" />
@@ -5213,18 +5330,10 @@ export default function TimelineEditor({
                 role="switch"
                 aria-checked={captionsEnabled}
                 disabled={captionWords.length === 0}
-                onClick={async () => {
+                onClick={() => {
                   const next = !captionsEnabled;
                   setCaptionsEnabled(next);
-                  const res = await updateProjectCaptionsEnabled(initialProject.id, next);
-                  if (!res.success) {
-                    // Revert rather than leave the editor showing captions that the
-                    // next render would not include.
-                    setCaptionsEnabled(!next);
-                    setPersistenceWarning(
-                      `Couldn't save the captions setting (${res.error}). Run db/add-caption-columns.sql if you haven't yet.`
-                    );
-                  }
+                  saveQueue.enqueue('captions:' + initialProject.id, { enabled: next }, payload => updateProjectCaptionsEnabled(initialProject.id, payload.enabled as boolean));
                 }}
                 className={`relative w-10 h-[22px] rounded-full transition-colors shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
                   captionsEnabled ? 'bg-ed-accent' : 'bg-ed-border-strong'
@@ -5241,6 +5350,9 @@ export default function TimelineEditor({
 
           {/* Tab Content Area */}
           <div className="flex-1 overflow-y-auto p-4 custom-scrollbar bg-ed-surface">
+            <EditorRecovery label="Inspector" resetKey={activeTab + ':' + (selectedScene?.id ?? selectedTimelineClip?.id ?? selectedOverlayClipId ?? selectedActNumber ?? 'project')}>
+              <EditorPanelContent render={() => (<>
+
             
             {/* MEDIA TAB */}
             {activeTab === 'media' && (
@@ -5272,7 +5384,7 @@ export default function TimelineEditor({
                      <div 
                        key={asset.id} 
                        onClick={() => {
-                         setSelectedAsset(asset);
+                         focusSelection('asset'); setSelectedAsset(asset);
                          setSelectedScene(null);
                        }}
                        draggable
@@ -6856,7 +6968,27 @@ export default function TimelineEditor({
                         </div>
                      </div>
 
-                     {/* ── Section 1: Visual Template (AI Edit Director) Card ── */}
+                     <PresentationPanel
+                       key={`${selectedScene.id}:${presentationBySceneId.get(selectedScene.id)?.revision ?? 0}`}
+                       projectId={initialProject.id} sceneId={selectedScene.id}
+                       sceneDuration={getSceneDuration(selectedScene)}
+                       row={presentationBySceneId.get(selectedScene.id)} assets={presentationAssets} sceneReferences={sceneReferences}
+                       visualSettings={presentationVisualSettings}
+                       suggestionControl={<SuggestionReview projectId={initialProject.id} sceneIds={[selectedScene.id]} onApplied={result => {
+                         const current = presentationBySceneId.get(result.row.scene_id) ?? null;
+                         setPresentationRows(previous => [...previous.filter(row => row.scene_id !== result.row.scene_id),result.row]);
+                         if (!result.replayed || current?.revision !== result.row.revision) setPresentationUndo(previous => ({ ...previous,[result.row.scene_id]: { previous: result.previous ?? current,after: result.row } }));
+                       }} />}
+                       captions={captionsEnabled} unsupported={unsupportedPresentationScenes.includes(selectedScene.id)}
+                       canUndo={Boolean(presentationUndo[selectedScene.id])}
+                       onSave={(envelope, timing, locked) => mutatePresentation(selectedScene.id, envelope, timing, locked, 'save')}
+                       onRemove={() => {
+                         const row = presentationBySceneId.get(selectedScene.id);
+                         return mutatePresentation(selectedScene.id, undefined, row ?? { start_time: 0, duration: 3, duration_mode: 'scene-remainder' }, true, 'delete');
+                       }}
+                       onUndo={() => undoPresentation(selectedScene.id)}
+                     />
+                     {/* ── Section 1: Basic legacy templates ── */}
                      <div className="border border-ed-border rounded-lg overflow-hidden shadow-sm bg-ed-raised/40 p-3 space-y-2.5">
                        <div className="flex items-center justify-between">
                          <span className="flex items-center gap-1.5 text-xs font-bold text-ed-text">
@@ -6869,12 +7001,12 @@ export default function TimelineEditor({
                        
                        <div>
                          <label className="block text-[10px] font-bold text-ed-text-dim mb-1 uppercase tracking-wider">
-                           Scene Combo Preset
+                           Basic / legacy combo preset
                          </label>
                          <div className="relative">
                            <select
                              value={getDetectedComboForScene(selectedScene.id)}
-                             disabled={isApplyingCombo}
+                             disabled={isApplyingCombo || presentationRows.some(row => row.scene_id === selectedScene.id && row.template_data.templateId !== 'clean')}
                              onChange={(e) => handleApplyCombo(selectedScene.id, e.target.value as any)}
                              className="w-full bg-ed-surface border border-ed-border focus:border-ed-accent-border rounded-md p-2 text-xs font-semibold text-ed-text outline-none shadow-sm disabled:opacity-50"
                            >
@@ -6892,7 +7024,7 @@ export default function TimelineEditor({
                            )}
                          </div>
                          <p className="text-[9px] text-ed-text-faint mt-1 leading-normal">
-                           Selecting a preset auto-builds text cards, dim screens, and effects directly onto this scene's timeline tracks.
+                           Basic presets create independent overlays. Existing overlays remain until you explicitly remove them.
                          </p>
                        </div>
                      </div>
@@ -8103,6 +8235,7 @@ export default function TimelineEditor({
               </div>
             )}
 
+            </>)} /></EditorRecovery>
           </div>
         </div>
 
@@ -8154,6 +8287,8 @@ export default function TimelineEditor({
                       </div>
                     )}
                     <Player
+                      key={previewAttempt}
+                      errorFallback={({ error }) => <PreviewFailure message={error.message} onFailure={handlePreviewFailure} onRetry={retryPreview} />}
                       ref={remotionPlayerRef}
                       component={VideoComposition}
                       inputProps={remotionPreviewProps}
@@ -8478,7 +8613,7 @@ export default function TimelineEditor({
                     ...scenes.map(s => `${s.id}_A1`),
                     ...timelineClips.map(c => `${c.id}_${c.trackId}`)
                   ];
-                  setSelectedSceneKeys(allKeys);
+                  focusSelection(null); setSelectedSceneKeys(allKeys);
                 }}
                 className="text-ed-text-dim hover:text-ed-accent-text transition-colors flex items-center gap-1 text-xs font-semibold px-2 py-0.5 rounded hover:bg-ed-accent-soft"
                 title="Select All items across V1, A1, A2 (Ctrl+A)"
@@ -8597,7 +8732,8 @@ export default function TimelineEditor({
                 // with the 200+ scene blocks it passes over — without this hint a
                 // compositor-only transform can still get swept into a shared repaint
                 // of everything nearby on a long-form project's crowded track.
-                style={{ left: '8rem', transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
+                ref={timelineCursor.bindLine}
+                style={{ left: '8rem', transform: 'translateX(-50%)', willChange: 'transform' }}
               >
                  {/* `ed-playhead`, not `ed-media`. This line was `bg-ed-media`
                      (#05060A) on the `ed-base` (#0A0B0D) track — 1.04:1, i.e.
@@ -8637,8 +8773,7 @@ export default function TimelineEditor({
                     onClick={(e) => {
                        const rect = e.currentTarget.getBoundingClientRect();
                        setCursorPosition(e.clientX - rect.left);
-                       setSelectedAsset(null);
-                       setSelectedSceneKeys([]);
+                       focusSelection(null);
                     }}
                  >
                     {[...Array(Math.ceil(timelineDuration) + 1)].map((_, i) => {
@@ -8667,7 +8802,8 @@ export default function TimelineEditor({
                     <div
                       className="absolute top-0 h-6 z-50 pointer-events-none flex flex-col items-center"
                       // Same compositor-only fix as the vertical line above — see that comment.
-                      style={{ left: 0, transform: `translateX(calc(${cursorPosition}px - 50%))`, willChange: 'transform' }}
+                      ref={timelineCursor.bindHandle}
+                      style={{ left: 0, transform: 'translateX(-50%)', willChange: 'transform' }}
                     >
                        <div className="w-3 h-3 bg-ed-playhead rounded-sm mb-0.5 relative flex items-center justify-center z-50 shadow-[0_0_6px_var(--color-ed-playhead-glow)]">
                           <div className="absolute -bottom-1 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[4px] border-t-ed-playhead"></div>
@@ -8803,14 +8939,14 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
-                     setSelectedOverlayClipId(null);
+                     focusSelection(null);
                    }}
                  >
                     {/* No `opacity-50` wrapper. `ed-text-dim` is already the "quiet"
                         step of the text ladder; halving it on top landed this
                         placeholder near 2.3:1 on the lane fill. The token carries the
                         dimming so there is one source of truth for how quiet quiet is. */}
-                    {overlayClips.length === 0 && (
+                    {displayOverlayClips.length === 0 && (
                       <div className="absolute inset-0 flex items-center px-4 pointer-events-none">
                         <Type size={12} className="mr-2 text-ed-text-faint" />
                         <span className="text-[10px] text-ed-text-dim font-bold italic">
@@ -8819,9 +8955,9 @@ export default function TimelineEditor({
                       </div>
                     )}
 
-                    {overlayClips.map((clip) => {
+                    {displayOverlayClips.map((clip) => {
                       const lane = overlayLaneByClipId[clip.id] ?? 0;
-                      const isSelected = selectedOverlayClipId === clip.id;
+                      const isSelected = selectedOverlayClipId === clip.id || (clip.kind === 'scene-template' && selectedScene?.id === clip.sceneId);
                       const accent = OVERLAY_KIND_ACCENT[clip.kind] ?? OVERLAY_KIND_ACCENT.text;
                       return (
                         <Rnd
@@ -8840,7 +8976,12 @@ export default function TimelineEditor({
                           }`}
                           onClick={(e: any) => {
                             e.stopPropagation();
-                            setSelectedOverlayClipId(clip.id);
+                            if (clip.kind === 'scene-template') {
+                              focusSelection('scene'); setSelectedScene(scenes.find(scene => scene.id === clip.sceneId) ?? null);
+                              setSelectedSceneTrack('V1'); setSelectedOverlayClipId(null); setSelectedTimelineClip(null); setSelectedSceneKeys([]); setActiveTab('scene');
+                              seekIntoOverlayClip(clip); return;
+                            }
+                            focusSelection('overlay'); setSelectedOverlayClipId(clip.id);
                             // An overlay clip isn't a scene or an A1/A2 clip, so clear
                             // both — otherwise the right panel would still be showing
                             // whichever of those was last selected.
@@ -8857,7 +8998,8 @@ export default function TimelineEditor({
                           onContextMenu={(e: any) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            setSelectedOverlayClipId(clip.id);
+                            if (clip.kind === 'scene-template') return;
+                            focusSelection('overlay'); setSelectedOverlayClipId(clip.id);
                             setContextMenu({ x: e.pageX, y: e.pageY, type: 'overlay', id: clip.id });
                           }}
                         >
@@ -8865,7 +9007,7 @@ export default function TimelineEditor({
                               the clip, the edge handles trim it. */}
                           <div
                             className="flex items-center gap-1 h-full cursor-move text-ed-text-faint overflow-hidden"
-                            onPointerDown={(e) => handleOverlayDragStart(e, clip)}
+                            onPointerDown={(e) => { if (clip.kind !== 'scene-template') handleOverlayDragStart(e, clip); }}
                           >
                             {clip.kind === 'dim-scrim' ? (
                               <Contrast size={10} className={`shrink-0 ${accent.icon}`} />
@@ -8892,7 +9034,7 @@ export default function TimelineEditor({
                               with this clip's accent instead of a flat gray, since they're
                               already visible at rest at both ends of every clip regardless
                               of kind. */}
-                          <div
+                          {clip.kind !== 'scene-template' && <><div
                             className={`absolute left-0 top-0 bottom-0 w-2 cursor-ew-resize ${accent.stripe} opacity-80 hover:opacity-100 z-50 rounded-l-md flex items-center justify-center`}
                             title="Drag to change when this overlay starts"
                             onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'left')}
@@ -8905,7 +9047,7 @@ export default function TimelineEditor({
                             onPointerDown={(e) => handleOverlayResizeStart(e, clip, 'right')}
                           >
                             <div className="w-0.5 h-3 bg-ed-surface/80 rounded-full" />
-                          </div>
+                          </div></>}
                         </Rnd>
                       );
                     })}
@@ -8922,7 +9064,7 @@ export default function TimelineEditor({
                           ...scenes.map(s => `${s.id}_V1`),
                           ...timelineClips.filter(c => c.trackId === 'V1').map(c => `${c.id}_V1`)
                         ];
-                        setSelectedSceneKeys(allV1Keys);
+                        focusSelection(null); setSelectedSceneKeys(allV1Keys);
                         setSelectedScene(null);
                         setSelectedTimelineClip(null);
                         setSelectedSceneTrack(null);
@@ -8964,8 +9106,7 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
-                     setSelectedAsset(null);
-                     setSelectedSceneKeys([]);
+                     focusSelection(null);
                    }}
                    onDragOver={(e) => {
                      if (trackStates.V1.locked) return;
@@ -9008,13 +9149,14 @@ export default function TimelineEditor({
                       return (
                         <div
                           key={`v1-collapsed-act-${actNumber}`}
-                          onClick={() => {
+                          onClick={(e) => {
+                            e.stopPropagation();
                             if (isBusy) return;
                             // Selects the act rather than generating on the spot — a
                             // stray click here used to immediately start recording
                             // real narration with no way to back out. Generation now
                             // needs the explicit button in the Act inspector.
-                            setSelectedActNumber(actNumber);
+                            focusSelection('act'); setSelectedActNumber(actNumber);
                             setSelectedScene(null);
                             setSelectedSceneTrack(null);
                             setSelectedSceneKeys([]);
@@ -9131,7 +9273,7 @@ export default function TimelineEditor({
                           ...scenes.map(s => `${s.id}_A1`),
                           ...timelineClips.filter(c => c.trackId === 'A1').map(c => `${c.id}_A1`)
                         ];
-                        setSelectedSceneKeys(allA1Keys);
+                        focusSelection(null); setSelectedSceneKeys(allA1Keys);
                         setSelectedScene(null);
                         setSelectedTimelineClip(null);
                         setSelectedSceneTrack(null);
@@ -9173,8 +9315,7 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
-                     setSelectedAsset(null);
-                     setSelectedSceneKeys([]);
+                     focusSelection(null);
                    }}
                    onDragOver={(e) => { 
                       if (trackStates.A1.locked) return;
@@ -9219,8 +9360,9 @@ export default function TimelineEditor({
                          return (
                            <div
                              key={`act-block-${outline.actNumber}`}
-                             onClick={() => {
-                               setSelectedActNumber(isSelected ? null : outline.actNumber);
+                             onClick={(e) => {
+                               e.stopPropagation();
+                               focusSelection('act'); setSelectedActNumber(isSelected ? null : outline.actNumber);
                                // Acts are their own selection kind — clear the scene and
                                // clip selections so the Inspector cannot show two things.
                                setSelectedScene(null);
@@ -9280,13 +9422,14 @@ export default function TimelineEditor({
                        return (
                          <div
                            key={`act-block-${outline.actNumber}`}
-                           onClick={() => {
+                           onClick={(e) => {
+                             e.stopPropagation();
                              if (isBusy) return;
                              // Same reasoning as the V1 collapsed block: select, don't
                              // generate. A plain click used to fire real TTS synthesis
                              // immediately, with no confirmation and no way to undo it
                              // if it was an accidental click on the wrong act.
-                             setSelectedActNumber(outline.actNumber);
+                             focusSelection('act'); setSelectedActNumber(outline.actNumber);
                              setSelectedScene(null);
                              setSelectedSceneTrack(null);
                              setSelectedSceneKeys([]);
@@ -9434,7 +9577,7 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className={`rounded-md border border-ed-info-border cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A1') || selectedSceneKeys.includes(`${clip.id}_A1`)
-                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 scale-[1.02] bg-ed-info-soft'
+                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 ring-inset bg-ed-info-soft'
                             : 'bg-ed-info-soft/90 z-20'
                         }`}
                         onClick={(e: any) => {
@@ -9450,7 +9593,7 @@ export default function TimelineEditor({
                           } else {
                             setSelectedSceneKeys([key]);
                           }
-                          setSelectedTimelineClip(clip);
+                          focusSelection('clip'); setSelectedTimelineClip(clip);
                           setSelectedSceneTrack('A1');
                           setActiveTab('scene');
                         }}
@@ -9528,7 +9671,7 @@ export default function TimelineEditor({
                       className="text-[13px] font-bold text-ed-text-dim cursor-pointer hover:text-ed-accent-text transition-colors"
                       onClick={() => {
                         const allA2Keys = timelineClips.filter(c => c.trackId === 'A2').map(c => `${c.id}_A2`);
-                        setSelectedSceneKeys(allA2Keys);
+                        focusSelection(null); setSelectedSceneKeys(allA2Keys);
                         setSelectedScene(null);
                         setSelectedTimelineClip(null);
                         setSelectedSceneTrack(null);
@@ -9570,9 +9713,7 @@ export default function TimelineEditor({
                    onClick={(e) => {
                      const rect = e.currentTarget.getBoundingClientRect();
                      setCursorPosition(e.clientX - rect.left);
-                     setSelectedAsset(null);
-                     setSelectedTimelineClip(null);
-                     setSelectedSceneKeys([]);
+                     focusSelection(null);
                    }}
                    onDragOver={(e) => {
                      if (trackStates.A2.locked) return;
@@ -9670,7 +9811,7 @@ export default function TimelineEditor({
                         style={{ top: '15%' }}
                         className={`rounded-md border border-ed-info-border cursor-grab active:cursor-grabbing overflow-hidden shadow-sm hover:brightness-95 transition-[filter,background-color,border-color] p-1 ${
                           (selectedTimelineClip?.id === clip.id && selectedSceneTrack === 'A2') || selectedSceneKeys.includes(`${clip.id}_A2`)
-                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 scale-[1.02] bg-ed-info-soft'
+                            ? 'ring-2 ring-ed-info-border ring-offset-1 z-30 ring-inset bg-ed-info-soft'
                             : 'bg-ed-info-soft/90 z-20'
                         } ${
                           // Brief "yes, that landed" confirmation right after a
@@ -9693,7 +9834,7 @@ export default function TimelineEditor({
                           } else {
                             setSelectedSceneKeys([key]);
                           }
-                          setSelectedTimelineClip(clip);
+                          focusSelection('clip'); setSelectedTimelineClip(clip);
                           setSelectedSceneTrack('A2');
                           setActiveTab('scene');
                         }}
@@ -9920,6 +10061,17 @@ export default function TimelineEditor({
         );
       })()}
 
+      {sceneDetail && detailScene && !isRendering && !isResizing && !isReordering && !activePointerGestureRef.current && typeof document !== 'undefined' && createPortal(
+        <div id="timeline-scene-detail" role="tooltip" className="fixed z-[9998] w-80 max-w-[calc(100vw-16px)] max-h-[50vh] overflow-hidden pointer-events-none rounded-lg border border-ed-border-strong bg-ed-surface text-ed-text shadow-xl p-3 text-xs"
+          style={{ left: sceneDetail.left, top: sceneDetail.top, transform: 'translateY(-100%)' }}>
+          <p className="font-bold">Scene {getVisualSequenceNumber(sceneDetail.track, sceneDetailIndex)} · {sceneDetail.track}
+            {trackStates[sceneDetail.track].locked ? ' · Track locked' : ''}</p>
+          <p className="text-ed-text-dim mt-1">{(getUnshiftedLeftPosition(sceneDetail.track, sceneDetailIndex) / scale).toFixed(2)}s · {getSceneDuration(detailScene).toFixed(2)}s duration · {typeof detailScene.generation_status === 'string' && detailScene.generation_status ? detailScene.generation_status : 'Awaiting media'}</p>
+          <p className="mt-2 whitespace-pre-wrap break-words line-clamp-6">{typeof detailScene.voice_over_beat === 'string' && detailScene.voice_over_beat ? detailScene.voice_over_beat : 'No narration yet.'}</p>
+          <p className="text-ed-text-dim mt-2">{trackStates[sceneDetail.track].locked ? 'Unlock the track to select or edit.' : 'Select this scene to read and edit full narration in Scene Info.'}</p>
+        </div>, document.body
+      )}
+
       {/* Blocking export overlay.
           Rendered last and at z-[10000] so it sits above every other layer in this
           component — including the editor page's own `fixed inset-0 z-50` shell, the
@@ -9931,7 +10083,7 @@ export default function TimelineEditor({
           cannot be cancelled server-side, so offering a dismiss would only hide
           progress for work that is still running. */}
       {isRendering && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-ed-media/70 backdrop-blur-sm">
+        <div role="dialog" aria-modal="true" aria-label="Exporting video" className="fixed inset-0 z-[10000] flex items-center justify-center bg-ed-media/70 backdrop-blur-sm">
           <div className="bg-ed-surface rounded-2xl shadow-2xl p-8 w-full max-w-sm mx-4 text-center">
             <div className="flex items-center justify-center gap-2.5 mb-5">
               <Loader2 size={18} className="animate-spin text-ed-accent-text" />

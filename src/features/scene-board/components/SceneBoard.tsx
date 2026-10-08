@@ -2,6 +2,11 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useScenePresentations } from '@/features/presentations/components/useScenePresentations';
+import { PresentationPanel } from '@/features/presentations/components/PresentationPanel';
+import { SuggestionReview } from '@/features/presentations/components/SuggestionReview';
+import { presentationDefinition } from '@/lib/presentations/registry';
+import { resolvePresentation } from '@/lib/presentations/compiler';
 import {
   AlertTriangle,
   Camera,
@@ -145,6 +150,7 @@ function scriptStageLabel(seconds: number): string {
 
 export default function SceneBoard({ data }: SceneBoardProps) {
   const router = useRouter();
+  const presentations = useScenePresentations(data.projectId);
 
   /* Server truth re-seeds local state whenever the route refreshes. A mounted client
      component does NOT re-seed `useState` from new props on its own — the same trap
@@ -698,6 +704,7 @@ export default function SceneBoard({ data }: SceneBoardProps) {
                     if (!isPlaying) setPlayhead(0);
                   }}
                   onPlayhead={setPlayhead}
+                  presentationSuggestions={<SuggestionReview projectId={data.projectId} sceneIds={act.scenes.map(scene => scene.id)} label="Suggest presentations" onApplied={presentations.acceptApplied} />}
                 />
 
                 {pastingAct === act.outline.actNumber && (
@@ -753,6 +760,9 @@ export default function SceneBoard({ data }: SceneBoardProps) {
                           <SceneCard
                             key={scene.id}
                             scene={scene}
+                            presentationLabel={presentations.unsupported.includes(scene.id) ? 'Unsupported presentation' : presentationDefinition(presentations.rows.find(row => row.scene_id === scene.id)?.template_data.templateId ?? '', 1)?.name}
+                            presentationNeedsReview={(() => { const row = presentations.rows.find(row => row.scene_id === scene.id); return row ? resolvePresentation(row.template_data, row, scene.durationSeconds || 5, 30, presentations.assets, data.projectId, { sceneId: scene.id, scenes: allScenes.map(item => ({ id: item.id, sequence: item.sequenceNumber, mediaId: item.mediaId ?? null })) }).issues.length > 0 : presentations.unsupported.includes(scene.id); })()}
+                            imageUrl={scene.mediaType === 'image' ? scene.mediaUrl ?? undefined : presentations.assets.find(asset => asset.id === scene.mediaId && asset.mediaType === 'image' && asset.status === 'ready')?.url}
                             isSelected={scene.id === selectedSceneId}
                             isSpeaking={scene.id === speakingSceneId}
                             onSelect={() => setSelectedSceneId(scene.id)}
@@ -785,6 +795,15 @@ export default function SceneBoard({ data }: SceneBoardProps) {
         onNarrationSaved={handleNarrationSaved}
         narrationVoiceId={data.narrationVoiceId}
         voices={voices}
+        presentationPanel={selectedScene ? presentations.loaded ? <PresentationPanel
+          key={`${selectedScene.id}:${presentations.rows.find(row => row.scene_id === selectedScene.id)?.revision ?? 0}`}
+          projectId={data.projectId} sceneId={selectedScene.id} sceneDuration={selectedScene.durationSeconds || 5}
+          row={presentations.rows.find(row => row.scene_id === selectedScene.id)} assets={presentations.assets} captions={presentations.captions} sceneReferences={allScenes.map(item => ({ id: item.id, sequence: item.sequenceNumber, mediaId: item.mediaId ?? null }))}
+          visualSettings={presentations.settings} unsupported={presentations.unsupported.includes(selectedScene.id)} canUndo={Boolean(presentations.undos[selectedScene.id])}
+          suggestionControl={<SuggestionReview projectId={data.projectId} sceneIds={[selectedScene.id]} onApplied={presentations.acceptApplied} />}
+          onSave={(envelope,timing,locked) => presentations.mutate(selectedScene.id,envelope,timing,locked,'save')}
+          onRemove={() => presentations.mutate(selectedScene.id,undefined,presentations.rows.find(row => row.scene_id === selectedScene.id) ?? { start_time: 0,duration: 3,duration_mode: 'scene-remainder' },true,'delete')}
+          onUndo={() => presentations.undo(selectedScene.id)} /> : <p role="status" className="text-xs text-ed-warn">{presentations.error || 'Loading presentations…'}</p> : null}
       />
 
       {/* Fixed rather than sticky-in-scroll: a batch write walks every act in order, so
@@ -1083,6 +1102,7 @@ function ActHeader({
   onRewriteAct,
   onPlayState,
   onPlayhead,
+  presentationSuggestions,
 }: {
   act: SceneBoardAct;
   isSinglePass: boolean;
@@ -1099,6 +1119,7 @@ function ActHeader({
   onRewriteAct: () => void;
   onPlayState: (isPlaying: boolean) => void;
   onPlayhead: (t: number) => void;
+  presentationSuggestions: React.ReactNode;
 }) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -1176,7 +1197,8 @@ function ActHeader({
             : "bg-ed-surface/95"
       }`}
     >
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
+        <div onClick={event => event.stopPropagation()}>{presentationSuggestions}</div>
         <div className="min-w-0 flex items-center gap-2.5">
           {!isSinglePass && (
             // Purely a state indicator now — the whole header row above is the click
@@ -1426,11 +1448,17 @@ function SceneCard({
   isSelected,
   isSpeaking,
   onSelect,
+  presentationLabel,
+  presentationNeedsReview,
+  imageUrl,
 }: {
   scene: SceneBoardScene;
   isSelected: boolean;
   isSpeaking: boolean;
   onSelect: () => void;
+  presentationLabel?: string;
+  presentationNeedsReview?: boolean;
+  imageUrl?: string;
 }) {
   const ring = isSelected
     ? "ring-2 ring-ed-accent border-ed-accent"
@@ -1455,6 +1483,8 @@ function SceneCard({
         )}
       </div>
 
+      {imageUrl && <img src={imageUrl} alt="Scene source media" loading="lazy" className="aspect-video w-full object-cover" />}
+      {presentationLabel && <p className={`px-2.5 pt-2 text-[10px] ${presentationNeedsReview ? 'text-ed-warn' : 'text-ed-accent-text'}`}>{presentationNeedsReview ? '● Review · ' : '● Configured · '}{presentationLabel}</p>}
       <p className="px-2.5 py-2.5 text-[12px] leading-snug text-ed-text-dim line-clamp-2 group-hover:text-ed-text transition-colors">
         {scene.voiceOverText || <span className="italic text-ed-text-faint">No narration</span>}
       </p>
@@ -1545,6 +1575,7 @@ function Inspector({
   onNarrationSaved,
   narrationVoiceId,
   voices,
+  presentationPanel,
 }: {
   scene: SceneBoardScene | null;
   onClose: () => void;
@@ -1552,6 +1583,7 @@ function Inspector({
   /** The channel's saved voice — see `resolveNarrationSettings` in audio-actions.ts. */
   narrationVoiceId: string;
   voices: Array<{ id: string; name?: string }>;
+  presentationPanel?: React.ReactNode;
 }) {
   if (!scene) {
     return (
@@ -1594,6 +1626,7 @@ function Inspector({
 
       <div className="p-4 space-y-5">
         <NarrationEditor scene={scene} onSaved={onNarrationSaved} />
+        {presentationPanel}
 
         {/*
           Read-only: this is what "Generate audio" / "Re-record" on this act actually

@@ -3,10 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "node --use-system-ca node_modules/next/dist/bin/next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
+    "lint:billing": "eslint --no-ignore src/features/billing src/server/billing src/server/generation src/app/api/stripe scripts/billing tests/billing",
+    "test:billing": "node --test tests/billing/*.test.mjs",
+    "check:billing": "node scripts/billing/check-readiness.mjs",
+    "lint:timeline": "eslint --config eslint.timeline.config.mjs src/features/timeline-editor/components/SceneClipLabel.tsx src/features/timeline-editor/components/TimelineEditor.tsx src/features/timeline-editor/components/EditorRecovery.tsx src/features/timeline-editor/interaction.ts src/features/timeline-editor/pointer-gesture.ts src/features/timeline-editor/save-queue.ts src/features/timeline-editor/validation.ts src/features/timeline-editor/playback.ts src/features/timeline-editor/use-committed-event.ts src/features/timeline-editor/components/SceneBlock.tsx src/features/timeline-editor/components/TransitionControl.tsx",
+    "test:timeline": "node --test tests/timeline-editor/*.test.mjs tests/presentations/timeline.test.mjs",
     "typecheck": "tsc --noEmit",
     "deploy:remotion": "remotion lambda sites create src/remotion/index.ts --site-name=assemblyreel"
   },
@@ -39,6 +44,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "0.5.8",
     "@tailwindcss/postcss": "^4.3.2",
     "@types/node": "^20",
     "@types/react": "^19",

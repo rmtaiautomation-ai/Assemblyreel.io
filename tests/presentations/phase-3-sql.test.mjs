@@ -1,0 +1,55 @@
+import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
+import test from 'node:test';
+import { PGlite } from '@electric-sql/pglite';
+import { familyFixture, actorId, otherActorId, projectId, sceneId, mediaIds } from './phase-2-fixtures.mjs';
+const evidenceId='70000000-0000-4000-8000-000000000001',runId='80000000-0000-4000-8000-000000000001',opId='90000000-0000-4000-8000-000000000001',secondScene='30000000-0000-4000-8000-000000000002';
+test('Phase 3 real migration preserves owned evidence, locks, stale input checks, CAS, replay and manual origin',async()=>{
+ const db=new PGlite();
+ try{
+ await db.exec(`create role authenticated;create role anon;create role service_role;create schema auth;
+ create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+ create function public.uuid_generate_v4() returns uuid language sql as $$select gen_random_uuid()$$;
+ create table workspaces(id uuid primary key,user_id uuid,format_blueprint jsonb,format_blueprint_version integer default 0,format_preset_key text);
+ create table video_projects(id uuid primary key,workspace_id uuid references workspaces,format_blueprint_snapshot jsonb);
+ create table scenes(id uuid primary key,project_id uuid references video_projects,voice_over_beat text,video_duration numeric,sequence_number integer,act_number integer);
+ create table media(id uuid primary key,project_id uuid references video_projects,media_type text,status text,url text);`);
+ for(const name of ['create-overlay-clips.sql','add-overlay-clip-templates.sql','add-overlay-ai-origin.sql','add-scene-template-presentations.sql','add-documentary-template-library.sql','add-presentation-suggestions.sql','add-presentation-suggestions.sql'])await db.exec(await readFile(new URL(`../../db/${name}`,import.meta.url),'utf8'));
+ await db.query('insert into workspaces values($1,$2,$3,0,$4)',[projectId,actorId,{},'general']);await db.query('insert into video_projects(id,workspace_id) values($1,$1)',[projectId]);
+ await db.query("insert into scenes values($1,$2,'Supplied source narration',20,1,1),($3,$2,'Next narration',20,2,1)",[sceneId,projectId,secondScene]);
+ for(const id of mediaIds)await db.query("insert into media values($1,$2,'image','ready','/source.svg')",[id,projectId]);
+ await db.exec('grant usage on schema public,auth to authenticated,anon;grant select,update on workspaces,video_projects,scenes,media to authenticated;grant select,update,insert on overlay_clips to authenticated');
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[actorId]);await db.exec('set role authenticated');
+ const snapshot=async()=>(await db.query('select presentation_suggestion_snapshot($1) as result',[projectId])).rows[0].result;
+ const approve=async(revision=0,envelope=familyFixture('archival-explainer'))=>(await db.query('select mutate_presentation_evidence($1,$2,$3,$4,$5,false) as result',[projectId,evidenceId,revision,'Test archival packet',envelope])).rows[0].result;
+ const before=await snapshot(),packet=await approve();assert.equal(packet.revision,1);assert.equal((await approve()).revision,1);assert.notEqual((await snapshot()).inputHash,before.inputHash);
+ await assert.rejects(db.query('insert into presentation_evidence values($1,$2,$3,$4,1,$5,now())',[opId,projectId,'Forged',{},actorId]),/permission denied/);
+ await assert.rejects(db.query('insert into presentation_suggestion_runs(id) values($1)',[runId]),/permission denied/);
+ await assert.rejects(db.query('select mutate_scene_presentation_core($1,$2,null,0,$3,$4,0,20,$5,true,$6)',[projectId,sceneId,opId,familyFixture('archival-explainer'),'scene-remainder','save']),/permission denied/);
+ const inputHash=(await snapshot()).inputHash,envelope=familyFixture('archival-explainer');
+ const proposal=id=>({sceneId:id,sequence:id===sceneId?1:2,expectedId:null,expectedRevision:0,previousFamily:null,skipped:null,chosenId:evidenceId,reason:'Supplied source',notes:[],choices:[{id:evidenceId,family:'archival-explainer',title:'Test archival packet',status:'ready',requirements:[],evidenceIds:[evidenceId],envelope,timing:{start_time:0,duration:20,duration_mode:'scene-remainder'},anchor:null}]});
+ const result={version:1,inputHash,scenes:[proposal(sceneId),proposal(secondScene)]};
+ await db.exec('reset role');await db.query("insert into presentation_suggestion_runs(id,project_id,requested_by,target_scene_ids,input_hash,state,result) values($1,$2,$3,$4,$5,'complete',$6)",[runId,projectId,actorId,[sceneId,secondScene],inputHash,result]);await db.exec('set role authenticated');
+ const apply=async(id=sceneId,operation=opId,allow=false,draft=null,timing=null)=>(await db.query('select apply_presentation_suggestion($1,$2,$3,$4,$5,$6,$7,$8) as result',[projectId,id,runId,evidenceId,operation,allow,draft,timing])).rows[0].result;
+ const first=await apply();assert.equal(first.row.origin,'ai');assert.equal(first.row.locked,true);assert.equal(first.row.suggestion_run_id,runId);assert.equal((await apply()).replayed,true);
+ await assert.rejects(apply(sceneId,opId,true,{...envelope,content:{...envelope.content,heading:'Different'}},{start_time:0,duration:20,duration_mode:'scene-remainder'}),/OPERATION_REUSED/);
+ assert.equal((await snapshot()).inputHash,inputHash,'own earlier batch apply does not stale later targets');
+ const second=await apply(secondScene,'90000000-0000-4000-8000-000000000002');assert.equal(second.row.origin,'ai');
+ await assert.rejects(apply(sceneId,'90000000-0000-4000-8000-000000000003',true),/PRESENTATION_LOCKED/);
+ const manual=async(locked=false)=>(await db.query('select mutate_scene_presentation($1,$2,$3,$4,$5,$6,0,20,$7,$8,$9) as result',[projectId,sceneId,first.row.id,first.row.revision,'90000000-0000-4000-8000-000000000004',envelope,'scene-remainder',locked,'save'])).rows[0].result;
+ const edit=await manual();assert.equal(edit.row.origin,'user');assert.equal(edit.row.suggestion_run_id,null);assert.equal(edit.row.revision,2);
+ await assert.rejects(apply(sceneId,'90000000-0000-4000-8000-000000000005'),/MANUAL_REVIEW_REQUIRED/);
+ await assert.rejects(apply(sceneId,'90000000-0000-4000-8000-000000000005',true),/REVISION_CONFLICT/);
+ // Trusted new run captures the updated presentation identity/revision.
+ const revised={...result,scenes:[{...proposal(sceneId),expectedId:edit.row.id,expectedRevision:2,skipped:'Manual presentation: replacement requires explicit approval.'}]};
+ await db.exec('reset role');await db.query('update presentation_suggestion_runs set result=$1 where id=$2',[revised,runId]);await db.exec('set role authenticated');
+ await db.query("update scenes set voice_over_beat='Changed narration' where id=$1",[sceneId]);await assert.rejects(apply(sceneId,'90000000-0000-4000-8000-000000000006',true),/STALE_SUGGESTION/);
+ await db.query("update scenes set voice_over_beat='Supplied source narration' where id=$1",[sceneId]);
+ await db.query("update media set url='/changed-source.svg' where id=$1",[mediaIds[0]]);await assert.rejects(apply(sceneId,'90000000-0000-4000-8000-000000000006',true),/STALE_SUGGESTION/);
+ await db.query("update media set url='/source.svg' where id=$1",[mediaIds[0]]);
+ const reviewed=await apply(sceneId,'90000000-0000-4000-8000-000000000006',true,envelope,{start_time:0,duration:20,duration_mode:'scene-remainder'});assert.equal(reviewed.row.origin,'user');assert.equal(reviewed.row.locked,true);
+ await approve(1);assert.notEqual((await snapshot()).inputHash,inputHash);
+ await db.query("select set_config('request.jwt.claim.sub',$1,false)",[otherActorId]);assert.equal((await db.query('select * from presentation_evidence')).rows.length,0);await assert.rejects(snapshot(),/OWNERSHIP_REQUIRED/);await assert.rejects(approve(2),/OWNERSHIP_REQUIRED/);await assert.rejects(apply(),/OWNERSHIP_REQUIRED/);
+ await db.query("select set_config('request.jwt.claim.sub','',false)");await assert.rejects(snapshot(),/AUTH_REQUIRED/);
+ }finally{await db.close();}
+});

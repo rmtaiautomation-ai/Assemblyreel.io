@@ -478,6 +478,24 @@ npm run build
 npm run deploy:remotion   # rebuild the Lambda site bundle after any src/remotion/** change
 ```
 
+Development startup uses Node's `--use-system-ca` flag so HTTPS connections can trust
+certificates installed in the operating system, including an approved local proxy's CA,
+while retaining certificate verification. Use a Node version that supports this flag;
+the local startup was verified with Node **24.12.0**. Do not work around a certificate
+error by disabling TLS verification.
+
+If an existing `/workspaces/<workspace-id>` route unexpectedly returns Next's generic
+404, stop and restart the project's development server before changing database rows.
+A stale development route state can omit dynamic routes even when a production build
+recognizes them. The trigger for that stale state is not necessarily a database issue.
+
+The documentary catalog is under **Channel Settings → Visuals**; scene authoring is under
+**Scene Board / Timeline → select a scene → Presentation**. Advanced families are opt-in.
+Saving and reviewed AI require authentication and the ordered presentation migrations;
+seeing the UI is not evidence that those database services are activated. See
+[Phase 5 readiness](docs/presentations/phase-5-readiness.md) for the migration order and
+remaining release gates.
+
 Secrets live in `.env.local` (git-ignored). The app is a single-machine tool — rendering,
 narration, and generated media all write to the local filesystem unless AWS Lambda is
 configured.
