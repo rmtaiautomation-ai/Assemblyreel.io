@@ -9,6 +9,9 @@ import { createTimelineCursor, startTimelinePlayback } from '../playback';
 import { useCommittedEvent } from '../use-committed-event';
 import { TransitionControl } from './TransitionControl';
 import { SceneBlock } from './SceneBlock';
+import { ThumbnailCache } from '../thumbnail-cache';
+import { CLIP_WAVEFORM_PATH, NARRATION_WAVEFORM_PATH, actWaveformPath } from '../waveform';
+import { intersectsViewport, visibleClips, TIMELINE_OVERSCAN_PX } from '../viewport';
 import { EditorRecovery, EditorPanelContent, PreviewFailure } from './EditorRecovery';
 import { OrdinarySaveQueue, type SaveStatus } from '../save-queue';
 import { startPointerGesture } from '../pointer-gesture';
@@ -566,9 +569,6 @@ function timelineItemToClip(item: any, mediaById: Map<string, any>): TimelineCli
 /** Shortest a block may be trimmed to, in seconds. */
 const MIN_BLOCK_DURATION = 0.5;
 
-/** Approximate width of one filmstrip thumbnail inside a scene block, in pixels. */
-const FILMSTRIP_THUMB_WIDTH = 80;
-
 // This component is a client component but Next still renders it on the server,
 // where useLayoutEffect logs a warning. Effects never run there anyway.
 const useIsomorphicLayoutEffect = typeof window !== 'undefined' ? useLayoutEffect : useEffect;
@@ -772,6 +772,8 @@ function TimelineEditorContent({
   }, [scenes, timelineClips, overlayClips, selectedSceneId, selectedTimelineClipId, selectedOverlayClipId]);
 
   const [timelineCursor] = useState(createTimelineCursor);
+  const [thumbnailCache] = useState(() => new ThumbnailCache());
+  useEffect(() => () => thumbnailCache.clear(), [thumbnailCache]);
   const cursorPositionRef = timelineCursor.positionRef;
   const setCursorPosition = timelineCursor.seek;
   const [timelineHeight, setTimelineHeight] = useState(320);
@@ -1484,11 +1486,6 @@ function TimelineEditorContent({
     setScaleState(next);
   }; // 1 Second = 30px width
 
-  /** How many filmstrip thumbnails fit across a block of the given duration. */
-  const filmstripCount = (durationSeconds: number) =>
-    Math.max(1, Math.ceil((durationSeconds * scale) / FILMSTRIP_THUMB_WIDTH));
-
-
   /**
    * Trim gestures are driven entirely through refs and direct DOM writes; the only
    * React state involved is `isResizing`, which flips once at each end of the gesture.
@@ -1547,11 +1544,6 @@ function TimelineEditorContent({
   const lastResizeValuesRef = useRef<Record<string, any> | null>(null);
   // Scene blocks and incoming transition controls, keyed by scene ID and track/kind.
   const blockRefs = useRef<Record<string, HTMLElement | null>>({});
-  // Number of filmstrip thumbnails a block was showing when its gesture began. The
-  // count is normally derived from the block's pixel width, so resizing would mount
-  // and unmount real <video preload="metadata"> elements mid-drag, each firing a
-  // range request. Freezing it keeps the strip stable until the gesture commits.
-  const [frozenStrip, setFrozenStrip] = useState<{ sceneId: string; count: number } | null>(null);
 
   const readTarget = (key: string): GestureTarget | null => {
     const node = blockRefs.current[key];
@@ -1607,10 +1599,6 @@ function TimelineEditorContent({
           const following = readTarget(`${scenes[i].id}_${suffix}`);
           if (following) shiftTargets.push(following);
         }
-      }
-
-      if (scene?.custom_media_url) {
-        setFrozenStrip({ sceneId, count: filmstripCount(duration) });
       }
 
       // Hinted here rather than in the style prop so only the blocks that actually
@@ -1817,7 +1805,6 @@ function TimelineEditorContent({
       lastResizeValuesRef.current = null;
       gestureRef.current = null;
 
-      setFrozenStrip(null);
       setIsResizing(false);
     };
 
@@ -1832,7 +1819,6 @@ function TimelineEditorContent({
       lastResizeValuesRef.current = null;
       gestureMovedRef.current = false;
       if (gestureFrameRef.current !== null) { cancelAnimationFrame(gestureFrameRef.current); gestureFrameRef.current = null; }
-      setFrozenStrip(null);
       setIsResizing(false);
     };
     const handlePointerCancel = (event: PointerEvent) => {
@@ -2729,13 +2715,35 @@ function TimelineEditorContent({
   // — it needs the composition's aspect ratio, which isn't computed until then.
 
   const activePointerGestureRef = useRef<(() => void) | null>(null);
+  const [activeOverlayGestureId, setActiveOverlayGestureId] = useState<string | null>(null);
+  const [draggingTimelineClipId, setDraggingTimelineClipId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!draggingTimelineClipId) return;
+    const clear = () => setDraggingTimelineClipId(null);
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') clear(); };
+    window.addEventListener('dragend', clear);
+    window.addEventListener('drop', clear);
+    window.addEventListener('mouseup', clear);
+    window.addEventListener('touchend', clear);
+    window.addEventListener('blur', clear);
+    window.addEventListener('keydown', onKeyDown);
+    return () => {
+      window.removeEventListener('dragend', clear);
+      window.removeEventListener('drop', clear);
+      window.removeEventListener('mouseup', clear);
+      window.removeEventListener('touchend', clear);
+      window.removeEventListener('blur', clear);
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [draggingTimelineClipId]);
   useEffect(() => () => { activePointerGestureRef.current?.(); }, []);
   const beginPointerGesture = (event: React.PointerEvent, onMove: (event: PointerEvent) => void,
     onFinish: (result: { cancelled: boolean; moved: boolean }) => void) => {
     activePointerGestureRef.current?.();
+    setActiveOverlayGestureId(event.currentTarget.closest('[data-timeline-overlay]')?.getAttribute('data-timeline-overlay') ?? null);
     activePointerGestureRef.current = startPointerGesture({
       event, target: event.currentTarget as HTMLElement, onMove,
-      onFinish: result => { activePointerGestureRef.current = null; onFinish(result); },
+      onFinish: result => { activePointerGestureRef.current = null; setActiveOverlayGestureId(null); onFinish(result); },
       onError: error => setPersistenceWarning('Gesture stopped: ' + (error instanceof Error ? error.message : 'unexpected error')),
     });
   };
@@ -3829,6 +3837,11 @@ function TimelineEditorContent({
     }
 
     } catch (error) {
+      // Status persistence can fail while handling an earlier submission failure.
+      // Local recovery must not depend on that second request succeeding.
+      stopRenderProgressPolling();
+      setIsRendering(false);
+      setRenderStatusMessage('Render Error: ' + (error instanceof Error ? error.message : 'unexpected error'));
       setPersistenceWarning('Request failed: ' + (error instanceof Error ? error.message : 'unexpected error'));
     }
   };
@@ -4681,12 +4694,19 @@ function TimelineEditorContent({
 
   // Roughly two screens' worth of slack on each side, so scrolling — even a fast
   // drag of the scrollbar — reveals blocks that are already mounted rather than a
-  // visible pop-in gap. V1's cumulative left-position math is close enough to A1's
-  // (both lay scenes out in the same sequential order) that one shared filter for
-  // both tracks is correct within this buffer; drag-insert offsetting is the only
-  // thing that can differ between them, and it moves things by at most one scene
-  // width, far inside this margin.
-  const VIRTUALIZE_BUFFER_PX = 1600;
+  // visible pop-in gap. Scene filtering checks both tracks because a long scene's
+  // reorder displacement can exceed the overscan distance.
+  const VIRTUALIZE_BUFFER_PX = TIMELINE_OVERSCAN_PX;
+
+  const visibleOverlayClips = useMemo(
+    () => visibleClips(displayOverlayClips, scale, visiblePxRange, activeOverlayGestureId),
+    [displayOverlayClips, scale, visiblePxRange, activeOverlayGestureId],
+  );
+  const visibleTimelineClips = useMemo(
+    () => visibleClips(timelineClips, scale, visiblePxRange,
+      isResizing && gestureRef.current?.kind === 'clip' ? gestureRef.current.id : draggingTimelineClipId),
+    [timelineClips, scale, visiblePxRange, isResizing, draggingTimelineClipId],
+  );
 
   // Which acts have real, narrated timing. Un-narrated acts' scenes still carry the
   // Scene Slicer's ESTIMATED durations, which Deepgram alignment overwrites the moment
@@ -4709,13 +4729,15 @@ function TimelineEditorContent({
       // always renders normally there regardless of what act_number it carries.
       if (isLongForm && !narratedActNumbers.has(Number(scene.act_number ?? 1))) continue;
       const leftPx = getSceneLeftPosition('V1', idx);
+      const audioLeftPx = getSceneLeftPosition('A1', idx);
       const widthPx = getSceneDuration(scene) * scale;
-      if (leftPx + widthPx >= lowPx && leftPx <= highPx) {
+      if ((leftPx + widthPx >= lowPx && leftPx <= highPx)
+        || (audioLeftPx + widthPx >= lowPx && audioLeftPx <= highPx)) {
         entries.push({ scene, idx });
       }
     }
     return entries;
-  }, [scenes, visiblePxRange, scale, v1DragInsertIndex, draggingAsset, draggingScene, isLongForm, narratedActNumbers]);
+  }, [scenes, mediaAssets, visiblePxRange, scale, v1DragInsertIndex, a1DragInsertIndex, draggingAsset, draggingScene, isLongForm, narratedActNumbers]);
 
   // One placeholder per un-narrated act, spanning where that act's scenes WOULD sit.
   // Clicking it records that act — the same entry point as the A1 placeholder, so the
@@ -4791,11 +4813,6 @@ function TimelineEditorContent({
                       const leftPx = getSceneLeftPosition('V1', idx);
                       const isSelected = selectedSceneKeys.includes(`${scene.id}_V1`)
                         || (selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && selectedSceneKeys.length === 0);
-                      // Frozen mid-trim so resizing doesn't mount and unmount <video>
-                      // elements — each new one fires a range request for its poster frame.
-                      const stripCount = frozenStrip && frozenStrip.sceneId === scene.id
-                        ? frozenStrip.count
-                        : filmstripCount(getSceneDuration(scene));
                       // The block being dragged is hidden and follows the cursor, so only
                       // the ones making room for it animate.
                       const slidesAside = isReordering && draggingScene?.id !== scene.id;
@@ -4935,7 +4952,7 @@ function TimelineEditorContent({
                          }}
                        >
                          <SceneBlock track="V1" number={getVisualSequenceNumber('V1', idx)} width={getSceneDuration(scene) * scale}
-                           mediaUrl={previewMediaUrl} mediaType={previewMediaType} stripCount={stripCount} pending={Boolean(pendingHere)}
+                           mediaUrl={previewMediaUrl} mediaType={previewMediaType} thumbnailCache={thumbnailCache} pending={Boolean(pendingHere)}
                            awaitingVisuals={isLongForm && scene.environment == null && !previewMediaUrl} />
                          {/* Resize Handles */}
                          {!trackStates.V1.locked && selectedScene?.id === scene.id && selectedSceneTrack === 'V1' && (
@@ -8955,13 +8972,14 @@ function TimelineEditorContent({
                       </div>
                     )}
 
-                    {displayOverlayClips.map((clip) => {
+                    {visibleOverlayClips.map((clip) => {
                       const lane = overlayLaneByClipId[clip.id] ?? 0;
                       const isSelected = selectedOverlayClipId === clip.id || (clip.kind === 'scene-template' && selectedScene?.id === clip.sceneId);
                       const accent = OVERLAY_KIND_ACCENT[clip.kind] ?? OVERLAY_KIND_ACCENT.text;
                       return (
                         <Rnd
                           key={clip.id}
+                          data-timeline-overlay={clip.id}
                           bounds="parent"
                           dragAxis="x"
                           minWidth={0.5 * scale}
@@ -9145,6 +9163,7 @@ function TimelineEditorContent({
                         moment the act is narrated. Clicking records the act, matching
                         the A1 placeholder's behaviour. */}
                     {collapsedActBlocks.map(({ actNumber, leftPx, rightPx, sceneCount }) => {
+                      if (!intersectsViewport(leftPx / scale, (rightPx - leftPx) / scale, scale, visiblePxRange)) return null;
                       const isBusy = regeneratingActNumber === actNumber;
                       return (
                         <div
@@ -9207,7 +9226,7 @@ function TimelineEditorContent({
                     )}
 
                     {/* Dropped Custom Media Clips */}
-                    {timelineClips.filter(c => c.trackId === 'V1').map(clip => (
+                    {visibleTimelineClips.filter(c => c.trackId === 'V1').map(clip => (
                       <Rnd
                         key={clip.id}
                         bounds="parent"
@@ -9223,7 +9242,9 @@ function TimelineEditorContent({
                            const snappedTime = applyMagneticSnap('V1', newTime, clip.id);
                            setTimelineClips(prev => prev.map(c => c.id === clip.id ? { ...c, startTime: snappedTime < 0.2 ? 0 : snappedTime } : c));
                         }}
+                        onResizeStart={() => setDraggingTimelineClipId(clip.id)}
                         onResizeStop={(e, direction, ref, delta, position) => {
+                           setDraggingTimelineClipId(null);
                            const newWidth = ref.offsetWidth;
                            const newDuration = newWidth / scale;
                            const newStartTime = position.x / scale;
@@ -9278,7 +9299,7 @@ function TimelineEditorContent({
                         setSelectedTimelineClip(null);
                         setSelectedSceneTrack(null);
                       }}
-                      title="Select all on A1"
+                      title="Select all on A1. Audio patterns are decorative, not measured waveforms."
                     >
                       A1
                     </span>
@@ -9357,6 +9378,7 @@ function TimelineEditorContent({
                        const isBusy = regeneratingActNumber === outline.actNumber;
 
                        if (narration) {
+                         if (!intersectsViewport(narration.startSeconds, narration.durationSeconds, scale, visiblePxRange)) return null;
                          return (
                            <div
                              key={`act-block-${outline.actNumber}`}
@@ -9397,9 +9419,9 @@ function TimelineEditorContent({
                                </span>
                              </div>
                              <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                               <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                               <svg aria-hidden="true" className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                                  <path suppressHydrationWarning
-                                   d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin((i + outline.actNumber * 7) * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                                   d={actWaveformPath(outline.actNumber)}
                                    stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
                                  />
                                </svg>
@@ -9418,6 +9440,8 @@ function TimelineEditorContent({
                        const placeholderIndex = idx - actSummaries.findIndex(s => !s.narration);
                        const placeholderStart =
                          narratedTailSeconds + Math.max(0, placeholderIndex) * PLACEHOLDER_ACT_SECONDS;
+
+                       if (!intersectsViewport(placeholderStart, PLACEHOLDER_ACT_SECONDS, scale, visiblePxRange)) return null;
 
                        return (
                          <div
@@ -9500,9 +9524,9 @@ function TimelineEditorContent({
                          </span>
                        </div>
                        <div className="absolute inset-x-1 bottom-1 top-4 opacity-60 flex items-center overflow-hidden pointer-events-none">
-                         <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                         <svg aria-hidden="true" className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                            <path suppressHydrationWarning
-                             d={Array.from({length: 250}).map((_, i) => { const h = 8 + Math.abs(Math.sin(i * 0.3) * Math.cos(i * 1.7)) * 40; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+                             d={NARRATION_WAVEFORM_PATH}
                              stroke="currentColor" strokeWidth="2.5" strokeLinecap="round"
                            />
                          </svg>
@@ -9537,7 +9561,7 @@ function TimelineEditorContent({
                     )}
 
                     {/* Dropped Custom Media Clips */}
-                    {timelineClips.filter(c => c.trackId === 'A1').map(clip => (
+                    {visibleTimelineClips.filter(c => c.trackId === 'A1').map(clip => (
                       <Rnd
                         key={clip.id}
                         bounds="parent"
@@ -9618,21 +9642,20 @@ function TimelineEditorContent({
                                fromTrackId: 'A1',
                                duration: clip.duration
                              };
+                             setDraggingTimelineClipId(clip.id);
                              e.dataTransfer.setData('text/plain', JSON.stringify(moveData));
                              e.dataTransfer.effectAllowed = 'move';
                            }}
+                           onDragEnd={() => setDraggingTimelineClipId(null)}
                            title="Drag to move between Track A1 and A2"
                          >
                             <Music size={9} className="shrink-0 pointer-events-none" />
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                           <svg aria-hidden="true" className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                               <path suppressHydrationWarning
-                                 d={Array.from({length: 250}).map((_, i) => {
-                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
-                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
-                                 }).join(' ')}
+                                 d={CLIP_WAVEFORM_PATH}
                                  stroke="currentColor" 
                                  strokeWidth="2.5" 
                                  strokeLinecap="round"
@@ -9676,7 +9699,7 @@ function TimelineEditorContent({
                         setSelectedTimelineClip(null);
                         setSelectedSceneTrack(null);
                       }}
-                      title="Select all on A2"
+                      title="Select all on A2. Audio patterns are decorative, not measured waveforms."
                     >
                       A2
                     </span>
@@ -9769,7 +9792,7 @@ function TimelineEditorContent({
                     )}
 
                     {/* Dropped Custom Media Clips */}
-                    {timelineClips.filter(c => c.trackId === 'A2').map(clip => (
+                    {visibleTimelineClips.filter(c => c.trackId === 'A2').map(clip => (
                       <Rnd
                         key={clip.id}
                         bounds="parent"
@@ -9877,21 +9900,20 @@ function TimelineEditorContent({
                                fromTrackId: 'A2',
                                duration: clip.duration
                              };
+                             setDraggingTimelineClipId(clip.id);
                              e.dataTransfer.setData('text/plain', JSON.stringify(moveData));
                              e.dataTransfer.effectAllowed = 'move';
                            }}
+                           onDragEnd={() => setDraggingTimelineClipId(null)}
                            title="Drag to move between Track A1 and A2"
                          >
                             <Music size={9} className="shrink-0 pointer-events-none" />
                             <span className="text-[8px] font-bold truncate block whitespace-nowrap pointer-events-none">{clip.asset.name}</span>
                          </div>
                          <div className="absolute inset-x-1 bottom-1 top-4 opacity-40 flex items-center overflow-hidden pointer-events-none z-0">
-                           <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
+                           <svg aria-hidden="true" className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
                               <path suppressHydrationWarning
-                                 d={Array.from({length: 250}).map((_, i) => {
-                                    const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45;
-                                    return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`;
-                                 }).join(' ')}
+                                 d={CLIP_WAVEFORM_PATH}
                                  stroke="currentColor" 
                                  strokeWidth="2.5" 
                                  strokeLinecap="round"

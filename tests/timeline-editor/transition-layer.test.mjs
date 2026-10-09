@@ -37,7 +37,7 @@ function renderTimeline({ scale = 30, selectedIndex = 0, locked = false, track =
     SceneBlock, TransitionControl, sceneDetail: null, showSceneDetail() {}, setHoveredSceneDetail() {}, setFocusedSceneDetail() {},
     React, useMemo: fn => fn(), visibleSceneEntries: scenes.map((scene, idx) => ({ scene, idx })),
     trackStates: { V1: { locked }, A1: { locked } }, selectedSceneKeys: [], selectedScene: scenes[selectedIndex], selectedSceneTrack: track,
-    frozenStrip: null, isReordering: false, draggingScene: null, draggingAsset: null, isResizing: false,
+    thumbnailCache: {}, isReordering: false, draggingScene: null, draggingAsset: null, isResizing: false,
     transitionDragOverSceneId: null, transitionJustAppliedId: null, isLongForm: false, scale,
     scenePressRef: { current: null }, setDraggingScene: value => calls.push(['drag-scene', value]),
     pendingStockPick: null, pendingProjectPick: null, blockRefs: { current: {} },

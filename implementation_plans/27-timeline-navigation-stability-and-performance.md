@@ -2,7 +2,7 @@
 
 > Created / repository audit: 2026-10-08 (Asia/Manila)
 >
-> Status: Phases 0–5 approved and implemented locally on 2026-10-08. Phase 0 real-browser baseline and Phase 5 browser performance/audio acceptance remain pending; local Phase 5 operation counts and regressions passed. Phases 6–7 await approval. See [Phases 0–3 delivery](27-phases-0-3-delivery.md), [Phase 4 delivery](27-phase-4-delivery.md), and [Phase 5 delivery](27-phase-5-delivery.md).
+> Status: All phases approved. Phases 0–6 are implemented locally; Phase 7 local verification passed on 2026-10-09 with 166 tests. Phase 7 remains open for real-browser acceptance, including the missing Phase 0 browser baseline. See [Phases 0–3 delivery](27-phases-0-3-delivery.md), [Phase 4 delivery](27-phase-4-delivery.md), [Phase 5 delivery](27-phase-5-delivery.md), [Phase 6 delivery](27-phase-6-delivery.md), and [Phase 7 readiness report](27-phase-7-readiness.md).
 >
 > Goal: Reliable scene selection and editing, a clearer timeline, and responsive navigation for short-, medium-, and long-form projects while preserving narration alignment and export behavior.
 
@@ -88,7 +88,7 @@ Premiere exposes separate toggles for clip names and thumbnails; the useful prin
 
 ## 6. Delivery phases and approval checkpoints
 
-The module is split into **eight separately reviewable phases (0–7)**. Phases 0–4 are approved and their local work is delivered. The Phase 0 browser baseline and mounted browser verification remain pending because no browser connection was available. Phases 5–7 await approval. The source audit above is retained as the pre-implementation evidence.
+The module is split into **eight separately reviewable phases (0–7)**. All phases are approved and their local work is delivered. The Phase 0 browser baseline and mounted browser verification remain pending because no browser connection was available. Phase 7's browser pass condition is still open. The source audit above is retained as the pre-implementation evidence.
 
 Approval applies only to the phase or phases the user names. Complete the approved scope, report changes and validation, and wait for the next approval before starting an unapproved phase. Every implementation phase includes its own regression checks; Phase 7 adds the full combined verification.
 
@@ -99,9 +99,9 @@ Approval applies only to the phase or phases the user names. Complete the approv
 | 2 | Reliable gestures and transitions | Click thresholds, interruption rollback/cleanup and aligned transitions | Implemented; local checks passed |
 | 3 | Save reliability and error recovery | Serialized retained saves, navigation flush and scoped recovery | Implemented; local checks passed |
 | 4 | Cleaner timeline design | Compact labels, hover/focus narration details and width-aware marks | Implemented; local checks passed |
-| 5 | Rendering and playback efficiency | Less unrelated rendering and stable playback synchronization | Pending |
-| 6 | Thumbnails and long-form scaling | Bounded visual assets and viewport-based rendering across tracks | Pending |
-| 7 | Combined regression and release checks | Short/long-form results, timing/export comparisons, and remaining limitations | Pending |
+| 5 | Rendering and playback efficiency | Less unrelated rendering and stable playback synchronization | Implemented; local checks passed, browser pending |
+| 6 | Thumbnails and long-form scaling | Bounded visual assets and viewport-based rendering across tracks | Implemented; local checks passed, browser pending |
+| 7 | Combined regression and release checks | 166 local checks passed; timing/export fixture parity and readiness report recorded | Approved; browser acceptance pending |
 
 ### Phase 0 — Reproduce the missed clicks and capture a baseline
 
@@ -207,6 +207,8 @@ React recommends profiling sluggish interactions before adding memoization. Use 
 
 ### Phase 6 — Bound thumbnails and scale long-form tracks
 
+Implementation and local validation delivered; browser acceptance pending. See [Phase 6 delivery and measurements](27-phase-6-delivery.md).
+
 **Purpose:** Keep visual DOM and media costs tied mainly to visible content rather than total project length.
 
 - Use thumbnail-sized assets and a bounded cache; start with one cached static thumbnail per visible scene.
@@ -223,6 +225,8 @@ React recommends profiling sluggish interactions before adding memoization. Use 
 **Dependency:** Phase 5 component/rendering boundaries and all earlier timing/gesture contracts.
 
 ### Phase 7 — Verify the combined editor and report readiness
+
+Local verification and an additional export failure-recovery fix delivered. See [readiness report](27-phase-7-readiness.md). The browser-dependent pass condition is not complete.
 
 **Purpose:** Confirm the approved changes work together across short-, medium-, and long-form projects.
 

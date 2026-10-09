@@ -1,0 +1,58 @@
+{
+  "date": "2026-10-09",
+  "timezone": "Asia/Manila",
+  "sourceHead": "02a6fbd72211b88323f6e0bece509f6c4802e929",
+  "workingTree": "Includes uncommitted Phase 6 and Phase 7 changes",
+  "historicalReference": "5c9753c3e75a4cac171ed25baf3c90215e9fc037",
+  "runtime": "v24.12.0",
+  "platform": "Windows",
+  "checks": [
+    {
+      "name": "regressions",
+      "passed": true,
+      "tests": 166,
+      "passedTests": 166,
+      "failedTests": 0,
+      "skippedTests": 0
+    },
+    {
+      "name": "types",
+      "passed": true
+    },
+    {
+      "name": "lint",
+      "passed": true
+    }
+  ],
+  "exportComparison": {
+    "cases": 24,
+    "sceneCounts": [
+      25,
+      100,
+      250,
+      500
+    ],
+    "frameRates": [
+      24,
+      30,
+      60
+    ],
+    "narrationModes": [
+      "master",
+      "act"
+    ],
+    "selectionHandlerCalls": 72000,
+    "serializedPayloadParity": true,
+    "layoutParity": true,
+    "reference": "tests/timeline-editor/export-baseline.json",
+    "scope": "Synthetic fixtures using source-executed handlers and export mappings; no live API, paid render or captured production request"
+  },
+  "browser": {
+    "connected": false,
+    "acceptance": "pending",
+    "performanceMeasurements": "not collected",
+    "tenMinuteSoak": "not run",
+    "audioListening": "not run"
+  },
+  "releaseReadiness": "Local gates passed; live-browser acceptance remains open"
+}

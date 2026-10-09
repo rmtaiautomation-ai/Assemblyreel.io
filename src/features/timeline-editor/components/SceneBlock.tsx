@@ -1,17 +1,20 @@
 import React, { memo } from 'react';
 import { Film, Image as ImageIcon, Volume2 } from 'lucide-react';
 import { SceneClipLabel } from './SceneClipLabel';
+import { TimelineThumbnail } from './TimelineThumbnail';
+import type { ThumbnailCache } from '../thumbnail-cache';
+import { CLIP_WAVEFORM_PATH } from '../waveform';
 
 interface SceneBlockProps {
   track: 'V1' | 'A1'; number: number; width: number;
-  mediaUrl?: string; mediaType?: string; stripCount?: number;
+  mediaUrl?: string; mediaType?: string; thumbnailCache?: ThumbnailCache;
   pending?: boolean; awaitingVisuals?: boolean; hasAudio?: boolean;
 }
 
 // Only visual content is memoized. The owning hit target always receives fresh
 // selection/gesture handlers; changing another selection cannot rebuild this strip.
 export const SceneBlock = memo(function SceneBlock({ track, number, width, mediaUrl, mediaType,
-  stripCount = 1, pending = false, awaitingVisuals = false, hasAudio = false,
+  thumbnailCache, pending = false, awaitingVisuals = false, hasAudio = false,
 }: SceneBlockProps) {
   return track === 'V1' ? <><div className="w-full h-full p-1.5 flex flex-col relative">
      <SceneClipLabel number={number} width={width}
@@ -19,19 +22,9 @@ export const SceneBlock = memo(function SceneBlock({ track, number, width, media
        hasMedia={Boolean(mediaUrl)} pending={pending} />
      {mediaUrl && (
         <div className="absolute inset-0 z-0 flex overflow-hidden rounded-md pointer-events-none">
-           {mediaType === 'video' ? (
-              /* No video filmstrip: rendering 100+ <video> tags concurrently crashes the browser via OOM. */
-              <div className="w-full h-full bg-ed-media/10" />
-           ) : (
-              Array.from({ length: stripCount }).map((_, i, arr) => (
-                 <img
-                   key={i}
-                   src={mediaUrl}
-                   className="h-full object-cover shrink-0 border-r border-ed-text/20"
-                   style={{ width: `${100 / arr.length}%` }}
-                 />
-              ))
-           )}
+           {mediaType !== 'video' && width >= 32 && thumbnailCache
+             ? <TimelineThumbnail source={mediaUrl} cache={thumbnailCache} />
+             : <div className="w-full h-full bg-ed-media/10" />}
         </div>
      )}
   </div>
@@ -71,10 +64,10 @@ export const SceneBlock = memo(function SceneBlock({ track, number, width, media
        legible one. `ed-a1` is the track's own identity token,
        and the has-audio / no-audio distinction now rides on
        opacity instead of a second invented hex. */}
-   <div className="absolute inset-x-1 bottom-1 top-4 flex items-center overflow-hidden pointer-events-none">
+   <div aria-hidden="true" className="absolute inset-x-1 bottom-1 top-4 flex items-center overflow-hidden pointer-events-none">
      <svg className="w-full h-full" preserveAspectRatio="none" viewBox="0 0 1000 100" suppressHydrationWarning>
        <path suppressHydrationWarning
-         d={Array.from({length: 250}).map((_, i) => { const h = 5 + Math.abs(Math.sin(i * 0.4) * Math.cos(i * 1.9)) * 45; return `M${i * 4 + 2},${50 - h} L${i * 4 + 2},${50 + h}`; }).join(' ')}
+         d={CLIP_WAVEFORM_PATH}
          stroke="var(--color-ed-a1)" strokeOpacity={hasAudio ? 0.95 : 0.45}
          strokeWidth="2.5" strokeLinecap="round"
        />

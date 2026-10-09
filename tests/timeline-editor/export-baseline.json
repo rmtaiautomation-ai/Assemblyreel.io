@@ -1,0 +1,198 @@
+{
+  "baselineRevision": "5c9753c",
+  "note": "Synthetic Phase 0 duration fixtures, extended with export fields. Not captured production requests or browser measurements.",
+  "cases": [
+    {
+      "count": 25,
+      "fps": 24,
+      "longForm": false,
+      "payloadSha256": "436a18a6c1aac0a165e3b0292ba12d26c6744974fe7dd9bf9a54deb2e2877df6",
+      "layoutSha256": "bc2a41eb3dfb149e6e3f13eb42c7eca80ce1313e98e72cb0edcbeb34cfd5b3f3",
+      "durationInFrames": 1711
+    },
+    {
+      "count": 25,
+      "fps": 24,
+      "longForm": true,
+      "payloadSha256": "635acddb384062838cf9482233ea3962adb524f2119ee5cf314ff569ca68f0f2",
+      "layoutSha256": "bc2a41eb3dfb149e6e3f13eb42c7eca80ce1313e98e72cb0edcbeb34cfd5b3f3",
+      "durationInFrames": 1711
+    },
+    {
+      "count": 25,
+      "fps": 30,
+      "longForm": false,
+      "payloadSha256": "ad8dcb695f7488875fc45422de87a06151973242215a82a1872ca70f80d5144b",
+      "layoutSha256": "730e9beea7494a3ebbdacd5e671eca96de6044a3476b9050274f3fad432f47a6",
+      "durationInFrames": 2142
+    },
+    {
+      "count": 25,
+      "fps": 30,
+      "longForm": true,
+      "payloadSha256": "701a5a44d69ff2840e5eecb13ab8a037c8c051738e272410b16a15be6d5743c3",
+      "layoutSha256": "730e9beea7494a3ebbdacd5e671eca96de6044a3476b9050274f3fad432f47a6",
+      "durationInFrames": 2142
+    },
+    {
+      "count": 25,
+      "fps": 60,
+      "longForm": false,
+      "payloadSha256": "3f83d1ebc0a5751304fbd8d7f60fd5b0b106834419dd758d50e506b525383fb5",
+      "layoutSha256": "93e646e0b1966d08995d95e84f936c096aabea6cfdabe1fb81e83ac91155c5d5",
+      "durationInFrames": 4282
+    },
+    {
+      "count": 25,
+      "fps": 60,
+      "longForm": true,
+      "payloadSha256": "315a65fbf556533ae26723242e431e42e4df00c4f47a8e41dddf675ddbd475ba",
+      "layoutSha256": "93e646e0b1966d08995d95e84f936c096aabea6cfdabe1fb81e83ac91155c5d5",
+      "durationInFrames": 4282
+    },
+    {
+      "count": 100,
+      "fps": 24,
+      "longForm": false,
+      "payloadSha256": "e6861826b16493578d6ce76c6beb64c9fb98261b5ae8eb145110062a5bf886ad",
+      "layoutSha256": "1be01bf067d60e61d704fed55a16cc811317c9ab6c48474b27057d96ce36a236",
+      "durationInFrames": 5988
+    },
+    {
+      "count": 100,
+      "fps": 24,
+      "longForm": true,
+      "payloadSha256": "8a5a6670beb4139ed5dbd10a9afffc5f6376fb27fac645c74e0697cfb83b0be3",
+      "layoutSha256": "1be01bf067d60e61d704fed55a16cc811317c9ab6c48474b27057d96ce36a236",
+      "durationInFrames": 5988
+    },
+    {
+      "count": 100,
+      "fps": 30,
+      "longForm": false,
+      "payloadSha256": "fc2d1bba61e99bda7367af68131f70624c5c28852cb7ed8704faa8a696c55335",
+      "layoutSha256": "6f8ea6476bc94a9fb0575ade680f7382d39fcc9e1b5e9f2759e4214d45a2b3d3",
+      "durationInFrames": 7503
+    },
+    {
+      "count": 100,
+      "fps": 30,
+      "longForm": true,
+      "payloadSha256": "daa3c62c9f08dbdb2a344db6a351c7c68617cf544e292721613d4759b48d2fa1",
+      "layoutSha256": "6f8ea6476bc94a9fb0575ade680f7382d39fcc9e1b5e9f2759e4214d45a2b3d3",
+      "durationInFrames": 7503
+    },
+    {
+      "count": 100,
+      "fps": 60,
+      "longForm": false,
+      "payloadSha256": "d9efa511cad32108dc671712ff83417a0f53a98b29b5248a71a00f8a5e0accea",
+      "layoutSha256": "d13824b9abd442f7ef743c621df873cd365c5840957fc3c49b0c511bb470d00e",
+      "durationInFrames": 14992
+    },
+    {
+      "count": 100,
+      "fps": 60,
+      "longForm": true,
+      "payloadSha256": "a0bffeb88e85d61220336ddd743a364f0ac8c63bbe4de57c77ea30120fdd0ac3",
+      "layoutSha256": "d13824b9abd442f7ef743c621df873cd365c5840957fc3c49b0c511bb470d00e",
+      "durationInFrames": 14992
+    },
+    {
+      "count": 250,
+      "fps": 24,
+      "longForm": false,
+      "payloadSha256": "bec575cb32229c3e92ea1a84a498ffd6a1212b93940d9e5c7ebd4530d7433543",
+      "layoutSha256": "80d44cf7c20da1d5cc55332658fd328694eb6f290135a9bdffb7f49875b8df96",
+      "durationInFrames": 14538
+    },
+    {
+      "count": 250,
+      "fps": 24,
+      "longForm": true,
+      "payloadSha256": "8b88bdd5226592e66c81f054ebcd5669affbac756f6d1b4a54e91319e91020c4",
+      "layoutSha256": "80d44cf7c20da1d5cc55332658fd328694eb6f290135a9bdffb7f49875b8df96",
+      "durationInFrames": 14538
+    },
+    {
+      "count": 250,
+      "fps": 30,
+      "longForm": false,
+      "payloadSha256": "0e366d6c90b354694c189e7317b091f1dcdf36554c439605cdc27d931b3080c5",
+      "layoutSha256": "0ab6fc273298f1bdf278d97bb9b99897a86d1b2326debf7297405d116119781a",
+      "durationInFrames": 18217
+    },
+    {
+      "count": 250,
+      "fps": 30,
+      "longForm": true,
+      "payloadSha256": "0596b3413cd5451a73496047eb144425299edd6ea36d09a20abe6dc0cdf2e714",
+      "layoutSha256": "0ab6fc273298f1bdf278d97bb9b99897a86d1b2326debf7297405d116119781a",
+      "durationInFrames": 18217
+    },
+    {
+      "count": 250,
+      "fps": 60,
+      "longForm": false,
+      "payloadSha256": "229c54fa5e69f46a3294732c64bad5895886b955eadcb509bb47bdd5330c4a33",
+      "layoutSha256": "d324c01761f747e5f60b0930ffba1ba585b795a939a6517f8a0bdc230487ea64",
+      "durationInFrames": 36398
+    },
+    {
+      "count": 250,
+      "fps": 60,
+      "longForm": true,
+      "payloadSha256": "c010cea48db614f10e3c35108eb7d728d1196c53a1ee3900701faf4f5c9c1cab",
+      "layoutSha256": "d324c01761f747e5f60b0930ffba1ba585b795a939a6517f8a0bdc230487ea64",
+      "durationInFrames": 36398
+    },
+    {
+      "count": 500,
+      "fps": 24,
+      "longForm": false,
+      "payloadSha256": "ebabb7a59fe06356cc9e70273e08cf067662fb75f2ba06437906a91b01efeb7a",
+      "layoutSha256": "182098c112dd79237b009b76aa632701a62b807d0d0f90ad8d5f69563e819966",
+      "durationInFrames": 28785
+    },
+    {
+      "count": 500,
+      "fps": 24,
+      "longForm": true,
+      "payloadSha256": "d8d6b3fcd3997f0bd80b2210cf6b33e8056aa39d7009ab18dd466b2523c0041b",
+      "layoutSha256": "182098c112dd79237b009b76aa632701a62b807d0d0f90ad8d5f69563e819966",
+      "durationInFrames": 28785
+    },
+    {
+      "count": 500,
+      "fps": 30,
+      "longForm": false,
+      "payloadSha256": "749f76d5e8e5679d969188078d4f973c5654a7bf37d384dcf676790266dec9ae",
+      "layoutSha256": "268ded93d84c724e5c392a5f99177d6d771a91b8390940fb0cc8d27c8904a060",
+      "durationInFrames": 36071
+    },
+    {
+      "count": 500,
+      "fps": 30,
+      "longForm": true,
+      "payloadSha256": "1d09ce4e6c1c416140897b908799d00c0850e4441dc6b37b48bcd6417ef6e8ce",
+      "layoutSha256": "268ded93d84c724e5c392a5f99177d6d771a91b8390940fb0cc8d27c8904a060",
+      "durationInFrames": 36071
+    },
+    {
+      "count": 500,
+      "fps": 60,
+      "longForm": false,
+      "payloadSha256": "fbceadd72485fee69b7de9abb27df4ddc21dda923f347ee89578ec2055d2b0da",
+      "layoutSha256": "d0ab2b1f65286175171452d62246c821161432914b986c5bf7b622ad70067e37",
+      "durationInFrames": 72069
+    },
+    {
+      "count": 500,
+      "fps": 60,
+      "longForm": true,
+      "payloadSha256": "71191bcf2ac89a34a62149b32fb61d6e5dcb784656081e8dd33b07b18f08891c",
+      "layoutSha256": "d0ab2b1f65286175171452d62246c821161432914b986c5bf7b622ad70067e37",
+      "durationInFrames": 72069
+    }
+  ]
+}

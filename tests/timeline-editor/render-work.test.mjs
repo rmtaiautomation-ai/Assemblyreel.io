@@ -9,9 +9,10 @@ import { loadComponent } from './load-component.mjs';
 const labels = await loadComponent('SceneClipLabel');
 const { SceneBlock } = await loadComponent('SceneBlock', { './SceneClipLabel': labels });
 
-test('extracted scene visuals preserve thumbnails, compact labels and awaiting visuals', () => {
-  const html = renderToStaticMarkup(React.createElement(SceneBlock, { track: 'V1', number: 7, width: 150, mediaType: 'image', mediaUrl: '/image.jpg', stripCount: 3 }));
-  assert.equal((html.match(/<img /g) ?? []).length, 3); assert.match(html, /S7/);
+test('scene visuals mount one thumbnail slot with compact labels and awaiting visuals', () => {
+  const html = renderToStaticMarkup(React.createElement(SceneBlock, { track: 'V1', number: 7, width: 150, mediaType: 'image', mediaUrl: '/image.jpg', thumbnailCache: {} }));
+  assert.equal((html.match(/data-timeline-thumbnail=/g) ?? []).length, 1); assert.match(html, /S7/);
+  assert.doesNotMatch(html, /src="\/image.jpg"/); // Full-resolution images never enter the track DOM.
   const narrow = renderToStaticMarkup(React.createElement(SceneBlock, { track: 'V1', number: 8, width: 20, awaitingVisuals: true }));
   assert.doesNotMatch(narrow, /Awaiting visuals/);
   const wide = renderToStaticMarkup(React.createElement(SceneBlock, { track: 'V1', number: 8, width: 150, awaitingVisuals: true }));
