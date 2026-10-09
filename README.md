@@ -17,6 +17,7 @@ different niche is a settings change, not a code fork.
 
 - [What it produces](#what-it-produces)
 - [Tech stack](#tech-stack)
+- [Engineering highlights](#engineering-highlights)
 - [System overview](#system-overview)
 - [The generation pipeline (the process)](#the-generation-pipeline-the-process)
   - [Stage 0 — Channel setup](#stage-0--channel-setup)
@@ -37,6 +38,7 @@ different niche is a settings change, not a code fork.
 - [Repository map](#repository-map)
 - [Running locally](#running-locally)
 - [Scripts and tooling](#scripts-and-tooling)
+- [Quality and release readiness](#quality-and-release-readiness)
 - [Operating model and current status](#operating-model-and-current-status)
 
 ---
@@ -81,6 +83,25 @@ With no video-provider keys set, the registry resolves to `providers/mock.ts` �
 state that lets the whole pipeline run end to end without paid API calls. TTS providers are
 interchangeable behind a common `generate…SceneSpeech` signature so `audio-actions.ts` can
 switch engine per call.
+
+---
+
+## Engineering highlights
+
+- **Audio-first long-form workflow.** Scripts, narration, alignment, approval and visuals
+  are processed per Act, which contains retries and timing corrections to one chapter.
+- **Deterministic timeline/export model.** Preview and export use shared frame-layout logic.
+  A fixed historical baseline covers 24 combinations across 25–500 scenes, 24/30/60 fps,
+  all transition modes, trims, narration, music, overlays and captions.
+- **Resilient editor state.** Timeline writes are serialized, failed drafts remain
+  recoverable in the mounted session, navigation waits for pending saves, and export error
+  paths clear local busy state even if status persistence also fails.
+- **Long-form UI controls.** Viewport filtering, bounded thumbnail caching and controlled
+  media loading reduce mounted visual work for large projects while preserving the full
+  timeline data used for export.
+- **Provider and infrastructure boundaries.** Text, image, video, stock, TTS and render
+  backends sit behind narrow interfaces, with deterministic mock media and local rendering
+  available for development.
 
 ---
 
@@ -474,6 +495,8 @@ npm install
 npm run dev          # http://localhost:3000
 npm run typecheck    # tsc --noEmit
 npm run lint
+npm run test:timeline:release
+npm run lint:timeline
 npm run build
 npm run deploy:remotion   # rebuild the Lambda site bundle after any src/remotion/** change
 ```
@@ -493,8 +516,10 @@ The documentary catalog is under **Channel Settings → Visuals**; scene authori
 **Scene Board / Timeline → select a scene → Presentation**. Advanced families are opt-in.
 Saving and reviewed AI require authentication and the ordered presentation migrations;
 seeing the UI is not evidence that those database services are activated. See
-[Phase 5 readiness](docs/presentations/phase-5-readiness.md) for the migration order and
-remaining release gates.
+[presentation Phase 5 readiness](docs/presentations/phase-5-readiness.md) for that
+subsystem's migration order and release gates. The separate
+[timeline Phase 7 readiness report](implementation_plans/27-phase-7-readiness.md) records
+the current editor verification status.
 
 Secrets live in `.env.local` (git-ignored). The app is a single-machine tool — rendering,
 narration, and generated media all write to the local filesystem unless AWS Lambda is
@@ -534,7 +559,30 @@ long-form audio → channel blueprint → channel facts). Every script is idempo
 | `node scripts/check-format-prompt.mjs` | Proves the migrated presets reproduce the pre-blueprint Script Writer prompt character-for-character. Run after touching any legacy branch in `format-prompt.ts`. |
 | `node scripts/preview-beat-sheet.mjs` | Prints the assembled act structure for a tier. |
 | `node scripts/upgrade-channel-format.mjs` | Blueprint schema upgrade helper. |
+| `npm run test:timeline:release` | Runs the combined timeline and presentation regression suite with one worker. |
+| `npm run lint:timeline` | Lints the timeline editor through its dedicated configuration, including files excluded by the global source rules. |
+| `node scripts/timeline/capture-export-baseline.mjs 5c9753c` | Reproduces the historical timeline/export reference without rewriting the checked-in fixture. |
 | `scripts/smoke/*.mjs` | Ad-hoc provider smoke tests (Deepgram, Gemini image, slicer, DB) — run from repo root. |
+
+---
+
+## Quality and release readiness
+
+As of **October 9, 2026**, the Phase 7 local release gates are green:
+
+- 166 timeline and presentation regressions passed with zero failures or skips.
+- TypeScript, targeted timeline lint and scoped diff checks passed.
+- All 24 historical export/timing fixture comparisons passed.
+- 72,000 repeated selection-handler calls across multiple zoom levels left scene rows,
+  frame layouts and prepared export payloads unchanged.
+
+These are local and synthetic verification results. Phase 7 remains open until the live
+browser acceptance matrix is complete, including real hit targets, keyboard focus,
+audio synchronization, delayed media, long-session performance and representative rendered
+output comparisons. No production deployment, database migration or paid generation job was
+performed as part of this readiness pass. See the
+[full Phase 7 report](implementation_plans/27-phase-7-readiness.md) and its
+[machine-readable verification record](implementation_plans/27-phase-7-verification.json).
 
 ---
 
@@ -555,4 +603,3 @@ long-form audio → channel blueprint → channel facts). Every script is idempo
   one-line change in `openai-provider.ts`.
 - Server actions and route handlers are cached — after a server-side change, restart
   `npm run dev` before re-testing.
-```
