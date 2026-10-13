@@ -549,8 +549,6 @@ The next deployment task is selecting/configuring staging and executing the appl
 - Hosted checks found the closed legacy render endpoint returned 500 while importing render dependencies. Prepared a fix moving those imports behind the gate; all 40 auth tests, auth/render lint and production build/TypeScript passed. Automatic approval review could not refresh its authentication token, so staging/committing that correction was not executed. The correction and final acceptance documentation remain local; no unsafe workaround or admin confirmation was used.
 - Remaining acceptance includes token-expiry renewal, controlled expired/reused-link and wrong-password checks, independent second-account isolation, and all ownership/onboarding/media/jobs/billing/provider phases. The Resend shared sender accepts only its account email. No paid feature has been activated.
 
-## 9. Technical references
-
 ### October 14, 2026 — Recovery continuation prepared
 
 - Corrected Supabase `pkce_` token-hash compatibility for signup, recovery and email-change callbacks. Recovery proof creation requires matching verified subject/session claims; unsuccessful verification of a newly created recovery session signs that session out locally.
@@ -558,6 +556,12 @@ The next deployment task is selecting/configuring staging and executing the appl
 - Added a rollback-only existing-project A/B role isolation SQL check and executed it locally against the existing-schema fixture. It leaves no synthetic accounts behind, sends no email and does not claim two real browser-session acceptance.
 - Verified **46 auth tests**, auth/access/render lint and production build/TypeScript. Live probes confirmed wrong-password rejection without a session, one matching zero-credit profile, unchanged eight legacy content hashes, private buckets and closed recovery/email-change callbacks.
 - The earlier automatic-review authentication problem no longer blocked staging on this continuation. Publishing evidence is recorded after deployment. CAPTCHA/provider configuration, live isolation SQL and browser recovery/expiry/mobile checks are the next dependencies; see [the concrete recovery setup](../docs/security/hosted-account-recovery-setup.md).
+
+- Pushed `b4a41021963cfc1510dcb91a8b9e583f299ea6ef`; deployment `dpl_2LTsWnEMV613cZi9yKK9Kf4eoG82` reached Ready and serves the stable Vercel origin. All ten follow-up HTTP probes passed, including GET/POST render returning 503. No enabled browser surface was available for visual/mobile automation.
+- Added an additional real Supabase SSR SDK test using synthetic expired cookies and a stubbed provider transport: renewal updates both incoming/outgoing cookies, and failed renewal clears the cookie and redirects to login. All **47 auth tests** and auth lint pass. This is SDK/application evidence, not a real hosted token-expiry observation.
+- User created the Turnstile widget and supplied its public Site Key. Prepared matching Vercel CAPTCHA configuration and a private recovery proof secret, with recovery/email-change still disabled. Signup/login/resend now show actionable missing/invalid-challenge and rate-limit errors. Focused flow tests, auth lint and production build/TypeScript pass. Supabase secret configuration and live positive/negative CAPTCHA checks remain pending.
+
+## 9. Technical references
 
 These primary sources were checked while preparing the plan. Recheck time-sensitive details during implementation.
 

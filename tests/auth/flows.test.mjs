@@ -14,6 +14,9 @@ const proxy = await loadSource(new URL("../../src/lib/supabase/proxy.ts", import
   "next/server": server["next/server"],
   "@supabase/ssr": moduleText("export function createServerClient(url,key,options){ globalThis.__authCookies=options.cookies; return globalThis.__authClient; }")
 });
+const sdkProxy = await loadSource(new URL("../../src/lib/supabase/proxy.ts", import.meta.url), {
+  "next/server": server["next/server"],
+});
 
 const user = { id: "user-a", email: "a@example.com", email_confirmed_at: "now", is_anonymous: false };
 function enable() {
@@ -78,6 +81,32 @@ test("resend relies on provider limits; logout revokes the current refresh sessi
     globalThis.__authClient.auth.signOut = async () => ({ error: new Error("provider unavailable") });
     assert.match((await actions.logout()).error, /Sign-out failed/);
   } finally { restore(); }
+});
+
+test("auth forms reject missing challenges before provider calls and explain invalid challenges or rate limits", async () => {
+  const restore = enable(), previous = process.env.AUTH_CAPTCHA_REQUIRED;
+  process.env.AUTH_CAPTCHA_REQUIRED = "true";
+  let calls = 0, error = { code: "captcha_failed", status: 400 };
+  const reject = async () => { calls++; return { data: { session: null, user: null }, error }; };
+  globalThis.__authClient = { auth: { signInWithPassword: reject, signUp: reject, resend: reject } };
+  try {
+    for (const action of [actions.login, actions.signup, actions.resendConfirmation]) {
+      const values = { email: user.email, password: "strong-long-password" };
+      assert.match((await action({}, form(values))).error, /security challenge/);
+      assert.equal(calls, 0);
+    }
+    for (const action of [actions.login, actions.signup, actions.resendConfirmation]) {
+      assert.match((await action({}, form({ email: user.email, password: "strong-long-password", "cf-turnstile-response": "invalid-challenge" }))).error, /security challenge/);
+    }
+    assert.equal(calls, 3);
+    error = { code: "over_request_rate_limit", status: 429 };
+    for (const action of [actions.login, actions.signup, actions.resendConfirmation]) {
+      assert.match((await action({}, form({ email: user.email, password: "strong-long-password", "cf-turnstile-response": "synthetic-challenge" }))).error, /Please wait/);
+    }
+  } finally {
+    if (previous === undefined) delete process.env.AUTH_CAPTCHA_REQUIRED; else process.env.AUTH_CAPTCHA_REQUIRED = previous;
+    restore();
+  }
 });
 
 test("confirmation rejects wrong origins/types, expired or reused links without exposing tokens", async () => {
@@ -162,4 +191,52 @@ test("real SSR client rejects a confirmation code without its signup verifier co
     assert.equal(response.headers.get("location"), "https://staging.example/signup/confirm?error=invalid");
     assert.equal(networkCalls, 0);
   } finally { restore(); }
+});
+
+test("real SSR expiry refresh propagates renewed cookies through Proxy and rejects failed renewal", async () => {
+  const restore = enable(), originalFetch = globalThis.fetch, originalError = console.error;
+  const jwt = expiry => [
+    Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url"),
+    Buffer.from(JSON.stringify({ sub: user.id, exp: expiry, iat: expiry - 3600, role: "authenticated" })).toString("base64url"),
+    Buffer.from("synthetic-signature").toString("base64url"),
+  ].join(".");
+  const now = Math.floor(Date.now() / 1000), renewed = jwt(now + 3600);
+  const value = "base64-" + Buffer.from(JSON.stringify({ access_token: jwt(now - 30), refresh_token: "synthetic-old-refresh",
+    expires_at: now - 30, expires_in: 3600, token_type: "bearer", user })).toString("base64url");
+  const request = () => new NextRequest("https://staging.example/account", { headers: { cookie: `sb-fixture-auth-token=${value}` } });
+  let refreshes = 0, userReads = 0, fail = false;
+  globalThis.fetch = async (input, options) => {
+    const url = new URL(String(input));
+    assert.equal(url.origin, "https://fixture.supabase.co");
+    if (url.pathname === "/auth/v1/token") {
+      refreshes++;
+      assert.equal(url.searchParams.get("grant_type"), "refresh_token");
+      assert.equal(JSON.parse(options.body).refresh_token, "synthetic-old-refresh");
+      return Response.json(fail ? { code: "refresh_token_not_found", msg: "Invalid refresh token" } : {
+        access_token: renewed, refresh_token: "synthetic-new-refresh", expires_in: 3600, token_type: "bearer", user,
+      }, { status: fail ? 400 : 200 });
+    }
+    assert.equal(url.pathname, "/auth/v1/user");
+    assert.equal(new Headers(options.headers).get("authorization"), `Bearer ${renewed}`);
+    userReads++;
+    return Response.json(user);
+  };
+  try {
+    const incoming = request(), response = await sdkProxy.updateSession(incoming);
+    assert.equal(response.headers.has("location"), false);
+    const outgoing = response.cookies.get("sb-fixture-auth-token").value;
+    assert.equal(incoming.cookies.get("sb-fixture-auth-token").value, outgoing);
+    const stored = JSON.parse(Buffer.from(outgoing.slice("base64-".length), "base64url").toString());
+    assert.equal(stored.access_token, renewed);
+    assert.equal(stored.refresh_token, "synthetic-new-refresh");
+    assert.match(response.headers.get("cache-control"), /no-store/);
+    assert.equal(refreshes, 1); assert.equal(userReads, 1);
+    fail = true;
+    console.error = error => { assert.equal(error.message, "Invalid refresh token"); };
+    const denied = await sdkProxy.updateSession(request());
+    assert.equal(denied.headers.get("location"), "https://staging.example/login?next=/account");
+    assert.equal(denied.cookies.get("sb-fixture-auth-token").value, "");
+    assert.match(denied.headers.get("cache-control"), /no-store/);
+    assert.equal(refreshes, 2); assert.equal(userReads, 1);
+  } finally { globalThis.fetch = originalFetch; console.error = originalError; restore(); }
 });
