@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import type { DeliverySpec } from "./format-profile";
 import { uploadBufferToSupabase } from "../supabase/storage";
 import fs from "fs/promises";
@@ -80,6 +82,7 @@ export async function generateLocalSceneSpeech(
    */
   delivery?: DeliverySpec["localTts"]
 ) {
+  requireLegacyServiceAvailable();
   if (delivery?.speed !== undefined) {
     console.warn(
       `[Local TTS] speed=${delivery.speed} requested but not sent — Voice Studio's accepted fields are unverified. See generateLocalSceneSpeech's doc comment.`

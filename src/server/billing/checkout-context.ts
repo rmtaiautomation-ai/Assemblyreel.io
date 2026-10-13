@@ -7,8 +7,12 @@ import { createCheckoutRepository } from "./checkout-repository";
 import { configuredStripeMode, createStripeBillingClient, createStripeBillingGateway } from "./stripe-gateway";
 import type { CheckoutDependencies } from "./checkout-contracts";
 import { BillingError } from "./errors";
+import { requireBillingLaunch } from "@/server/access/launch";
+import { confirmedIdentity } from "@/server/auth/policy";
+import { admitRequest } from "@/server/access/rate-limit";
 
 export async function createCheckoutContext(kind: "checkout" | "portal"): Promise<CheckoutDependencies> {
+  requireBillingLaunch();
   const salesEnabled = process.env.BILLING_SALES_ENABLED === "true"
     && APPROVED_BILLING_OFFERS.length > 0 && APPROVED_BILLING_PLANS.length > 0;
   const portalEnabled = process.env.BILLING_PORTAL_ENABLED === "true";
@@ -23,7 +27,10 @@ export async function createCheckoutContext(kind: "checkout" | "portal"): Promis
     async verifyActor() {
       try {
         const { data, error } = await auth.auth.getUser();
-        if (error || !data.user || data.user.is_anonymous) return null;
+        if (error || !data.user || !confirmedIdentity(data.user)) return null;
+        const profile=await auth.from("users").select("id").eq("id",data.user.id).maybeSingle();
+        if(profile.error || !profile.data) throw new BillingError("BILLING_UNAVAILABLE");
+        await admitRequest(auth,"rename");
         return { id: data.user.id, email: data.user.email ?? null };
       } catch { throw new BillingError("BILLING_UNAVAILABLE"); }
     },

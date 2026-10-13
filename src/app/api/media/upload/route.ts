@@ -1,60 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
-import fs from "fs/promises";
-import path from "path";
-import { createMediaRecord } from "@/features/timeline-editor/server/media-actions";
-import { uploadBufferToSupabase } from "@/lib/supabase/storage";
+import { apiResponse,requireFeature,requireOrigin,readBytes,AccessError } from "@/server/access/requests";
+import { accessContext,requireOwnedProject,resourceId } from "@/server/access/ownership";
+import { uploadPrivateMedia } from "@/server/media/private-media";
+import { admitRequest } from "@/server/access/rate-limit";
 
-function guessMediaType(mimeType: string): "video" | "image" | "audio" {
-  if (mimeType.startsWith("video/")) return "video";
-  if (mimeType.startsWith("audio/")) return "audio";
-  return "image";
-}
-
-export async function POST(req: NextRequest) {
-  try {
-    const formData = await req.formData();
-    const file = formData.get("file") as File | null;
-    const projectId = formData.get("projectId") as string | null;
-
-    if (!file || !projectId) {
-      return NextResponse.json({ success: false, error: "Missing file or projectId" }, { status: 400 });
-    }
-
-    const mediaId = crypto.randomUUID();
-    const ext = (file.name.split(".").pop() || "bin").toLowerCase();
-    const fileName = `${mediaId}.${ext}`;
-    const storagePath = `uploads/${projectId}/${fileName}`;
-    
-    const buffer = Buffer.from(await file.arrayBuffer());
-    // Background upload to Supabase
-    uploadBufferToSupabase(buffer, "media", storagePath, file.type).catch(err => {
-      console.error("[/api/media/upload] Supabase upload failed:", err);
-    });
-
-    // Save locally for UI playback
-    const localPath = path.join(process.cwd(), "public", "media", "uploads", projectId, fileName);
-    await fs.mkdir(path.dirname(localPath), { recursive: true });
-    await fs.writeFile(localPath, buffer);
-
-    const localUrl = `/media/uploads/${projectId}/${fileName}`;
-
-    const result = await createMediaRecord(projectId, {
-      media_type: guessMediaType(file.type),
-      source: "upload",
-      status: "ready",
-      storage_path: storagePath,
-      url: localUrl,
-      original_filename: file.name,
-    });
-
-    if (!result.success || !result.media) {
-      return NextResponse.json({ success: false, error: result.error || "Failed to create media record" }, { status: 500 });
-    }
-
-    return NextResponse.json({ success: true, mediaId: result.media.id, url: localUrl });
-  } catch (error: any) {
-    console.error("[/api/media/upload] Error:", error);
-    return NextResponse.json({ success: false, error: error.message || "Upload failed" }, { status: 500 });
-  }
-}
+export async function POST(request:Request) { return apiResponse(async()=>{
+  requireFeature("PRIVATE_MEDIA_ENABLED"); requireOrigin(request);
+  const projectId=resourceId(request.headers.get("x-project-id")),id=resourceId(request.headers.get("idempotency-key"));
+  const {client,user}=await accessContext(); await requireOwnedProject(client,user.id,projectId);
+  await admitRequest(client,"upload");
+  // A bounded binary endpoint avoids unbounded multipart parsing on Vercel.
+  const mime=request.headers.get("content-type")?.split(";")[0] ?? "";
+  const name=decodeURIComponent(request.headers.get("x-file-name") ?? "upload");
+  if(name.length>100 || /[\r\n]/.test(name)) throw new AccessError(400,"INVALID_INPUT","Invalid filename.");
+  const bytes=await readBytes(request,3*1024*1024);
+  return Response.json({success:true,...await uploadPrivateMedia(projectId,id,bytes,mime,name)},{status:201});
+}); }

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadSource } from './load-source.mjs';
+import { loadLegacyFeatureSource as loadSource } from './load-source.mjs';
 import { actorId, otherActorId, projectId, sceneId, envelope, timing, assets } from './phase-1-fixtures.mjs';
 
 const { requirePresentationProject } = await loadSource(new URL('../../src/features/presentations/server/access.ts', import.meta.url));

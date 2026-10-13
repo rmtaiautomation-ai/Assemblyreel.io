@@ -1,3 +1,4 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextRequest, NextResponse } from "next/server";
 import { createMediaRecord, updateMediaStatus } from "@/features/timeline-editor/server/media-actions";
 import { getProvider, getSourceForModel } from "@/lib/ai/providers/registry";
@@ -12,6 +13,8 @@ interface GenerateBody {
 }
 
 export async function POST(req: NextRequest) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   let mediaId: string | undefined;
 
   try {

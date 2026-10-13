@@ -1,6 +1,9 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   try {
     const { topic, format, tone } = await req.json();
 

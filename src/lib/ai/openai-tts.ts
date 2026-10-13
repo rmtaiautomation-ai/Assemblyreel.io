@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import type { DeliverySpec } from "./format-profile";
 import { uploadBufferToSupabase } from "../supabase/storage";
 import fs from "fs/promises";
@@ -78,6 +80,7 @@ export async function generateOpenAISceneSpeech(
   /** The channel's OpenAI delivery block — voice name and plain-English style direction. */
   delivery?: DeliverySpec["openai"]
 ) {
+  requireLegacyServiceAvailable();
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
   if (!OPENAI_API_KEY) {

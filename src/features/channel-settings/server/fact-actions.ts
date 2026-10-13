@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import { isFactKind, type ChannelFact, type FactKind } from "@/lib/ai/channel-facts";
 import type { FactCandidate } from "@/lib/ai/agents/fact-archivist";
@@ -75,6 +77,7 @@ export interface GetChannelFactsResult {
  * why rather than the page failing.
  */
 export async function getChannelFacts(workspaceId: string): Promise<GetChannelFactsResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId) return { success: false, error: "Missing workspaceId" };
 
   const supabase = await createClient();
@@ -118,6 +121,7 @@ export async function addExtractedFacts(
   workspaceId: string,
   candidates: FactCandidate[]
 ): Promise<MutateFactsResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId) return { success: false, error: "Missing workspaceId" };
   if (!candidates.length) return { success: true, facts: [] };
 
@@ -162,6 +166,7 @@ export async function upsertChannelFact(
   workspaceId: string,
   fact: Partial<ChannelFact> & { id?: string }
 ): Promise<MutateFactsResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId) return { success: false, error: "Missing workspaceId" };
   if (!fact.label?.trim()) return { success: false, error: "A fact needs a name." };
 
@@ -194,6 +199,7 @@ export async function deleteChannelFact(
   workspaceId: string,
   factId: string
 ): Promise<MutateFactsResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId || !factId) return { success: false, error: "Missing workspaceId or factId" };
 
   const supabase = await createClient();
@@ -220,6 +226,7 @@ export async function setFactsVerified(
   factIds: string[],
   verified: boolean
 ): Promise<MutateFactsResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId) return { success: false, error: "Missing workspaceId" };
   if (!factIds.length) return { success: true, facts: [] };
 
@@ -262,6 +269,7 @@ export async function resolveProjectFactLedger(
   supabase: SupabaseClient,
   projectId: string
 ): Promise<ChannelFact[]> {
+  requireLegacyServiceAvailable();
   const { data: project, error: projectError } = await supabase
     .from("video_projects")
     .select("workspace_id, channel_facts_snapshot")

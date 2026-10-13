@@ -1,4 +1,6 @@
 'use server';
+
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { createBillingAdminClient, createRequestDependencies } from '@/server/billing/runtime';
@@ -27,6 +29,7 @@ function safeError(error: unknown) {
 }
 
 export async function getPresentationSuggestionWorkspace(projectId: string) {
+  requireLegacyServiceAvailable();
   try {
     const client = await createClient(); await requirePresentationProject(client, projectId);
     const context = await readSuggestionContext(client, projectId);
@@ -39,6 +42,7 @@ export async function getPresentationSuggestionWorkspace(projectId: string) {
 }
 
 export async function savePresentationEvidence(input: unknown) {
+  requireLegacyServiceAvailable();
   try {
     const value = z.object({ projectId: z.uuid(), id: z.uuid(), expectedRevision: z.number().int().nonnegative(), title: z.string().trim().min(1).max(90), envelope: presentationSchema, reviewed: z.literal(true) }).strict().parse(input);
     const client = await createClient(); await requirePresentationProject(client, value.projectId);
@@ -53,6 +57,7 @@ export async function savePresentationEvidence(input: unknown) {
 }
 
 export async function removePresentationEvidence(projectId: string, id: string, revision: number) {
+  requireLegacyServiceAvailable();
   try {
     z.uuid().parse(id); z.number().int().positive().parse(revision);
     const client = await createClient(); await requirePresentationProject(client, projectId);
@@ -63,6 +68,7 @@ export async function removePresentationEvidence(projectId: string, id: string, 
 }
 
 export async function suggestPresentations(input: unknown) {
+  requireLegacyServiceAvailable();
   try {
     const value = z.object({ projectId: z.uuid(), requestId: z.uuid(), sceneIds: z.array(z.uuid()).min(1).max(MAX_SUGGESTION_SCENES).refine(ids => new Set(ids).size === ids.length), includeManual: z.boolean().default(false) }).strict().parse(input);
     const client = await createClient(), actor = await requirePresentationProject(client, value.projectId);
@@ -90,6 +96,7 @@ export async function suggestPresentations(input: unknown) {
 }
 
 export async function applyPresentationSuggestion(input: unknown) {
+  requireLegacyServiceAvailable();
   try {
     const value = z.object({ projectId: z.uuid(), sceneId: z.uuid(), runId: z.uuid(), candidateId: z.string().min(1).max(100), operationId: z.uuid(), allowManual: z.boolean(),
       draft: z.object({ envelope: presentationSchema, timing: z.object({ start_time: z.number().nonnegative(), duration: z.number().positive(), duration_mode: z.enum(['fixed','scene-remainder']) }).strict(), reviewed: z.literal(true) }).strict().optional(),

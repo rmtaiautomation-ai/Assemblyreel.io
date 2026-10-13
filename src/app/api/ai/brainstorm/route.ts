@@ -1,8 +1,11 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextResponse } from 'next/server';
 import { generateText } from 'ai';
 import { SCRIPT_MODEL, isOpenAIConfigured, openai } from '@/lib/ai/openai-provider';
 
 export async function POST(req: Request) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   try {
     const { prompt, history, context } = await req.json();
 

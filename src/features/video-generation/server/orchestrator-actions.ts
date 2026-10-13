@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import { enrichScenesWithVisualPrompts } from "@/lib/ai/orchestrator";
 import type { CharacterBlueprints } from "@/lib/ai/agents/casting-director";
@@ -53,6 +55,7 @@ export async function enrichAndPersistScenes({
   formatProfile,
   blueprints,
 }: EnrichScenesParams): Promise<EnrichScenesResult> {
+  requireLegacyServiceAvailable();
   if (sceneIds.length !== slicedScenes.length) {
     return {
       success: false,

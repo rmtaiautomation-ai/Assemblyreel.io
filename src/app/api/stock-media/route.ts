@@ -1,7 +1,10 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextRequest, NextResponse } from "next/server";
 import { searchStockMedia } from "@/lib/media/stock-search";
 
 export async function GET(req: NextRequest) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   try {
     const query = req.nextUrl.searchParams.get("query");
     const provider = req.nextUrl.searchParams.get("provider") || "pexels"; // "pexels" | "pixabay"

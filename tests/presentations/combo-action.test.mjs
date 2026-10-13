@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadSource } from './load-source.mjs';
+import { loadLegacyFeatureSource as loadSource } from './load-source.mjs';
 
 const ioUrl = `data:text/javascript,${encodeURIComponent(`
   export const inserted = [];

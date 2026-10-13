@@ -22,3 +22,13 @@ export async function loadSource(url, stubs = {}) {
   }
   return import(await compile(url));
 }
+
+// Explicit isolated legacy-feature fixture. Production entry points remain closed;
+// auth/boundaries.test.mjs verifies the real gate. These tests exercise retained
+// feature behavior using their existing mocked DB/provider dependencies only.
+export async function loadLegacyFeatureSource(url, stubs = {}) {
+  return loadSource(url, {
+    '@/server/auth/capabilities': 'data:text/javascript,export function requireLegacyServiceAvailable(){}',
+    ...stubs,
+  });
+}

@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import {
   resolveFormatProfile,
@@ -98,6 +100,7 @@ export interface GetWorkspaceFormatResult {
 export async function getWorkspaceFormatProfile(
   workspaceId: string
 ): Promise<GetWorkspaceFormatResult> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { data, migrationPending, error } = await readWorkspaceFormatColumns(supabase, workspaceId);
 
@@ -144,6 +147,7 @@ export async function saveWorkspaceFormatProfile(
   workspaceId: string,
   params: { presetKey?: string; blueprintOverride?: FormatProfileOverride | null; expectedRevision: number }
 ): Promise<SaveWorkspaceFormatResult> {
+  requireLegacyServiceAvailable();
   if (params.presetKey !== undefined && !isFormatPresetKey(params.presetKey)) {
     return { success: false, error: `Unknown preset key: ${params.presetKey}` };
   }
@@ -189,6 +193,7 @@ export async function resolveProjectFormatProfile(
   projectId: string,
   provided?: FormatProfile
 ): Promise<FormatProfile> {
+  requireLegacyServiceAvailable();
   if (provided) return provided;
 
   const full = await supabase
@@ -243,6 +248,7 @@ export async function resolveProjectFormatProfile(
  * already documents itself as making.
  */
 export async function getProjectFormatProfile(projectId: string): Promise<FormatProfile> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   return resolveProjectFormatProfile(supabase, projectId);
 }
@@ -266,6 +272,7 @@ export async function getProjectFormatProfile(projectId: string): Promise<Format
  * is exactly the pre-Phase-7 behaviour.
  */
 export async function consumeRotationCursor(projectId: string): Promise<number | null> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
 
   const { data: project, error: projectError } = await supabase
@@ -322,6 +329,7 @@ export async function resolveProjectFramingDevice(
   projectId: string,
   profile: FormatProfile
 ): Promise<string | null> {
+  requireLegacyServiceAvailable();
   if (!profile.content.rotatingDevices.length) return null;
 
   const supabase = await createClient();
@@ -380,6 +388,7 @@ export async function readActContinuity(
   supabase: SupabaseClient,
   projectId: string
 ): Promise<ActContinuityEntry[]> {
+  requireLegacyServiceAvailable();
   const { data, error } = await supabase
     .from("video_projects")
     .select("act_continuity")
@@ -421,6 +430,7 @@ export async function recordActContinuity(
   projectId: string,
   entry: ActContinuityEntry
 ): Promise<void> {
+  requireLegacyServiceAvailable();
   const existing = await readActContinuity(supabase, projectId);
   const next = [
     ...existing.filter((prior) => prior.actNumber !== entry.actNumber),
@@ -479,6 +489,7 @@ export async function generateFormatFromBrief(
   workspaceId: string,
   source: string
 ): Promise<GenerateFormatFromBriefResult> {
+  requireLegacyServiceAvailable();
   if (!workspaceId) return { success: false, error: "Missing workspaceId" };
 
   // Both agents read the SAME paste, so they run concurrently rather than in sequence —

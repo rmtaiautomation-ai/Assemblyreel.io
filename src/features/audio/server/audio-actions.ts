@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import { generateSceneSpeech } from "@/lib/ai/elevenlabs";
 import { generateLocalSceneSpeech } from "@/lib/ai/local-tts";
@@ -138,6 +140,7 @@ export async function generateSceneAudio(
   /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
   delivery?: DeliverySpec
 ) {
+  requireLegacyServiceAvailable();
   if (!sceneId || !text) {
     return { success: false, error: "Missing sceneId or text" };
   }
@@ -450,6 +453,7 @@ export async function generateActNarration(
   /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
   delivery?: DeliverySpec
 ): Promise<GenerateActNarrationResult> {
+  requireLegacyServiceAvailable();
   if (!projectId) return { success: false, warnings: [], error: "Missing projectId" };
 
   const supabase = await createClient();
@@ -556,6 +560,7 @@ export interface ActLayoutResult {
  * thing a ripple has to redo — never a second transcription.
  */
 export async function recomputeActLayout(projectId: string): Promise<ActLayoutResult> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const warnings: string[] = [];
 
@@ -635,6 +640,7 @@ export async function recomputeActLayout(projectId: string): Promise<ActLayoutRe
 
 /** Reads the stored act layout without recomputing it. */
 export async function getActNarrations(projectId: string): Promise<ActNarration[]> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
 
   const { data, error } = await supabase
@@ -674,6 +680,7 @@ export async function generateFullNarration(
   /** The channel's delivery spec. Optional — absent callers keep today's hardcoded voice. */
   delivery?: DeliverySpec
 ) {
+  requireLegacyServiceAvailable();
   if (!projectId || !scenes.length) {
     return { success: false, error: "Missing projectId or scenes" };
   }
@@ -748,6 +755,7 @@ const ALLOWED_VOICES = [
 ];
 
 export async function getAvailableVoices() {
+  requireLegacyServiceAvailable();
   try {
     const url = process.env.VOICE_STUDIO_URL || "http://localhost:8880";
     const [configRes, voicesRes] = await Promise.all([

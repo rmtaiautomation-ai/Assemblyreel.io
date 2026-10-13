@@ -1,3 +1,4 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getWorkspaceFormatProfile } from "@/features/channel-settings/server/format-actions";
@@ -18,6 +19,7 @@ export default async function WorkspaceSettingsPage({
 }: {
   params: Promise<{ slug: string }>;
 }) {
+  await redirectLegacyPage();
   const { slug: workspaceId } = await params;
 
   // One read covers both the header and the Channel tab — `getWorkspaceChannelSettings`

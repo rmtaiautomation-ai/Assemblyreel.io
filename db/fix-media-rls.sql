@@ -12,5 +12,11 @@
 -- de facto posture rather than silently breaking on tables that happen to
 -- have been created differently.
 
-ALTER TABLE public.media DISABLE ROW LEVEL SECURITY;
-ALTER TABLE public.timeline_items DISABLE ROW LEVEL SECURITY;
+-- Historical personal-tool repair only. Plan 29 supersedes this posture.
+do $$ begin
+  if exists(select 1 from pg_policies where schemaname='storage' and policyname='auth_only_quarantine') then
+    raise exception 'SUPERSEDED_BY_ACCOUNT_ACCESS_MIGRATIONS';
+  end if;
+  alter table public.media disable row level security;
+  alter table public.timeline_items disable row level security;
+end $$;

@@ -1,3 +1,4 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import React from "react";
 import Link from "next/link";
 import { Settings, Mic, Palette, MonitorPlay, Activity, CheckCircle2, Ratio, Clock3, Edit3, Loader2, AlertTriangle } from "lucide-react";
@@ -118,6 +119,7 @@ function StatusIcon({ kind }: { kind: ReturnType<typeof statusView>['kind'] }) {
 }
 
 export default async function WorkspaceHubPage({ params }: { params: { slug: string } }) {
+  await redirectLegacyPage();
   const { slug: workspaceId } = await params;
 
   const supabase = await createClient();

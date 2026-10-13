@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { uploadBufferToSupabase } from "../supabase/storage";
 import fs from "fs/promises";
 import path from "path";
@@ -24,6 +26,7 @@ export async function generateSceneSpeech(
   voiceId?: string,
   voiceSettings?: DeliverySpec["elevenlabs"]
 ) {
+  requireLegacyServiceAvailable();
   const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
 
   if (!ELEVENLABS_API_KEY) {

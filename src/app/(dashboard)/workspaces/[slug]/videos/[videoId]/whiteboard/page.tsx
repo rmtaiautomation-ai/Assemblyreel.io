@@ -1,3 +1,4 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import { redirect } from "next/navigation";
 
 /**
@@ -11,6 +12,7 @@ export default async function WhiteboardRedirect({
 }: {
   params: Promise<{ slug: string; videoId: string }>;
 }) {
+  await redirectLegacyPage();
   const { slug, videoId } = await params;
   redirect(`/workspaces/${slug}/videos/${videoId}/scene-board`);
 }

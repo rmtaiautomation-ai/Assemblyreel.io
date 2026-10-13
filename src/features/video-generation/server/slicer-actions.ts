@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { generateObject } from "ai";
 import { z } from "zod";
 import { createClient } from "@/lib/supabase/server";
@@ -91,6 +93,7 @@ export async function sliceScriptIntoScenes({
   targetDuration,
   formatProfile,
 }: SliceScriptParams) {
+  requireLegacyServiceAvailable();
   if (!process.env.OPENAI_API_KEY) {
     return { success: false, error: "OPENAI_API_KEY is missing in environment variables." };
   }

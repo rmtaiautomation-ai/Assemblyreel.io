@@ -2,6 +2,8 @@
 
 Reviewed October 11, 2026 (Asia/Manila), against the current working tree and its configured Supabase project.
 
+**Historical baseline:** the findings below describe October 11. Local remediation through Phases 0–10 and Phase 11 acceptance preparation is tracked in [Plan 29](../../implementation_plans/29-account-access-and-vercel-launch-plan.md) and the [Phase 11 checklist](account-access-phase-11-acceptance.md). Remote containment, applied migrations and full customer acceptance remain unverified; the original findings have not been silently marked resolved.
+
 **Verdict: the current setup is incomplete and unsafe for public customer accounts.** The app has working Supabase client foundations and isolated authorization/billing services, but it does not provide a complete signup-to-first-project flow. Anonymous access to existing database records is confirmed on the connected project. This exposure exists through Supabase even when the Next.js app runs only on your desktop.
 
 The main requirements are in [Module 25](../../implementation_plans/25-monetization-subscription-system.md), particularly Phases 1, 2, 7, 8, 9, 10, and 11. The [billing implementation checkpoint](../billing/core-implementation.md) explicitly describes partial backend slices. The README and project plan still describe a personal, single-machine tool; the current marketing pages offer early access and guided demos.

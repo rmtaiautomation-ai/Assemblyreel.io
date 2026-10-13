@@ -1,3 +1,4 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextRequest, NextResponse } from "next/server";
 import { getStorageClient, uploadBufferToSupabase } from "@/lib/supabase/storage";
 import fs from "fs/promises";
@@ -22,6 +23,8 @@ function guessContentType(filePath: string): string {
 }
 
 export async function POST(req: NextRequest) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   try {
     const payload = await req.json();
     const origin = req.nextUrl.origin;

@@ -7,14 +7,26 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "lint:billing": "eslint --no-ignore src/features/billing src/server/billing src/server/generation src/app/api/stripe scripts/billing tests/billing",
+    "lint:billing": "eslint --config eslint.auth.config.mjs src/features/billing src/server/billing src/server/generation src/features/videos/components/AccountJobPanel.tsx src/remotion/account-preview src/trigger/account-access trigger.config.ts src/app/api/stripe scripts/billing tests/billing",
     "test:billing": "node --test tests/billing/*.test.mjs",
     "check:billing": "node scripts/billing/check-readiness.mjs",
     "lint:timeline": "eslint --config eslint.timeline.config.mjs src/features/timeline-editor/components/SceneClipLabel.tsx src/features/timeline-editor/components/TimelineEditor.tsx src/features/timeline-editor/components/EditorRecovery.tsx src/features/timeline-editor/interaction.ts src/features/timeline-editor/pointer-gesture.ts src/features/timeline-editor/save-queue.ts src/features/timeline-editor/validation.ts src/features/timeline-editor/playback.ts src/features/timeline-editor/use-committed-event.ts src/features/timeline-editor/components/SceneBlock.tsx src/features/timeline-editor/components/TransitionControl.tsx src/features/timeline-editor/components/TimelineThumbnail.tsx src/features/timeline-editor/thumbnail-cache.ts src/features/timeline-editor/viewport.ts src/features/timeline-editor/waveform.ts",
     "test:timeline": "node --test tests/timeline-editor/*.test.mjs tests/presentations/timeline.test.mjs",
     "test:timeline:release": "node --test --test-concurrency=1 tests/timeline-editor/*.test.mjs tests/presentations/*.test.mjs",
     "typecheck": "tsc --noEmit",
-    "deploy:remotion": "remotion lambda sites create src/remotion/index.ts --site-name=assemblyreel"
+    "deploy:remotion": "remotion lambda sites create src/remotion/index.ts --site-name=assemblyreel",
+    "check:account-preview": "node scripts/auth/account-preview-bundle.mjs",
+    "run:local-mock": "node scripts/auth/run-local-mock.mjs",
+    "deploy:account-preview": "node scripts/auth/account-preview-bundle.mjs --deploy",
+    "test:auth": "node --test tests/auth/*.test.mjs",
+    "check:auth": "node scripts/auth/check-readiness.mjs",
+    "prepare:account-test": "node scripts/auth/account-test-bundle.mjs",
+    "backup:account-existing": "node --use-system-ca scripts/auth/backup-existing-account.mjs",
+    "prepare:account-existing": "node scripts/auth/existing-account-bundle.mjs",
+    "lint:auth": "eslint --config eslint.auth.config.mjs src/server/auth src/features/auth src/lib/supabase/server.ts src/lib/supabase/proxy.ts src/proxy.ts src/app/login src/app/signup src/app/account src/app/auth src/app/api/auth src/app/api/leads scripts/auth tests/auth",
+    "lint:access": "eslint --config eslint.auth.config.mjs src/server/access src/server/media src/features/onboarding src/app/onboarding src/features/workspaces/components/OwnedContentPanel.tsx src/features/workspaces/server/owned-workspace-actions.ts src/app/api/account src/app/api/media/upload src/app/api/media/from-url src/app/api/media/[mediaId] src/app/api/render/download src/app/forgot-password src/app/reset-password",
+    "verify:local": "node scripts/auth/verify-local.mjs",
+    "lint:marketing": "eslint --config eslint.auth.config.mjs src/app/page.tsx src/app/pricing/page.tsx src/components/marketing"
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.34",
@@ -36,7 +48,7 @@
     "dotenv": "^17.4.2",
     "framer-motion": "^12.42.2",
     "lucide-react": "^1.23.0",
-    "next": "16.2.10",
+    "next": "16.4.0",
     "react": "19.2.4",
     "react-dom": "19.2.4",
     "react-rnd": "^10.5.3",
@@ -51,9 +63,14 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "eslint": "^9",
-    "eslint-config-next": "16.2.10",
+    "eslint-config-next": "16.4.0",
     "postcss": "^8.5.16",
     "tailwindcss": "^4.3.2",
     "typescript": "^5"
+  },
+  "overrides": {
+    "engine.io-client": {
+      "ws": "^8.22.0"
+    }
   }
 }

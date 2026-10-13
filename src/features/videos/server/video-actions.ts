@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
@@ -15,6 +17,7 @@ export async function createAndGenerateVideo(
   workspaceAesthetic: string,
   formData: FormData
 ) {
+  requireLegacyServiceAvailable();
   const topic = formData.get("topic") as string;
   const narrativeArc = formData.get("narrative_arc") as string;
   const scriptHook = formData.get("script_hook") as string;
@@ -186,6 +189,7 @@ export async function createAndGenerateVideo(
 }
 
 export async function updateProjectTrackStates(projectId: string, trackStates: TrackStates) {
+  requireLegacyServiceAvailable();
   // Cookie-scoped anon client — RLS applies, so an RLS denial surfaces here as an
   // ordinary `error`. That is precisely why callers must check the returned
   // `success` instead of fire-and-forgetting: a blocked write is indistinguishable
@@ -203,6 +207,7 @@ export async function updateProjectTrackStates(projectId: string, trackStates: T
 }
 
 export async function updateProjectStatus(projectId: string, status: ProjectStatus) {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { error } = await supabase.from('video_projects')
     .update({ status })
@@ -216,6 +221,7 @@ export async function updateProjectStatus(projectId: string, status: ProjectStat
 }
 
 export async function updateProjectExportUrl(projectId: string, exportUrl: string) {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { data: project } = await supabase
     .from('video_projects')
@@ -253,6 +259,7 @@ export async function updateProjectExportUrl(projectId: string, exportUrl: strin
  * the editor show captions on while the next render produced a video without them.
  */
 export async function updateProjectCaptionsEnabled(projectId: string, enabled: boolean) {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { error } = await supabase.from('video_projects')
     .update({ captions_enabled: enabled })
@@ -266,6 +273,7 @@ export async function updateProjectCaptionsEnabled(projectId: string, enabled: b
 }
 
 export async function updateProjectDefaultGenerationMode(projectId: string, mode: string, model: string | null = null) {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const updatePayload: Record<string, any> = { default_generation_mode: mode };
   if (model !== null) {
@@ -294,6 +302,7 @@ export async function updateProjectDefaultGenerationMode(projectId: string, mode
  * `Topic: ` with nothing after the colon.
  */
 export async function updateProjectTopic(projectId: string, topic: string) {
+  requireLegacyServiceAvailable();
   const trimmed = topic.trim();
   if (!trimmed) return { success: false, error: "Topic cannot be empty." };
 
@@ -336,6 +345,7 @@ export async function updateProjectTopic(projectId: string, topic: string) {
  * Ownership itself is still enforced by RLS ("Users can delete own projects").
  */
 export async function deleteVideoProject(projectId: string, workspaceId: string) {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
 
   const { data: project, error: readError } = await supabase

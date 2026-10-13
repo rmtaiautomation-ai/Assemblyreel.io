@@ -330,6 +330,36 @@
     @apply bg-ed-accent-soft border border-ed-accent text-ed-text;
   }
 
+  /* ═══════════════════════════════════════════════════════════════════
+     MARKETING DESIGN SYSTEM (Studio Dark)
+     ───────────────────────────────────────────────────────────────────
+     Neutral charcoal (#0A0B0D / #15181C / #20242A), crisp typography (#F3F4F6),
+     refined border (#353B44), and restrained mint (#13EF93) accent.
+     ═══════════════════════════════════════════════════════════════════ */
+  .mkt-btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg
+           text-sm font-semibold bg-[#13EF93] text-[#0A0B0D]
+           hover:bg-[#0BD584] transition-all duration-200
+           shadow-sm hover:shadow-[0_0_20px_rgba(19,239,147,0.25)]
+           focus:outline-none focus:ring-2 focus:ring-[#13EF93]/40 cursor-pointer;
+  }
+  .mkt-btn-secondary {
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-lg
+           text-sm font-semibold bg-[#20242A] text-[#F3F4F6] border border-[#353B44]
+           hover:border-[#13EF93]/50 hover:bg-[#292B30] transition-all duration-200
+           focus:outline-none focus:ring-2 focus:ring-[#353B44] cursor-pointer;
+  }
+  .mkt-card {
+    @apply bg-[#15181C] border border-[#353B44]/70 rounded-xl p-6
+           transition-all duration-200 hover:border-[#353B44] hover:bg-[#1A1D23];
+  }
+  .mkt-badge {
+    @apply inline-flex items-center gap-2 px-3 py-1 rounded-full
+           bg-[#13EF93]/10 border border-[#13EF93]/25 text-[#13EF93]
+           text-xs font-semibold tracking-wide uppercase;
+  }
+
+
   /* Recessed scroll region — used for the long panes (act rail, inspector,
      media library) so the scrollbar does not read as a bright seam. */
   .ed-scroll {

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { createClient } from '@/lib/supabase/client';
+import { createWorkspace } from '@/features/workspaces/server/owned-workspace-actions';
 import { Check, Info, Image as ImageIcon } from 'lucide-react';
 import {
   ART_STYLES,
@@ -91,11 +91,7 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
     e.preventDefault();
     setIsSubmitting(true);
     
-    const supabase = createClient();
-    
-    // Insert into Supabase
-    const { error } = await supabase.from('workspaces').insert([
-      {
+    const result = await createWorkspace({
         name: formData.name,
         linked_accounts: [formData.linkedAccount],
         content_theme: formData.niche,
@@ -104,14 +100,12 @@ export default function WorkspaceForm({ onSuccess }: { onSuccess?: () => void })
         aspect_ratio: formData.aspectRatio,
         video_language: formData.videoLanguage,
         duration_pref: formData.duration,
-      }
-    ]);
+    }, crypto.randomUUID());
 
     setIsSubmitting(false);
 
-    if (error) {
-      console.error("Error creating workspace:", error.message, error.details, error.hint);
-      alert(`Failed to create workspace: ${error.message}`);
+    if (!result.success) {
+      alert(result.error || 'Failed to create workspace.');
       return;
     }
 

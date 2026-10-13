@@ -1,3 +1,4 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import React from "react";
 import Link from "next/link";
 import fs from "fs/promises";
@@ -19,6 +20,7 @@ export default async function ThumbnailsPage({
 }: {
   params: Promise<{ slug: string; videoId: string }>;
 }) {
+  await redirectLegacyPage();
   const { slug: workspaceId, videoId } = await params;
 
   const supabase = await createClient();

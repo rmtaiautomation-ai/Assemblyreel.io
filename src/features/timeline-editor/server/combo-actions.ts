@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { ComboId, directSceneEdits } from "@/lib/ai/agents/edit-director";
 import { getComboConfigs } from "@/lib/combo-templates";
 import { createOverlayClip, deleteOverlayClip } from "./overlay-clip-actions";
@@ -14,6 +16,7 @@ export async function applyComboToScene(
   duration: number,
   replaceClipIds?: string[]
 ) {
+  requireLegacyServiceAvailable();
   // Delete any previous AI overlay clips to avoid stacking
   if (replaceClipIds && replaceClipIds.length > 0) {
     for (const clipId of replaceClipIds) {
@@ -63,6 +66,7 @@ export async function autoDirectSingleSceneAction(
   visualAesthetic: string = "cinematic",
   replaceClipIds?: string[]
 ) {
+  requireLegacyServiceAvailable();
   try {
     const results = await directSceneEdits({
       scenes: [{ sceneId, sceneText }],

@@ -54,15 +54,15 @@ export function createStripeBillingGateway(stripe: Stripe, mode: StripeMode): St
       const session = await stripe.checkout.sessions.create({
         customer: input.customerId, mode: "subscription", payment_method_types: ["card"],
         line_items: [{ price: input.offer.priceId, quantity: 1 }], client_reference_id: input.attemptId,
-        success_url: `${input.origin}/billing/checkout-return?session_id={CHECKOUT_SESSION_ID}`,
-        cancel_url: `${input.origin}/pricing?checkout=canceled`,
+        success_url: `${input.origin}/account/billing?checkout=returned`,
+        cancel_url: `${input.origin}/account/billing?checkout=canceled`,
         metadata, subscription_data: { metadata }, allow_promotion_codes: false,
       }, { idempotencyKey: `billing-checkout:${mode}:${input.attemptId}` });
       if (!session.url || session.livemode !== (mode === "live")) throw new BillingError("BILLING_UNAVAILABLE");
       return { id: session.id, url: session.url, expiresAt: new Date(session.expires_at * 1000).toISOString() };
     },
     async createPortal(customerId, origin) {
-      const session = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: `${origin}/billing` });
+      const session = await stripe.billingPortal.sessions.create({ customer: customerId, return_url: `${origin}/account/billing` });
       return session.url;
     },
   };

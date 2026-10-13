@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadSource } from './load-source.mjs';
+import { loadLegacyFeatureSource as loadSource } from './load-source.mjs';
 import { assets,references,projectId,sceneId,actorId,familyFixture } from './phase-5-fixtures.mjs';
 const boundary=`data:text/javascript,${encodeURIComponent('let client;export function useClient(value){client=value;}export async function createClient(){return client;}')}`,io=await import(boundary);
 const {saveScenePresentation}=await loadSource(new URL('../../src/features/presentations/server/actions.ts',import.meta.url),{'@/lib/supabase/server':boundary});

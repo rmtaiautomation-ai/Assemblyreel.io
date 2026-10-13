@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import { generateScript, generateActOutlines } from "@/lib/ai/script-writer";
 import { sliceScriptIntoScenes } from "@/features/video-generation/server/slicer-actions";
@@ -70,6 +72,7 @@ export async function createProjectWithActs(params: {
   targetDuration: string;
   generationMode?: "step_by_step" | "autopilot";
 }): Promise<CreateProjectResult> {
+  requireLegacyServiceAvailable();
   const {
     workspaceId,
     workspaceTheme,
@@ -245,6 +248,7 @@ export async function generateAct(params: {
    */
   formatProfile?: FormatProfile;
 }): Promise<GenerateActResult> {
+  requireLegacyServiceAvailable();
   const {
     projectId,
     workspaceTheme,
@@ -417,6 +421,7 @@ export async function generateAct(params: {
 export async function rewriteActWithAI(
   params: Parameters<typeof generateAct>[0]
 ): Promise<GenerateActResult> {
+  requireLegacyServiceAvailable();
   const { projectId, actNumber } = params;
   const supabase = await createClient();
 
@@ -525,6 +530,7 @@ export async function finalizeProjectScript(params: {
   topic?: string;
   visualAesthetic?: string;
 }): Promise<{ success: boolean; warnings?: string[]; error?: string }> {
+  requireLegacyServiceAvailable();
   const { projectId, acts } = params;
   const supabase = await createClient();
 
@@ -606,6 +612,7 @@ export async function updateSceneVoiceover(
   sceneId: string,
   voiceOverText: string
 ): Promise<{ success: boolean; error?: string }> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { error } = await supabase
     .from("scenes")
@@ -638,6 +645,7 @@ export async function replaceActScenes(
   actNumber: number,
   scenes: Array<{ voiceOverText: string; visualPrompt: string }>
 ): Promise<{ success: boolean; sceneCount?: number; error?: string }> {
+  requireLegacyServiceAvailable();
   if (!projectId || !actNumber) {
     return { success: false, error: "Missing projectId or actNumber" };
   }
@@ -765,6 +773,7 @@ export async function regenerateActVisuals(params: {
   /** Optional — resolved from the project's frozen snapshot when the caller has none. */
   formatProfile?: FormatProfile;
 }): Promise<RegenerateActVisualsResult> {
+  requireLegacyServiceAvailable();
   const { projectId, actNumber, topic, visualAesthetic } = params;
   const supabase = await createClient();
 
@@ -923,6 +932,7 @@ export async function regenerateActNarration(params: {
   actNumber: number;
   voiceId?: string;
 }): Promise<RegenerateActNarrationResult> {
+  requireLegacyServiceAvailable();
   const { projectId, actNumber, voiceId } = params;
 
   const before = await getActNarrations(projectId);
@@ -1024,6 +1034,7 @@ export async function castProjectCharactersOnce(params: {
   nicheTheme?: string;
   formatProfile?: FormatProfile;
 }): Promise<CastProjectResult> {
+  requireLegacyServiceAvailable();
   const { projectId, topic, visualAesthetic } = params;
   const supabase = await createClient();
 
@@ -1122,6 +1133,7 @@ export async function approveActVisuals(params: {
   /** Optional — resolved from the project's frozen snapshot when the caller has none. */
   formatProfile?: FormatProfile;
 }): Promise<ApproveActResult> {
+  requireLegacyServiceAvailable();
   const { projectId, actNumber, topic, visualAesthetic } = params;
   const supabase = await createClient();
   const warnings: string[] = [];
@@ -1281,6 +1293,7 @@ export async function approveAndGenerateVisuals(params: {
   nicheTheme?: string;
   formatProfile?: FormatProfile;
 }): Promise<ApproveResult> {
+  requireLegacyServiceAvailable();
   const { projectId, topic, visualAesthetic } = params;
   const supabase = await createClient();
   const warnings: string[] = [];

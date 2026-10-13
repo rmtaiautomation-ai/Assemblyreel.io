@@ -1,3 +1,4 @@
+import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextRequest, NextResponse } from "next/server";
 import { isLambdaConfigured } from "@/server/rendering/lambda-config";
 import { refreshLambdaProgress, renderViaLambda } from "@/server/rendering/lambda-renderer";
@@ -20,6 +21,8 @@ function errorMessage(error: unknown): string {
 
 // Polled by the editor while a render is in flight.
 export async function GET(request: NextRequest) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   const projectId = request.nextUrl.searchParams.get("projectId");
   if (!projectId) {
     return NextResponse.json({ success: false, error: "Missing projectId" }, { status: 400 });
@@ -41,6 +44,8 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
+  if (!legacyServiceEnabled()) return legacyFeatureResponse();
+  /* Legacy implementation is retained for subsequent security phases. */
   try {
     const requestBody: unknown = await request.json();
     if (!isRenderPayload(requestBody)) {

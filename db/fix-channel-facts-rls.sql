@@ -31,7 +31,12 @@
 -- >> populating workspaces.user_id and enabling RLS across the whole schema at once, which
 -- >> is a larger change than this file should make on its own.
 
-alter table public.channel_facts disable row level security;
+do $$ begin
+  if exists(select 1 from pg_policies where schemaname='storage' and policyname='auth_only_quarantine') then
+    raise exception 'SUPERSEDED_BY_ACCOUNT_ACCESS_MIGRATIONS';
+  end if;
+  alter table public.channel_facts disable row level security;
+end $$;
 
 drop policy if exists "Users can view own channel facts." on public.channel_facts;
 drop policy if exists "Users can insert own channel facts." on public.channel_facts;

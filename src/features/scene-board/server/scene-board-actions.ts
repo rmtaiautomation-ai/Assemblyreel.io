@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import type { ActOutline } from "@/features/video-generation/server/whiteboard-actions";
 import type { CharacterBlueprint, CharacterBlueprints } from "@/lib/ai/agents/casting-director";
@@ -161,6 +163,7 @@ function castNamesInScene(
 export async function loadSceneBoard(
   projectId: string
 ): Promise<{ success: boolean; data?: SceneBoardData; error?: string }> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const warnings: string[] = [];
 

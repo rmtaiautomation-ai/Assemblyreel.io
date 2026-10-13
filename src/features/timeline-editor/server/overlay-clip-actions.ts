@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 
 // Columns the Timeline Editor is allowed to write back to overlay_clips.
@@ -51,6 +53,7 @@ export async function createOverlayClip(
     origin?: "user" | "ai";
   }
 ) {
+  requireLegacyServiceAvailable();
   if (fields.kind === 'scene-template') return { success: false, error: 'Use the Presentation panel to save an attached template.' };
   if (!projectId) {
     return { success: false, error: "Missing projectId" };
@@ -103,6 +106,7 @@ export async function createOverlayClip(
 // `fields` uses snake_case keys matching the DB columns directly (e.g.
 // `{ x_percent: 42 }`), same convention as updateScene / updateTimelineItem.
 export async function updateOverlayClip(id: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!id) {
     return { success: false, error: "Missing id" };
   }
@@ -133,6 +137,7 @@ export async function updateOverlayClip(id: string, fields: Record<string, any>)
 }
 
 export async function deleteOverlayClip(id: string) {
+  requireLegacyServiceAvailable();
   if (!id) {
     return { success: false, error: "Missing id" };
   }

@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { generateObject } from "ai";
 import { z } from "zod";
 import {
@@ -59,6 +61,7 @@ export async function generateScript(params: {
    */
   continuity?: readonly ActContinuityEntry[];
 }) {
+  requireLegacyServiceAvailable();
   if (!isOpenAIConfigured()) {
     return { success: false, error: MISSING_OPENAI_KEY_ERROR };
   }
@@ -153,6 +156,7 @@ Do NOT write the entire story. Only cover this specific act!
 }
 
 export async function generateArcAndHook(topic: string, nicheTheme: string) {
+  requireLegacyServiceAvailable();
   if (!isOpenAIConfigured()) return { success: false, error: MISSING_OPENAI_KEY_ERROR };
 
   try {
@@ -191,6 +195,7 @@ export async function generateActOutlines(
   /** Optional; falls back to keyword resolution from `nicheTheme`. See generateScript. */
   formatProfile?: FormatProfile
 ) {
+  requireLegacyServiceAvailable();
   if (!isOpenAIConfigured()) return { success: false, error: MISSING_OPENAI_KEY_ERROR };
 
   const { actCount } = resolveDurationProfile(targetDuration);

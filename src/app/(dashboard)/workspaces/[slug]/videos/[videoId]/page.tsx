@@ -1,9 +1,11 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import React from "react";
 import Link from "next/link";
 import { createClient } from "@/lib/supabase/server";
 import TimelineEditor from "@/features/timeline-editor/components/TimelineEditor";
 
 export default async function TimelineEditorPage({ params }: { params: { slug: string, videoId: string } }) {
+  await redirectLegacyPage();
   const { slug: workspaceId, videoId } = await params;
   
   const supabase = await createClient();

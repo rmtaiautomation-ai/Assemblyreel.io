@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 
 const UPDATABLE_FIELDS = ["track_id", "start_time", "duration", "trim_start"] as const;
@@ -9,6 +11,7 @@ export async function createTimelineItem(
   mediaId: string,
   fields: { trackId: "A1" | "A2"; startTime: number; duration: number; trimStart?: number }
 ) {
+  requireLegacyServiceAvailable();
   if (!projectId || !mediaId) {
     return { success: false, error: "Missing projectId or mediaId" };
   }
@@ -36,6 +39,7 @@ export async function createTimelineItem(
 // `fields` uses snake_case keys matching the DB columns directly (e.g.
 // `{ start_time: 4.2 }`), same convention as `updateScene` in scene-actions.ts.
 export async function updateTimelineItem(id: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!id) {
     return { success: false, error: "Missing id" };
   }
@@ -61,6 +65,7 @@ export async function updateTimelineItem(id: string, fields: Record<string, any>
 }
 
 export async function deleteTimelineItem(id: string) {
+  requireLegacyServiceAvailable();
   if (!id) {
     return { success: false, error: "Missing id" };
   }

@@ -1,4 +1,6 @@
 'use server';
+
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
 import { z } from 'zod';
 import { createClient } from '@/lib/supabase/server';
 import { requirePresentationProject } from './access';
@@ -7,6 +9,7 @@ import type { PresentationAsset, PresentationRow } from '@/lib/presentations/sch
 import { defaultVisualSettings, visualSettingsFromSnapshot, visualSettingsSchema } from '@/lib/presentations/visual-settings';
 
 export async function loadPresentationContext(projectId: string) {
+  requireLegacyServiceAvailable();
   try {
     const client = await createClient(); await requirePresentationProject(client, projectId);
     const [project, overlays, media] = await Promise.all([
@@ -27,6 +30,7 @@ export async function loadPresentationContext(projectId: string) {
 }
 
 export async function getPresentationVisualSettings(scope: 'workspace' | 'project', id: string) {
+  requireLegacyServiceAvailable();
   try {
     z.enum(['workspace', 'project']).parse(scope);
     z.uuid().parse(id);
@@ -45,6 +49,7 @@ export async function getPresentationVisualSettings(scope: 'workspace' | 'projec
 }
 
 export async function savePresentationVisualSettings(scope: 'workspace' | 'project', id: string, revision: number, input: unknown) {
+  requireLegacyServiceAvailable();
   try {
     z.enum(['workspace', 'project']).parse(scope);
     z.uuid().parse(id); z.number().int().nonnegative().parse(revision);

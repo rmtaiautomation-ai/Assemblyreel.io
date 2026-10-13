@@ -1,5 +1,7 @@
 'use server';
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from '@/lib/supabase/server';
 import { mutationSchema, presentationRowSchema } from '@/lib/presentations/schema';
 import type { PresentationMutation } from '@/lib/presentations/schema';
@@ -18,6 +20,7 @@ function message(error: unknown) {
 }
 
 export async function saveScenePresentation(input: PresentationMutation) {
+  requireLegacyServiceAvailable();
   try {
     const parsed = mutationSchema.safeParse(input);
     if (!parsed.success) return { success: false as const, error: parsed.error.issues[0]?.message ?? 'Invalid presentation.' };

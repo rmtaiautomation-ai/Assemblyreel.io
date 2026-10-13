@@ -5,8 +5,8 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Autocast | Media Factory",
-  description: "Autonomous Video Generation SaaS",
+  title: "AssemblyReel — Video Production Preview",
+  description: "Explore AssemblyReel’s planned video production workflow. Customer generation is in development; paid plans are not on sale.",
 };
 
 export default function RootLayout({

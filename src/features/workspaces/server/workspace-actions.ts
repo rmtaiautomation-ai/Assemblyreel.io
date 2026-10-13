@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { revalidatePath } from "next/cache";
 import { createClient } from "@/lib/supabase/server";
 import {
@@ -53,6 +55,7 @@ function firstLinkedAccount(value: unknown): string {
 export async function getWorkspaceChannelSettings(
   workspaceId: string
 ): Promise<LoadChannelSettingsResult> {
+  requireLegacyServiceAvailable();
   const supabase = await createClient();
   const { data, error } = await supabase
     .from("workspaces")
@@ -106,6 +109,7 @@ export async function saveWorkspaceChannelSettings(
   workspaceId: string,
   settings: WorkspaceChannelSettings
 ): Promise<{ success: boolean; error?: string }> {
+  requireLegacyServiceAvailable();
   const name = settings.name.trim();
   if (!name) return { success: false, error: "Channel name cannot be empty." };
 

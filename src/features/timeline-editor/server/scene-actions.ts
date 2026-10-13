@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 
 // Columns the Timeline Editor is allowed to write back to the scenes table.
@@ -45,6 +47,7 @@ const CREATABLE_FIELDS = [
 ] as const;
 
 export async function updateScene(sceneId: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!sceneId) {
     return { success: false, error: "Missing sceneId" };
   }
@@ -75,6 +78,7 @@ export async function updateScene(sceneId: string, fields: Record<string, any>) 
 // This is the non-destructive counterpart to `deleteScenes`: "redo this visual"
 // should never be able to lose the script line, the way a V1 delete previously did.
 export async function clearSceneVisuals(sceneIds: string[]) {
+  requireLegacyServiceAvailable();
   if (!sceneIds || sceneIds.length === 0) {
     return { success: true };
   }
@@ -101,6 +105,7 @@ export async function clearSceneVisuals(sceneIds: string[]) {
 }
 
 export async function deleteScenes(sceneIds: string[]) {
+  requireLegacyServiceAvailable();
   if (!sceneIds || sceneIds.length === 0) {
     return { success: true };
   }
@@ -121,6 +126,7 @@ export async function deleteScenes(sceneIds: string[]) {
 // sequence_numbers — and duplicates make `.order('sequence_number')` return an
 // arbitrary order, so scenes appear to jump around after a reload.
 export async function reorderScenes(updates: Array<{ id: string; sequence_number: number }>) {
+  requireLegacyServiceAvailable();
   if (!updates || updates.length === 0) {
     return { success: true };
   }
@@ -143,6 +149,7 @@ export async function reorderScenes(updates: Array<{ id: string; sequence_number
 // client-side id (Math.random) fails the UUID check `updateScene` relies on,
 // so persistSceneFields would silently no-op for it forever.
 export async function createSceneWithMedia(projectId: string, mediaId: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!projectId || !mediaId) {
     return { success: false, error: "Missing projectId or mediaId" };
   }

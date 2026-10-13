@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import fs from "fs/promises";
 import path from "path";
 import { createClient } from "@/lib/supabase/server";
@@ -55,6 +57,7 @@ const THUMBNAIL_SELECT =
 export async function listThumbnails(
   projectId: string
 ): Promise<{ success: boolean; thumbnails?: ThumbnailRow[]; error?: string }> {
+  requireLegacyServiceAvailable();
   if (!projectId) return { success: false, error: "Missing projectId" };
 
   const supabase = await createClient();
@@ -198,6 +201,7 @@ async function finishThumbnail(
  * creative temperature the rest of the pipeline uses, so variants differ naturally.
  */
 export async function generateConceptThumbnails(projectId: string): Promise<GenerateThumbnailsResult> {
+  requireLegacyServiceAvailable();
   if (!projectId) return { success: false, error: "Missing projectId" };
 
   const supabase = await createClient();
@@ -299,6 +303,7 @@ export async function generateConceptThumbnails(projectId: string): Promise<Gene
  * resolved against actual scene timing now that a render exists.
  */
 export async function generateFinalThumbnails(projectId: string): Promise<GenerateThumbnailsResult> {
+  requireLegacyServiceAvailable();
   if (!projectId) return { success: false, error: "Missing projectId" };
 
   const mp4Path = finalExportPath(projectId);
@@ -417,6 +422,7 @@ export async function regenerateThumbnail(
   thumbnailId: string,
   overrides?: { headlineText?: string }
 ): Promise<RegenerateThumbnailResult> {
+  requireLegacyServiceAvailable();
   if (!thumbnailId) return { success: false, error: "Missing thumbnailId" };
 
   const supabase = await createClient();
@@ -479,6 +485,7 @@ export async function regenerateThumbnail(
 }
 
 export async function selectThumbnail(thumbnailId: string): Promise<{ success: boolean; error?: string }> {
+  requireLegacyServiceAvailable();
   if (!thumbnailId) return { success: false, error: "Missing thumbnailId" };
 
   const supabase = await createClient();
@@ -500,6 +507,7 @@ export async function selectThumbnail(thumbnailId: string): Promise<{ success: b
 }
 
 export async function deleteThumbnail(thumbnailId: string): Promise<{ success: boolean; error?: string }> {
+  requireLegacyServiceAvailable();
   if (!thumbnailId) return { success: false, error: "Missing thumbnailId" };
 
   const supabase = await createClient();

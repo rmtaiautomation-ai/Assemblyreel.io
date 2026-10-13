@@ -1,5 +1,7 @@
 # AssemblyReel — AI long-form video generation pipeline
 
+> **Account-access status (October 14, 2026):** signup/login is prepared for a hosted test under [Plan 29](implementation_plans/29-account-access-and-vercel-launch-plan.md). The existing backend's auth containment upgrade has been applied and checked; real email/session acceptance remains pending. Follow the [Vercel login test guide](docs/security/hosted-account-login-test.md). The pipeline below describes the existing personal-tool architecture; legacy customer-facing generation/editor entry points remain closed. Sales are disabled and the approved catalog is empty. See the [Phase 11 acceptance guide](docs/security/account-access-phase-11-acceptance.md) for supported test features and remaining launch gates. Run `npm run dev` for localhost or `npm run verify:local` for automated local acceptance.
+
 AssemblyReel turns a **topic** into a finished **long-form narrated video** (10–30+ minutes,
 up to multi-hour) through a controlled, reviewable pipeline: it writes the script act by act,
 records and time-aligns the narration, casts recurring characters once so they stay

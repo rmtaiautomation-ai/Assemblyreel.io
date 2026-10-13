@@ -4,6 +4,7 @@ import { APPROVED_BILLING_PLANS } from "@/features/billing/plans";
 import { BillingError } from "./errors";
 import { createBillingRepository } from "./supabase-repository";
 import type { BillingDependencies } from "./authorization";
+import { confirmedIdentity } from "@/server/auth/policy";
 
 export function isBillingRuntimeEnabled(): boolean {
   // A flag alone cannot turn provisional offers into approved entitlements.
@@ -43,7 +44,8 @@ export function createRequestDependencies(authClient: SupabaseClient): BillingDe
     repository: createBillingRepository(createBillingAdminClient()),
     async verifyActor() {
       const { data, error } = await authClient.auth.getUser();
-      if (error || !data.user || data.user.is_anonymous) return null;
+      if (error || !confirmedIdentity(data.user)) return null;
+      if (!data.user) return null;
       return { id: data.user.id, email: data.user.email ?? null };
     },
   };

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { loadSource } from './load-source.mjs';
+import { loadLegacyFeatureSource as loadSource } from './load-source.mjs';
 import { actorId,otherActorId,projectId,sceneId,assets,familyFixture } from './phase-2-fixtures.mjs';
 const ioUrl=`data:text/javascript,${encodeURIComponent('let client;export function useClient(value){client=value;}export async function createClient(){return client;}')}`,io=await import(ioUrl);
 const billingUrl=`data:text/javascript,${encodeURIComponent('export function createRequestDependencies(){throw Error("BILLING_DISABLED");}export function createBillingAdminClient(){throw Error("must not create admin");}')}`;

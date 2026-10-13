@@ -1,5 +1,7 @@
 "use server";
 
+import { requireLegacyServiceAvailable } from "@/server/auth/capabilities";
+
 import { createClient } from "@/lib/supabase/server";
 import { getTransitionMusicPreset } from "@/lib/transition-music-presets";
 
@@ -27,6 +29,7 @@ const UPDATABLE_FIELDS = [
 ] as const;
 
 export async function createMediaRecord(projectId: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!projectId) {
     return { success: false, error: "Missing projectId" };
   }
@@ -48,6 +51,7 @@ export async function createMediaRecord(projectId: string, fields: Record<string
 }
 
 export async function updateMediaStatus(mediaId: string, fields: Record<string, any>) {
+  requireLegacyServiceAvailable();
   if (!mediaId) {
     return { success: false, error: "Missing mediaId" };
   }
@@ -89,6 +93,7 @@ export async function updateMediaStatus(mediaId: string, fields: Record<string, 
  * row under some other source value.
  */
 export async function getOrCreatePresetMedia(projectId: string, presetKey: string) {
+  requireLegacyServiceAvailable();
   if (!projectId || !presetKey) {
     return { success: false, error: "Missing projectId or presetKey" };
   }
@@ -134,6 +139,7 @@ export async function getOrCreatePresetMedia(projectId: string, presetKey: strin
 }
 
 export async function deleteMediaRecord(mediaId: string) {
+  requireLegacyServiceAvailable();
   if (!mediaId) {
     return { success: false, error: "Missing mediaId" };
   }

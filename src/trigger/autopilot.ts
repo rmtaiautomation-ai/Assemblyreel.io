@@ -4,11 +4,13 @@ import { directSceneEdits } from "@/lib/ai/agents/edit-director";
 import { procureSceneMedia } from "@/features/video-generation/server/scout-actions";
 import { applyComboToScene } from "@/features/timeline-editor/server/combo-actions";
 import { createClient } from "@/lib/supabase/server";
+import { legacyServiceEnabled } from "@/server/auth/policy";
 
 export const runAutopilot = task({
   id: "run-autopilot",
   maxDuration: 3600, // 1 hour
   run: async (payload: { projectId: string; acts: any[] }) => {
+    if (!legacyServiceEnabled()) throw new Error("FEATURE_UNAVAILABLE: hosted generation has not been accepted.");
     const { projectId, acts } = payload;
     logger.info(`Starting autopilot for project ${projectId}`, { actsCount: acts.length });
 

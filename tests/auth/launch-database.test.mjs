@@ -1,0 +1,117 @@
+import assert from "node:assert/strict";
+import {readFile} from "node:fs/promises";
+import test from "node:test";
+import {PGlite} from "@electric-sql/pglite";
+const a="10000000-0000-4000-8000-000000000001",b="10000000-0000-4000-8000-000000000002";
+const wa="20000000-0000-4000-8000-000000000001",wb="20000000-0000-4000-8000-000000000002";
+const pa="30000000-0000-4000-8000-000000000001",pb="30000000-0000-4000-8000-000000000002";
+const key=n=>`40000000-0000-4000-8000-${String(n).padStart(12,"0")}`;
+
+test("ordered launch SQL enforces enrollment, durable leases, no replay, atomic quotas and private outputs",async()=>{
+  const db=new PGlite();
+  try{
+    await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
+      create schema auth;create schema storage;
+      create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+      create function auth.jwt() returns jsonb language sql as $$select '{}'::jsonb$$;
+      grant usage on schema auth to authenticated,service_role;
+      create table auth.users(id uuid primary key,email text,is_anonymous boolean default false,email_confirmed_at timestamptz,banned_until timestamptz);
+      create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
+      create table storage.objects(id uuid,bucket_id text);
+      create table workspaces(id uuid primary key,user_id uuid,name text not null,content_theme text not null,linked_accounts jsonb,narration_voice_id text,visual_aesthetic text,aspect_ratio text,video_language text,duration_pref text,created_at timestamptz default now());
+      create table video_projects(id uuid primary key,workspace_id uuid references workspaces(id),topic text,status text default 'drafting');
+      create table media(id uuid primary key,project_id uuid references video_projects(id),media_type text,source text,status text,storage_path text,url text,original_filename text);
+      create table scenes(id uuid primary key,project_id uuid references video_projects(id),media_id uuid references media(id));`);
+    for(const name of ["001-auth-only-containment.sql","002-account-identities-and-leads.sql","003-confirmed-email-sync.sql","004-owned-records.sql","005-private-assets.sql","006-account-request-limits.sql","007-resumable-onboarding.sql"]) await db.exec(await readFile(new URL(`../../db/auth/${name}`,import.meta.url),"utf8"));
+    for(const name of ["add-billing-accounts.sql","add-billing-usage.sql","add-billing-usage-functions.sql","add-billing-usage-windows.sql","add-billing-checkout.sql","add-billing-webhook-functions.sql"])await db.exec(await readFile(new URL(`../../db/${name}`,import.meta.url),"utf8"));
+    for(const name of ["008-personal-billing-enrollment.sql","009-durable-generation-jobs.sql","010-resource-allowance-boundaries.sql"])await db.exec(await readFile(new URL(`../../db/auth/${name}`,import.meta.url),"utf8"));
+    await db.query("insert into auth.users(id,email,email_confirmed_at) values($1,'a@example.com',now()),($2,'b@example.com',now())",[a,b]);
+    await db.query("insert into workspaces(id,user_id,name,content_theme) values($1,$2,'A','History'),($3,$4,'B','History')",[wa,a,wb,b]);
+    await db.query("insert into video_projects(id,workspace_id,topic) values($1,$2,'A topic'),($3,$4,'B topic')",[pa,wa,pb,wb]);
+    await db.exec("set role service_role");
+    const enroll=async actor=>(await db.query("select public.enroll_personal_billing($1) id",[actor])).rows[0].id;
+    const account=await enroll(a);assert.equal(await enroll(a),account);await enroll(b);
+    assert.equal((await db.query("select count(*)::int n from billing_subscriptions")).rows[0].n,0);
+    const input={topic:"A topic",version:"short-script-v1"},hash="a".repeat(64);
+    const enqueue=async(n,kind="mock_script",actor=a,project=pa)=>(await db.query("select public.enqueue_generation_job($1,$2,$3,$4,$5,$6,$7,$8) id",[actor,project,key(n),kind,input,hash,kind==="script"?account:null,kind==="script"?"fixture-v1":null])).rows[0].id;
+    const claim=async id=>(await db.query("select public.claim_generation_job($1) job",[id])).rows[0].job;
+    const begin=async job=>db.query("select public.begin_generation_submission($1,$2)",[job.id,job.claim_token]);
+    const finish=async(job,outcome,output=null)=>db.query("select public.finish_generation_job($1,$2,$3,$4,$5)",[job.id,job.claim_token,outcome,output,outcome==="succeeded"?"resp_fixture":null]);
+    await assert.rejects(enqueue(1,"mock_script",a,pb),/OWNERSHIP_REQUIRED/);
+    const id=await enqueue(1);assert.equal(await enqueue(1),id);
+    await assert.rejects(db.query("select public.enqueue_generation_job($1,$2,$3,'mock_script',$4,$5,null,null)",[a,pa,key(1),{...input,topic:"Changed"},hash]),/OPERATION_CONFLICT/);
+    const first=await claim(id);assert.equal(await claim(id),null);
+    await db.query("update generation_jobs set lease_until=now()-interval '1 second' where id=$1",[id]);
+    const reclaimed=await claim(id);assert.notEqual(first.claim_token,reclaimed.claim_token);
+    await assert.rejects(begin(first),/STALE_JOB/);await begin(reclaimed);
+    await db.query("update generation_jobs set lease_until=now()-interval '1 second' where id=$1",[id]);
+    assert.equal(await claim(id),null);
+    assert.equal((await db.query("select state from generation_jobs where id=$1",[id])).rows[0].state,"unknown");
+    // Only original-token completed evidence can finalize; never another submission.
+    await finish(reclaimed,"succeeded","A private result");assert.equal(await claim(id),null);
+    const cancellation=await enqueue(2);await db.query("select public.cancel_generation_job($1,$2)",[cancellation,a]);assert.equal(await claim(cancellation),null);
+    for(let n=3;n<=10;n++){const job=await claim(await enqueue(n));await finish(job,"canceled");}
+    await assert.rejects(enqueue(11),/LIMIT_REACHED/);
+    await db.exec("reset role");await db.query("select set_config('request.jwt.claim.sub',$1,false)",[b]);await db.exec("set role authenticated");
+    assert.equal((await db.query("select count(*)::int n from generation_jobs")).rows[0].n,0);
+    await assert.rejects(db.query("select public.claim_generation_job($1)",[id]),/permission denied/);
+    await assert.rejects(db.query("select public.enroll_personal_billing($1)",[b]),/permission denied/);
+    await assert.rejects(db.query("update account_access_configuration set paid_resource_limits=true"),/permission denied/);
+    await db.exec("reset role");
+    const subscription=key(100);
+    await db.query(`insert into billing_subscriptions(id,account_id,stripe_mode,stripe_subscription_id,stripe_price_id,plan_id,catalog_version,status,billing_interval,is_current,verified_at,access_starts_at,access_expires_at)
+      values($1,$2,'test','sub_fixture','price_fixture','creator','fixture-v1','active','month',true,now()-interval '1 minute',now()-interval '1 day',now()+interval '1 day')`,[subscription,account]);
+    await db.query(`insert into billing_usage_periods(account_id,subscription_id,window_start,window_end,metric,catalog_version,limit_quantity)
+      values($1,$2,now()-interval '1 day',now()+interval '1 day','llm_tokens','fixture-v1',8192),($1,$2,now()-interval '1 day',now()+interval '1 day','projects','fixture-v1',1)`,[account,subscription]);
+    await db.exec("set role service_role");await assert.rejects(enqueue(20,"script"),/FEATURE_UNAVAILABLE/);
+    await db.exec("reset role;update account_access_configuration set paid_resource_limits=true;");
+    await db.exec("insert into account_approved_resource_plans values('creator','fixture-v1',1)");
+    await db.exec("set role service_role");
+    const paid=await claim(await enqueue(20,"script"));await begin(paid);await finish(paid,"succeeded","Paid fixture output");
+    const uncertain=await claim(await enqueue(21,"script"));await begin(uncertain);await finish(uncertain,"unknown");
+    await assert.rejects(enqueue(22,"script"),/LIMIT_REACHED/);
+    assert.deepEqual((await db.query("select used_quantity::int used,reserved_quantity::int reserved from billing_usage_periods where metric='llm_tokens'")).rows[0],{used:4096,reserved:4096});
+    await assert.rejects(db.query("select public.cancel_generation_job($1,$2)",[uncertain.id,a]),/INVALID_TRANSITION/);
+    await db.exec("reset role");
+    await db.query(`insert into billing_usage_periods(account_id,subscription_id,window_start,window_end,metric,catalog_version,limit_quantity)
+      values($1,$2,now()-interval '1 day',now()+interval '1 day','render_seconds','fixture-v1',5),($1,$2,now()-interval '1 day',now()+interval '1 day','storage_bytes','fixture-v1',3145728)`,[account,subscription]);
+    await db.exec("set role service_role");
+    const renderId=(await db.query("select public.enqueue_generation_job($1,$2,$3,'cloud_render',$4,$5,$6,'fixture-v1') id",[a,pa,key(30),{...input,version:"account-preview-v1"},hash,account])).rows[0].id;
+    const render=await claim(renderId);await begin(render);
+    const handle={renderId:"fixture_render",bucketName:"fixture-bucket",region:"us-east-1",functionName:"remotion-fixture",objectKey:`account-preview/${render.id}.mp4`};
+    await db.query("select public.accept_generation_render($1,$2,$3)",[render.id,render.claim_token,handle]);
+    assert.equal(await claim(render.id),null);
+    await assert.rejects(db.query("select public.cancel_generation_job($1,$2)",[render.id,a]),/INVALID_TRANSITION/);
+    await db.query("update generation_jobs set lease_until=now()-interval '1 second' where id=$1",[render.id]);
+    const polling=await claim(render.id);assert.deepEqual(polling.provider_handle,handle);
+    await assert.rejects(begin(polling),/STALE_JOB/);
+    await assert.rejects(db.query("select public.finish_private_render_job($1,$2,20,$3)",[render.id,render.claim_token,hash]),/STALE_JOB/);
+    await db.query("update billing_usage_periods set reserved_quantity=0 where metric='render_seconds'");
+    await assert.rejects(db.query("select public.finish_private_render_job($1,$2,20,$3)",[render.id,polling.claim_token,hash]),/USAGE_INVARIANT_BROKEN/);
+    assert.equal((await db.query("select count(*)::int n from private_assets where id=$1",[render.id])).rows[0].n,0);
+    assert.equal((await db.query("select state from generation_jobs where id=$1",[render.id])).rows[0].state,"claimed");
+    await db.query("update billing_usage_periods set reserved_quantity=5 where metric='render_seconds'");
+    await db.query("select public.finish_private_render_job($1,$2,20,$3)",[render.id,polling.claim_token,hash]);
+    assert.equal((await db.query("select state from generation_jobs where id=$1",[render.id])).rows[0].state,"succeeded");
+    assert.equal((await db.query("select object_key from private_assets where id=$1",[render.id])).rows[0].object_key,`${a}/${pa}/${render.id}`);
+    assert.equal((await db.query("select used_quantity::int used from billing_usage_periods where metric='render_seconds'")).rows[0].used,5);
+    assert.equal(await claim(render.id),null);
+    await assert.rejects(db.query("select public.finish_private_render_job($1,$2,20,$3)",[render.id,polling.claim_token,hash]),/STALE_JOB/);
+    await db.exec("reset role");await db.query("select set_config('request.jwt.claim.sub',$1,false)",[a]);await db.exec("set role authenticated");
+    const settings={workspaceId:wa,name:"A",content_theme:"History",visual_aesthetic:"Cinematic",aspect_ratio:"Vertical 9:16",video_language:"English",duration_pref:"60-90s",topic:"Quota draft"};
+    await db.query("select public.save_account_onboarding(0,$1)",[settings]);
+    const draft=(await db.query("select public.complete_account_onboarding(1) state")).rows[0].state;
+    assert.deepEqual((await db.query("select public.complete_account_onboarding(1) state")).rows[0].state,draft);
+    assert.equal((await db.query("select used_quantity::int used from billing_usage_periods where metric='projects'")).rows[0].used,1);
+    await assert.rejects(db.query("select public.create_owned_workspace($1,$2)",[{name:"Over plan",content_theme:"History"},key(23)]),/LIMIT_REACHED/);
+    await db.exec("reset role");
+    await assert.rejects(db.query("delete from video_projects where id=$1",[draft.project_id]),/account_onboarding_project_id_fkey/);
+    // An explicit administrative content purge must still preserve the usage receipt.
+    await db.query("delete from account_onboarding where actor_id=$1",[a]);
+    await db.query("delete from video_projects where id=$1",[draft.project_id]);
+    assert.equal((await db.query("select used_quantity::int used from billing_usage_periods where metric='projects'")).rows[0].used,1);
+    await assert.rejects(db.query("insert into video_projects(id,workspace_id,topic) values($1,$2,'Over quota')",[key(24),wa]),/LIMIT_REACHED/);
+    assert.equal((await db.query("select count(*)::int n from account_resource_creation_receipts")).rows[0].n,1);
+    await db.exec("set role anon");await assert.rejects(db.query("select * from public.generation_jobs"),/permission denied/);
+  }finally{await db.close();}
+});

@@ -69,4 +69,9 @@ comment on column public.overlay_clips.preset is
 -- timeline_items) runs with RLS disabled under the same no-real-user-auth
 -- posture; leaving it on here would break this feature the moment it shipped,
 -- in a way that looks like a code bug rather than a database setting.
-alter table public.overlay_clips disable row level security;
+do $$ begin
+  if exists(select 1 from pg_policies where schemaname='storage' and policyname='auth_only_quarantine') then
+    raise exception 'SUPERSEDED_BY_ACCOUNT_ACCESS_MIGRATIONS';
+  end if;
+  alter table public.overlay_clips disable row level security;
+end $$;

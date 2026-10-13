@@ -1,7 +1,15 @@
-import type { TriggerConfig } from "@trigger.dev/sdk/v3";
+import { defineConfig } from "@trigger.dev/sdk/v3";
 
-export const config: TriggerConfig = {
-  project: "ai-video-generation-saas",
+export default defineConfig({
+  project: process.env.TRIGGER_PROJECT_ID ?? "ai-video-generation-saas",
+  // Only secured tasks are deployed. Retire any previous autopilot deployment separately.
+  dirs: ["./src/trigger/account-access"],
+  build: { extensions: [{ name:"worker-server-only-marker", onBuildStart(context) {
+    context.registerPlugin({name:"worker-server-only-marker",setup(build) {
+      build.onResolve({filter:/^server-only$/},()=>({path:"server-only",namespace:"worker-marker"}));
+      build.onLoad({filter:/.*/,namespace:"worker-marker"},()=>({contents:"export {};",loader:"js"}));
+    }});
+  }}] },
   logLevel: "log",
   maxDuration: 3600,
   retries: {
@@ -14,4 +22,4 @@ export const config: TriggerConfig = {
       randomize: true,
     },
   },
-};
+});

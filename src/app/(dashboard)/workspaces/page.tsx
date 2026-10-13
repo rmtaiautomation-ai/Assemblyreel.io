@@ -1,3 +1,4 @@
+import { redirectLegacyPage } from "@/server/auth/account";
 import Link from "next/link";
 import React from "react";
 import { Plus, ArrowRight, FolderOpen, Smartphone, Clapperboard } from "lucide-react";
@@ -44,6 +45,7 @@ function timeAgo(dateString: string) {
 }
 
 export default async function DashboardHome() {
+  await redirectLegacyPage();
   const supabase = await createClient();
 
   // Was `video_projects(count)`, which could only ever produce the number on the

@@ -4,7 +4,7 @@
 
 **Created:** October 11, 2026 (Asia/Manila)
 
-**Status:** Planning complete; implementation has not started.
+**Status:** Phases 0–10 implemented/prepared locally within the documented supported feature scope; Phase 11 local acceptance preparation implemented. User instruction: localhost testing only, no deployment, sales disabled and catalog unconfigured. Applied backend migrations, actual ownership/storage containment, manual acceptance and customer launch remain pending. See the [Phase 11 checklist](../docs/security/account-access-phase-11-acceptance.md) for the final acceptance gates.
 
 **First user-facing milestone:** open the Vercel URL, see the landing page, log in, reach a protected account page, and log out — all delivered together in Phase 1.
 
@@ -83,18 +83,18 @@ The default implementation order is 0 through 11. Dependencies below explain whi
 
 | Phase | Deliverable | Depends on | Status | Manual evidence |
 |---|---|---|---|---|
-| 0 | Security preparation and isolated test environment | Review | Planned | Pending |
-| 1 | **Vercel landing page and real login, together** | 0 | Planned | Pending |
-| 2 | Registration, confirmation, and identity provisioning | 1 | Planned | Pending |
-| 3 | Account recovery and auth abuse controls | 2 | Planned | Pending |
-| 4 | Owned database records and workspace access | 2; 0 containment | Planned | Pending |
-| 5 | Consistent API/action authorization and input boundaries | 4 | Planned | Pending |
-| 6 | Private media and owned export delivery | 5 | Planned | Pending |
-| 7 | Resumable onboarding and first workspace/project | 3, 4, 5 | Planned | Pending |
-| 8 | Durable Vercel generation and cloud rendering | 5, 6, 7 | Planned | Pending |
-| 9 | Billing accounts and Stripe sandbox lifecycle | 2, 3, 4 | Planned | Pending |
-| 10 | Entitlements, quotas, and real customer billing UI | 8, 9 | Planned | Pending |
-| 11 | Complete customer journey and controlled launch | All applicable gates | Planned | Pending |
+| 0 | Security preparation and isolated test environment | Review | Code/SQL prepared; remote containment pending | Pending |
+| 1 | **Vercel landing page and real login, together** | 0 | Code implemented; Vercel acceptance pending | Pending |
+| 2 | Registration, confirmation, and identity provisioning | 1 | Code/SQL implemented; migration/email acceptance pending | Pending |
+| 3 | Account recovery and auth abuse controls | 2 | Code implemented; provider/email acceptance pending | Pending |
+| 4 | Owned database records and workspace access | 2; 0 containment | Code/SQL prepared; actual owner mapping and isolation pending | Pending |
+| 5 | Consistent API/action authorization and input boundaries | 4 | Enabled-operation guards verified locally; live checks pending | Pending |
+| 6 | Private media and owned export delivery | 5 | Code/SQL implemented; existing asset migration and hosted checks pending | Pending |
+| 7 | Resumable onboarding and first workspace/project | 3, 4, 5 | Code verified — manual test pending; staging migration pending | Pending |
+| 8 | Durable Vercel generation and cloud rendering | 5, 6, 7 | Durable mock/script/topic-preview code verified; hosted adapter acceptance pending | Pending |
+| 9 | Billing accounts and Stripe sandbox lifecycle | 2, 3, 4 | Sandbox code prepared; sales disabled/catalog unconfigured by user instruction | Pending |
+| 10 | Entitlements, quotas, and real customer billing UI | 8, 9 | Supported-lane enforcement/UI code verified; approved catalog and real concurrency/provider acceptance pending | Pending |
+| 11 | Complete customer journey and controlled launch | All applicable gates | Local acceptance tooling/copy/runbook prepared; actual customer acceptance and deployment pending | Pending |
 
 ## 5. Detailed phases
 
@@ -456,7 +456,90 @@ Recovery procedure:
 Next bounded implementation task:
 ```
 
-The next implementation task is **Phase 0 preparation**, followed by **Phase 1 as one complete Vercel landing-and-login deliverable**. Planning does not count as implementation acceptance for either phase.
+### October 12, 2026 — Phases 0–2 local delivery
+
+See [the setup and acceptance guide](../docs/security/account-access-phases-0-2-setup.md) for configuration, SQL order, boundaries, remaining remote work, and P1/P2 manual cases.
+
+- Local features: existing landing navigation, login, server-verified account, real logout, signup/pending/resend, token-hash confirmation, private profile provisioning, and optional durable lead capture.
+- Initial security boundary: 83 legacy actions and 14 handlers disabled before existing work; dashboard/server-page and static-output guards; no environment stage reopens unfinished features. Phase 6 subsequently replaces four handlers with separately guarded private-media paths; the remaining 10 legacy handlers stay closed.
+- SQL drafts: `db/auth/001-auth-only-containment.sql` then `002-account-identities-and-leads.sql`; inventory supplied. No remote migration or bucket/auth setting change performed.
+- Environment: staging Supabase and stable Vercel origin await selection; no deployment, delivered-email verification, or tester creation. Auth/registration/leads remain disabled by default.
+- Automated results: production build/typecheck/targeted lint passed; the continuation's 24 auth/security tests, 159 billing tests, 166 timeline/presentation tests, and 38 disabled-stage production HTTP probes passed. User manual verification remains **Pending**. A passing local check does not complete remote phase exit gates.
+- Recovery: disable the affected capability flag and retain quarantine; never undo containment by restoring public data/storage access.
+
+### October 12, 2026 — Phases 3–6 local continuation
+
+- Scope: recovery/session proof, password/email controls, CAPTCHA integration, trusted email synchronization, owned RLS and bounded workspace creation, shared API authorization/limits, private uploads/import/playback, and owned artifact downloads.
+- Migrations prepared: `003-confirmed-email-sync.sql`, `004-owned-records.sql`, `005-private-assets.sql`, `006-account-request-limits.sql`; ownership audit and operation inventory supplied.
+- Existing ownerless rows/objects were preserved; no legitimate owners were invented or remotely assigned. Actual inventory, relationship repairs, legacy object migration, and hosted acceptance remain outstanding.
+- All continuation features are off by default. Costly generation/render submissions/Stripe and worker entry remain closed. Only verified, separately enabled metadata/private-media paths can become available.
+- Checks and remaining manual cases are recorded in [the continuation guide](../docs/security/account-access-phases-3-6-setup.md). Browser visual acceptance, SMTP/CAPTCHA, actual storage, direct two-account Supabase requests, Vercel deployment, and multi-connection limit contention remain pending.
+
+The next deployment task is selecting/configuring staging and executing the applicable P1–P7 live acceptance cases in order.
+
+### October 12, 2026 — Phase 7 local delivery
+
+- Login/confirmation still return through `/account`; enabled incomplete accounts resume `/onboarding` from server-saved state. `/` remains the public landing page. `/account?overview=1` provides an explicit way to leave setup.
+- New two-step setup shares existing channel presets/options, supports an owned existing workspace, and persists deliberate saves with revision checks. Completion atomically creates at most one onboarding draft per account, reusing the existing three-workspace bound and handling repeated completion safely.
+- `/account/projects/[projectId]` displays owned saved metadata and verified identity. The legacy dashboard containing placeholder identity/mock balances stays inaccessible; the active account/setup/project pages display unavailable generation and billing honestly.
+- No AI, Voice Studio, narration, image, render, worker or billing adapter is called. Hosted voices remain unavailable; this phase saves a manual topic only.
+- Migration `007-resumable-onboarding.sql` follows 001–006. `ONBOARDING_ENABLED=false` by default; turning it off preserves state and owned account/project access.
+- Local automated checks and the deployed manual checklist are recorded in [the Phase 7 guide](../docs/security/account-access-phase-7-setup.md). Remote migrations, browser visual checks and two-account staging acceptance remain pending.
+
+### October 13, 2026 — Phases 7–10 continuation; local testing only
+
+- User instruction: no deployment yet. Keep sales disabled and the approved catalog unconfigured. The frontend can be exercised at localhost; genuine account/metadata tests still require the configured isolated Supabase backend. No live migration or external provider/billing mutation was performed.
+- Phase 7 was reverified against the combined security/billing/resource-limit migrations. Existing content and all earlier user changes were preserved.
+- Phase 8 adds database-persisted jobs, atomic reserve/enqueue, immutable topic/version, worker leases/fencing, cancellation before submission, private results and retained uncertainty. Secure Trigger tasks contain no request cookies or legacy autopilot imports. A local mock-only runner supports manual queue completion without worker deployment.
+- Supported paid adapter lanes: bounded short script and a versioned five-second topic title-card cloud preview. Both stay off; other provider/editor classes remain explicitly unavailable. Cloud polling resumes the original render and private output publication commits together with allowance settlement. The cloud bundle never copies the repository's public media.
+- Phase 9 reuses checkout/portal/signed durable webhooks behind sandbox gates, adds personal confirmed-identity enrollment, authoritative account/usage/invoice UI and bounded reconciliation. A checkout return parameter grants no access. Unknown customer/session binding without retained identifiers still needs operator evidence.
+- Phase 10 connects current entitlement and bounded allowance checks at submission, rechecks original current reservation windows before vendor work, and adds SQL triggers/receipts for atomic plan-based resource limits. No delete-based allowance refill. Paid-resource mode and its matching catalog are separately protected database configuration.
+- Migration drafts 008–010 follow auth 001–007 plus the six billing foundation drafts in the exact documented order. No commercial defaults, trial credits or paid state are seeded.
+- See [the local setup and acceptance guide](../docs/security/account-access-phases-8-10-setup.md) for commands, configuration, limits, remaining manual evidence and recovery. Local code delivery does not mark remote/full-customer phase exit gates Accepted.
+
+- Verified locally: **30 auth/security tests, 166 billing tests, 166 timeline/presentation tests (362 total)**; production build/typecheck; targeted auth/access/billing lint; **49 disabled-stage production HTTP probes**; both secured worker bundles plus the local mock runner; and the versioned preview browser bundle with public assets excluded. The temporary HTTP server was stopped. No remote migration/deployment/provider execution occurred.
+
+### October 13, 2026 — Phase 11 local acceptance preparation
+
+- Continued with the current model and the user's localhost-only scope. No deployment, remote SQL, new account, Stripe transaction or provider execution was performed. Sales and the approved catalog remain disabled/unconfigured.
+- Added `npm run verify:local`: repeatable tests, lint, build, typecheck, secured worker/preview bundles, and temporary loopback-only production HTTP probes. Child capability flags are forced off; build/runtime share an explicit local origin. Reports and per-step logs are saved to ignored `scratch/local-acceptance/`, with the base revision and working-tree scope. The runner stops its server and never reports customer launch acceptance.
+- Corrected public landing/pricing/FAQ/metadata claims to distinguish planned features from enabled test access. Replaced the blocked private-export demo player with an availability notice; preserved existing page styling and conceptual workflow sections. Added a current-status pointer to the README and preserved the original review as historical evidence.
+- Prepared the [Phase 11 acceptance and recovery guide](../docs/security/account-access-phase-11-acceptance.md): 15 manual cases, environment/evidence template, supported-operation coverage, monitoring triage, feature shutdown behavior, deployment prerequisites and secure rollback. All unobserved manual cases remain Pending or explicitly Deferred.
+- Local verification: **362 tests passed** (30 auth/security, 166 billing, 166 timeline/presentation); production build, TypeScript, targeted auth/access/billing/marketing lint; secured worker/local mock and preview browser bundles; **51 local production HTTP probes**. Marketing lint has seven existing unused-import warnings and zero errors. Worker bundling needed normal Windows filesystem access to resolve ancestor directories; no deployment command was invoked.
+- Manual customer journey, actual Supabase containment/migrations, two-account browser checks, real concurrent PostgreSQL, email, Stripe, providers, hosted configuration and production acceptance remain pending. Phase 11's launch exit gate is **not Accepted**. Current implementation changes remain in the working tree.
+
+### October 13, 2026 — Local registration/sign-in setup continuation
+
+- User authorized resolving the account test setup and chose to create a separate empty **AssemblyReel Test** project. No connected browser, Supabase administration tool, Docker installation or CLI is available in this session. Backend provisioning/configuration and email confirmation therefore require the user's access.
+- Prepared `npm run prepare:account-test` and the [local account setup guide](../docs/security/local-account-test-setup.md). The command generates `scratch/account-test-setup.sql` from a guarded fresh core, actual auth 001–007 and installed-boundary verification, in one transaction. It refuses existing accounts/public tables/buckets/Auth triggers; no SQL was executed remotely.
+- Minimal core supports guarded account identity, owned metadata onboarding and later private-media testing only. No personal content, test identities, credits, billing catalog or provider work is seeded; legacy editor activation is outside this setup.
+- Changed the disabled login notice from “awaiting deployment configuration” to “awaiting configuration,” reflecting that localhost auth does not require deployment. The running local navigation endpoint still reports registration disabled. Existing backend credentials and flags were left unchanged pending the new target.
+- Verified **32 auth/security tests**, including the actual fresh setup bundle, two-account ownership, repeated onboarding, existing-data refusal and full-transaction rollback; auth lint, TypeScript and local disabled-login HTTP checks passed. Earlier Phase 11 release-suite evidence remains historical; it is not a new real-account acceptance result.
+- Next dependency: the user-created test project, public URL/key in `.env.local`, applied bundle and matching Supabase email/return settings. Signup/email/cookie/browser acceptance remains Pending.
+
+### October 13, 2026 — Existing Assemblyreels backend: preserved-content login preparation
+
+- User chose to test against existing Assemblyreels on localhost, then push verified code to GitHub after successful login/account checks. The free-slot attempt was abandoned; RMT AI COMPANY remains in use and Primecut is already paused. No unrelated project was changed.
+- Read the user's exported preflight from the locally saved CSV (moved its accidental root filename into ignored `scratch/account-access-preflight.csv`). Confirmed zero Auth users/profiles, seven ownerless workspaces, 18 projects, 2,050 scenes, 527 media records, two public buckets, text scene-project keys and 778 unmatched scene references.
+- Completed read-only application backups of all nine public tables and **161 Storage objects / 92,814,253 bytes** to ignored `scratch/account-backups/assemblyreels-wXHYQ5/`. Local SHA-256 checks passed; final application row re-reads matched. This is an application export, not a full platform/transactional PostgreSQL backup. No remote writes or account/provider activity occurred.
+- Added `backup:account-existing`, `prepare:account-existing`, and an offline exported-schema/data replay utility. Prepared `scratch/account-existing-auth-upgrade.sql` only after validating the completed backup. The SQL guards actual columns/triggers/counts, takes bounded table locks, preserves SQL-time recovery copies, and applies auth 001–003 atomically. Storage RLS is asserted from the actual report; no unnecessary managed-table ALTER is performed. Own minimal profile reads and zero-credit provisioning replace browser access to old records/public objects.
+- The initial live upgrade is deliberately **registration/login/account/logout only**. No scene type conversion, orphan deletion, owner adoption or onboarding activation. Schema-specific owned setup and personal-content mapping remain follow-up work; do not run generic 004–007 or enable their flags against this backend yet.
+- Verified **36 auth/security tests**, targeted auth lint, and offline replay of the **actual exported public columns, constraints and all saved application rows** through the generated upgrade without changing content or column types. Earlier production-build/release-suite results remain historical; no fresh real-account acceptance is claimed.
+- See [the existing-project login guide](../docs/security/existing-account-login-setup.md). Remote SQL application, email template/configuration, local auth activation, real signup/login isolation tests and conditional GitHub push remain pending. Existing local credentials/flags were preserved.
+
+### October 13, 2026 — Applied containment and default-email local confirmation
+
+- User supplied the expected existing-project SQL PASS result. Read-only live checks confirmed all nine application row hashes unchanged, anonymous reads denied, three buckets private and a denied sampled legacy public object URL. Email confirmation is required; no Auth accounts exist at this checkpoint.
+- User clarified that the domain is only a planned name and no SMTP provider exists. Added default-email PKCE confirmation support using the existing SSR verifier cookie, verified confirmed identity and fixed redirect destinations. Mixed code/token requests, duplicate parameters and callbacks without the signup verifier are rejected. The optional custom-SMTP token-hash template remains supported separately.
+- Verified **39 auth/security tests**, auth lint and TypeScript. Default SMTP remains limited to organization team recipients; no email was sent or real account created. URL configuration, local activation, delivered-email/browser acceptance and conditional GitHub push remain pending. No domain, SMTP service, hosting or paid authority was created.
+
+### October 14, 2026 — Hosted login test preparation
+
+- User reported Resend SMTP saved and the hosted Site URL/callback saved for `https://assemblyreel-io.vercel.app`. The shared Resend sender remains limited to its account email; real delivery and two-independent-account acceptance are unverified.
+- Authenticated the Vercel CLI through the user's sign-in and selected existing `assemblyreel-io`, connected to `rmtaiautomation-ai/Assemblyreel.io` on main. The hosted environment is scoped to signup/login; owned content, onboarding, generation, jobs and billing stay disabled.
+- Release checks passed **371 tests**, auth/access/billing/marketing lint, production build, TypeScript, private preview bundling and **51 disabled-stage HTTP probes**. The worker bundle check initially failed under a filesystem sandbox and passed separately outside it. The original runner report retains that initial failure. Production dependency audit found zero vulnerabilities; source scans found no configured private keys in the files prepared for Git.
+- Vercel CLI linking unexpectedly replaced `.env.local`. Recovered a VS Code saved-history snapshot and verified its Supabase public/server keys through read-only calls. Private recovery copies remain ignored; exact recovery of every prior non-auth setting is not claimed, and those settings need review before paid capabilities are used.
+- See [the hosted account login test guide](../docs/security/hosted-account-login-test.md). GitHub push/deployment evidence and actual hosted confirmation/login/logout acceptance are recorded only after observation; no full customer launch is accepted by these local checks.
 
 ## 9. Technical references
 

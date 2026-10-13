@@ -8,6 +8,18 @@ and this folder is the reconstructed history of how it got there.
 `src/features/channel-settings/server/fact-actions.ts` tells you to "Run `db/add-channel-facts.sql`" when a table is
 missing. Do not rename or renumber them without updating those strings.
 
+## Account access quarantine — reviewed drafts, not applied remotely
+
+For Plan 29 Phases 0–2, follow [the setup guide](../docs/security/account-access-phases-0-2-setup.md).
+Run `auth/inventory.sql` read-only first; inspect actual grants, exposed schemas, auth triggers,
+and take a private backup. In the selected staging project, apply `auth/001-auth-only-containment.sql`
+then `auth/002-account-identities-and-leads.sql`. The first quarantines the entire project's
+browser access and makes all buckets private; existing content is preserved but the old tool
+loses access. The second permits only minimal own-account identity reads and optional private
+server lead capture. These are not part of the legacy setup order below. Do not replay older
+permissive policies or RLS-disabling files after quarantine. Existing-project containment and
+staging acceptance must be recorded separately; neither was applied during local implementation.
+
 ## Billing foundation — draft, not applied
 
 The billing files below are outside the legacy run order. Configuration is deferred;
@@ -31,7 +43,25 @@ The billing test suite executes these six migrations only inside an ephemeral PG
 database. This does not apply them to Supabase or prove existing-schema compatibility
 or multi-connection concurrency. See [billing core](../docs/billing/core-implementation.md).
 
-## Run order
+## Historical run order — not the secured account deployment procedure
+
+The order below reconstructs the old personal-tool database. **Do not replay this
+section on an account-access environment.** Plan 29's `auth/001`–`006` drafts supersede
+its public/disabled-RLS assumptions. The three historical RLS-disabling files now
+refuse that operation when account-access quarantine is present. Other old DDL/RPC
+files still require review; do not restore their broad grants. Apply and record
+new migrations individually after checking the actual schema and private backups.
+
+For Phases 3–6, apply the reviewed continuation after `auth/001`–`002`:
+`003-confirmed-email-sync.sql`, `004-owned-records.sql`, `005-private-assets.sql`,
+then `006-account-request-limits.sql`. See the [continuation setup guide](../docs/security/account-access-phases-3-6-setup.md).
+
+Phase 7 adds `auth/007-resumable-onboarding.sql` after 001–006. It persists owned setup and atomically creates one metadata draft per account. Review the actual `video_projects.status` column, triggers and constraints before applying it; do not replay historical status cleanup blindly. See the [Phase 7 setup and manual acceptance guide](../docs/security/account-access-phase-7-setup.md).
+
+Phases 8–10 add auth 008–010 after auth 001–007 **and** the six reviewed billing foundation drafts. See [the local setup guide](../docs/security/account-access-phases-8-10-setup.md) for the exact mixed dependency order. These drafts add test-mode personal enrollment, durable private jobs and protected resource allowance configuration. Catalogs remain empty, sales remain disabled, and no migration has been applied to an external project during this continuation. Do not reapply 001 after later grants.
+`ownership-audit.sql` is read-only. Existing unknown owners and invalid legacy relationships
+remain quarantined; NOT VALID constraints protect new writes while awaiting explicit repairs.
+The later drafts are ordered, one-time migrations, not a bulk rerun script.
 
 Ordered by dependency, not by date — see [Ordering traps](#ordering-traps) below for the two
 places where the file timestamps lie. Every script is idempotent (`IF NOT EXISTS` / `ON CONFLICT`),
@@ -53,7 +83,7 @@ Order matters inside this block.
 |---|---|
 | `create-media-and-timeline-items.sql` | `media` + `timeline_items` |
 | `add-scenes-media-id-and-backfill.sql` | `scenes.media_id` — **requires the file above** |
-| `fix-media-rls.sql` | Adds the missing RLS policies both tables shipped without |
+| `fix-media-rls.sql` | **Superseded:** old RLS-disabling repair; never use for secured accounts |
 | `add-stock-media-source.sql` | Allows `media.source = 'stock'` |
 | `add-preset-media-source.sql` | Allows `media.source = 'preset'` |
 
@@ -103,7 +133,7 @@ Order matters inside this block.
 | File | Plan |
 |---|---|
 | `add-channel-facts.sql` | `22-channel-fact-ledger.md` — creates the tables |
-| `fix-channel-facts-rls.sql` | Fixes two bugs in the first run of the file above |
+| `fix-channel-facts-rls.sql` | **Superseded:** includes historical RLS disabling; never replay for secured accounts |
 | `seed-enoch-facts.sql` | Seed rows — **requires both files above** |
 
 ### 8. Thumbnails
