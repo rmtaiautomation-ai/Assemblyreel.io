@@ -6,7 +6,7 @@ import { createClient } from "@/lib/supabase/server";
 import { AuthCard } from "@/features/auth/components/AuthCard";
 import { LogoutButton } from "@/features/auth/components/LogoutButton";
 import { RecoveryForm } from "@/features/auth/components/RecoveryForm";
-import { recoveryEnabled } from "@/server/auth/mutations";
+import { recoveryEnabled, emailChangeEnabled } from "@/server/auth/mutations";
 import { OwnedContentPanel } from "@/features/workspaces/components/OwnedContentPanel";
 
 export const dynamic = "force-dynamic";
@@ -32,8 +32,8 @@ export default async function AccountPage({ searchParams }: { searchParams: Prom
     <Link href="/account/billing" className="text-[#13EF93] block">Billing and allowances</Link>
     {setupUnavailable && <p role="alert" className="text-amber-200 text-sm">Saved setup is temporarily unavailable. Your account remains accessible.</p>}
     {process.env.OWNERSHIP_MIGRATION_READY==="true" && process.env.OWNED_CONTENT_ENABLED==="true" && !error && data && <OwnedContentPanel mediaEnabled={process.env.PRIVATE_MEDIA_ENABLED==="true"} />}
-    {recoveryEnabled() && <><h2 className="font-semibold">Change password</h2><RecoveryForm mode="password" enabled />
-      <h2 className="font-semibold">Change email</h2><RecoveryForm mode="email" enabled /></>}
+    {recoveryEnabled() && <><h2 className="font-semibold">Change password</h2><RecoveryForm mode="password" enabled /></>}
+    {emailChangeEnabled() && <><h2 className="font-semibold">Change email</h2><RecoveryForm mode="email" enabled /></>}
     <LogoutButton /><Link href="/" className="text-sm text-[#13EF93] block">Back to the landing page</Link>
   </AuthCard>;
 }

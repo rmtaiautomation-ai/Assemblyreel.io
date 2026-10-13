@@ -49,8 +49,8 @@ Every row starts **Pending**. Change a row to Passed only after observing it in 
 | ID | Action and expected evidence | Current result |
 |---|---|---|
 | L11-01 | Open `/` and `/pricing` signed out on desktop and narrow mobile width. Landing stays public; Login works; no broken private video, purchasable plan or claim of available full video generation. Keyboard focus and text remain usable. | Pending |
-| L11-02 | Register A; confirm actual email delivery; try unconfirmed login, expired/reused confirmation and malformed return URLs. Only confirmed A reaches the protected account; one application profile exists. | Pending |
-| L11-03 | Sign in, refresh through token expiry, visit `/`, log out, use Back and request protected pages again. Fresh protected requests require valid identity; no redirect loop or private cache leak. | Pending |
+| L11-02 | Register A; confirm actual email delivery; try unconfirmed login, expired/reused confirmation and malformed return URLs. Only confirmed A reaches the protected account; one application profile exists. | Partial — hosted tester reports delivery, rejected unconfirmed login and successful fresh-link account access on October 14, 2026. Backend confirms one confirmed identity and matching zero-credit profile. Earlier link failed; fresh resend succeeded. Controlled expired/reused-link checks remain pending. |
+| L11-03 | Sign in, refresh through token expiry, visit `/`, log out, use Back and request protected pages again. Fresh protected requests require valid identity; no redirect loop or private cache leak. | Partial — hosted tester reports ordinary account refresh, logout, fresh protected-page redirect and password login all passed on October 14, 2026. Token-expiry renewal, landing navigation and Back/cache checks remain pending. |
 | L11-04 | Request password recovery with valid/invalid email and CAPTCHA. Test expired, reused and unrelated recovery sessions; change password and confirm refresh-session revocation. Test confirmed email change and profile synchronization. No link or token appears in shared logs. | Pending |
 | L11-05 | Save onboarding, close/reopen browser, retry completion and resume. Exactly one owned first draft is created; workspace settings survive; incomplete setup has an account escape path. | Pending |
 | L11-06 | With B and anonymously, request A's workspace, project, job, upload, media link and artifact through pages, APIs and direct database REST. Foreign data stays inaccessible. Browser calls to service-only RPCs and config writes are denied. Repeat with forged/expired tokens and a disabled test account. | Pending |
@@ -77,13 +77,14 @@ Passed / Failed / Deferred:
 Follow-up issue and owner:
 ```
 
-Remote containment checks are recorded above. Browser/session acceptance, email delivery, real multi-connection contention, Stripe delivery and real provider acceptance remain pending.
+Remote containment and basic single-tester email/session checks are recorded above. Token-expiry renewal, Back/cache checks, recovery, independent browser-account isolation, real multi-connection contention, Stripe delivery and generation-provider acceptance remain pending.
 
 ## Operation coverage at this checkpoint
 
 | Capability | Prepared code | Activation/acceptance |
 |---|---|---|
-| Landing/login/confirmed registration/recovery | Implemented with server guards | Real backend/email/browser acceptance pending |
+| Landing/login/confirmed registration | Implemented with server guards | Basic single-tester hosted milestone passed; remaining cases above |
+| Recovery and email change | Implemented with separate email-change gate | CAPTCHA/recovery setup and real recovery acceptance pending; new-address email delivery unavailable |
 | Owned setup and private media | Implemented with SQL drafts | Applied migration, ownership and storage evidence pending |
 | Durable mock job | Implemented, including local worker command | Configured isolated backend manual run pending |
 | Short script and five-second topic title card | Bounded adapters and reservations prepared | Off; approved catalog, bounds and provider tests pending |

@@ -57,6 +57,7 @@ test("launch and registration require explicit readiness and a supported stage",
 test("confirmation accepts only the configured email token-hash flow", () => {
   const hash = "a".repeat(64);
   assert.equal(policy.confirmationToken(new URLSearchParams({ token_hash: hash, type: "email" })), hash);
+  assert.equal(policy.confirmationToken(new URLSearchParams({ token_hash: `pkce_${hash}`, type: "email" })), `pkce_${hash}`);
   for (const query of [`token_hash=${hash}&type=recovery`, `token_hash=${hash}&type=email&code=pkce`, `token_hash=${hash}&token_hash=${hash}&type=email`, "type=email&token_hash=<script>", `token_hash=${hash}`]) {
     assert.equal(policy.confirmationToken(new URLSearchParams(query)), null);
   }

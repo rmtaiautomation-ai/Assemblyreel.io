@@ -4,7 +4,7 @@
 
 **Created:** October 11, 2026 (Asia/Manila)
 
-**Status:** Phases 0–10 implemented/prepared locally within the documented supported feature scope; Phase 11 local acceptance preparation implemented. User instruction: localhost testing only, no deployment, sales disabled and catalog unconfigured. Applied backend migrations, actual ownership/storage containment, manual acceptance and customer launch remain pending. See the [Phase 11 checklist](../docs/security/account-access-phase-11-acceptance.md) for the final acceptance gates.
+**Status:** Phases 0–10 implemented/prepared locally within the documented supported feature scope. The user's later instruction authorized GitHub-backed Vercel account testing: existing-project auth containment is applied, and basic single-tester signup/confirmation/login/logout passed on the hosted app. Recovery and broader isolation/session acceptance are in progress; ownership/onboarding activation and customer launch remain pending. Sales are disabled and the catalog is unconfigured. See the [Phase 11 checklist](../docs/security/account-access-phase-11-acceptance.md) for the final acceptance gates.
 
 **First user-facing milestone:** open the Vercel URL, see the landing page, log in, reach a protected account page, and log out — all delivered together in Phase 1.
 
@@ -83,9 +83,9 @@ The default implementation order is 0 through 11. Dependencies below explain whi
 
 | Phase | Deliverable | Depends on | Status | Manual evidence |
 |---|---|---|---|---|
-| 0 | Security preparation and isolated test environment | Review | Code/SQL prepared; remote containment pending | Pending |
-| 1 | **Vercel landing page and real login, together** | 0 | Code implemented; Vercel acceptance pending | Pending |
-| 2 | Registration, confirmation, and identity provisioning | 1 | Code/SQL implemented; migration/email acceptance pending | Pending |
+| 0 | Security preparation and isolated test environment | Review | Existing-project auth-only containment applied; content preserved | Auth-only containment verified |
+| 1 | **Vercel landing page and real login, together** | 0 | Hosted basic login/logout accepted; expiry/Back/mobile checks pending | Partial |
+| 2 | Registration, confirmation, and identity provisioning | 1 | Hosted confirmation and zero-credit profile accepted for one tester | Partial — broader email/isolation pending |
 | 3 | Account recovery and auth abuse controls | 2 | Code implemented; provider/email acceptance pending | Pending |
 | 4 | Owned database records and workspace access | 2; 0 containment | Code/SQL prepared; actual owner mapping and isolation pending | Pending |
 | 5 | Consistent API/action authorization and input boundaries | 4 | Enabled-operation guards verified locally; live checks pending | Pending |
@@ -541,7 +541,23 @@ The next deployment task is selecting/configuring staging and executing the appl
 - Vercel CLI linking unexpectedly replaced `.env.local`. Recovered a VS Code saved-history snapshot and verified its Supabase public/server keys through read-only calls. Private recovery copies remain ignored; exact recovery of every prior non-auth setting is not claimed, and those settings need review before paid capabilities are used.
 - See [the hosted account login test guide](../docs/security/hosted-account-login-test.md). GitHub push/deployment evidence and actual hosted confirmation/login/logout acceptance are recorded only after observation; no full customer launch is accepted by these local checks.
 
+### October 14, 2026 — Basic hosted signup/login milestone observed
+
+- Pushed `5f83875363b80b004cad169415ad2df7f1343307` to main; the connected Vercel production deployment reached Ready at `https://assemblyreel-io.vercel.app`. Read-back verified 32 account-only environment settings. Hosted signup/login, anonymous redirects and invalid callback handling were checked.
+- User received Resend confirmation mail and verified unconfirmed login was rejected. An earlier link failed; a fresh resend and immediate click succeeded. Read-only backend checks observed one confirmed account and one matching zero-credit profile, with all storage buckets private. Exact cause of the earlier link failure remains undetermined.
+- User reports ordinary account refresh, logout, signed-out protected-page redirect and fresh password login all worked. This accepts the basic single-tester account milestone, not the full Phase 11 checklist/customer launch.
+- Hosted checks found the closed legacy render endpoint returned 500 while importing render dependencies. Prepared a fix moving those imports behind the gate; all 40 auth tests, auth/render lint and production build/TypeScript passed. Automatic approval review could not refresh its authentication token, so staging/committing that correction was not executed. The correction and final acceptance documentation remain local; no unsafe workaround or admin confirmation was used.
+- Remaining acceptance includes token-expiry renewal, controlled expired/reused-link and wrong-password checks, independent second-account isolation, and all ownership/onboarding/media/jobs/billing/provider phases. The Resend shared sender accepts only its account email. No paid feature has been activated.
+
 ## 9. Technical references
+
+### October 14, 2026 — Recovery continuation prepared
+
+- Corrected Supabase `pkce_` token-hash compatibility for signup, recovery and email-change callbacks. Recovery proof creation requires matching verified subject/session claims; unsuccessful verification of a newly created recovery session signs that session out locally.
+- Added a separate `AUTH_EMAIL_CHANGE_ENABLED=false` gate so password recovery can be tested with the shared Resend sender before two-inbox email change is available. The Turnstile widget uses flexible width; actual mobile/browser acceptance is still pending.
+- Added a rollback-only existing-project A/B role isolation SQL check and executed it locally against the existing-schema fixture. It leaves no synthetic accounts behind, sends no email and does not claim two real browser-session acceptance.
+- Verified **46 auth tests**, auth/access/render lint and production build/TypeScript. Live probes confirmed wrong-password rejection without a session, one matching zero-credit profile, unchanged eight legacy content hashes, private buckets and closed recovery/email-change callbacks.
+- The earlier automatic-review authentication problem no longer blocked staging on this continuation. Publishing evidence is recorded after deployment. CAPTCHA/provider configuration, live isolation SQL and browser recovery/expiry/mobile checks are the next dependencies; see [the concrete recovery setup](../docs/security/hosted-account-recovery-setup.md).
 
 These primary sources were checked while preparing the plan. Recheck time-sensitive details during implementation.
 

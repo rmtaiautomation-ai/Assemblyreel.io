@@ -63,3 +63,20 @@ test("download requests stop before accessing files, including traversal paths",
     assert.equal((await response.json()).code, "FEATURE_UNAVAILABLE");
   }
 });
+
+test("disabled render requests bootstrap without loading native rendering dependencies", async () => {
+  const forbidden = "data:text/javascript,throw new Error('Unexpected rendering dependency load')";
+  const route = await loadSource(new URL("../../src/app/api/render-remotion/route.ts", import.meta.url), {
+    "server-only": "data:text/javascript,export{}",
+    "next/server": new URL("../../node_modules/next/server.js", import.meta.url).href,
+    "@/lib/supabase/server": "data:text/javascript,export function createClient(){throw new Error('Unexpected database access')}",
+    "@/features/presentations/server/export": "data:text/javascript,export function prepareProjectPresentations(){throw new Error('Unexpected presentation export')}",
+    ...Object.fromEntries(["lambda-config", "lambda-renderer", "local-renderer", "render-payload", "render-progress-store"]
+      .map(name => [`@/server/rendering/${name}`, forbidden])),
+  });
+  for (const method of ["GET", "POST"]) {
+    const response = await route[method]({ json() { throw new Error("Unexpected request parsing"); } });
+    assert.equal(response.status, 503);
+    assert.equal((await response.json()).code, "FEATURE_UNAVAILABLE");
+  }
+});

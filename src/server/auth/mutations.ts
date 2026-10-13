@@ -18,3 +18,7 @@ export function recoveryEnabled() {
   return process.env.AUTH_RECOVERY_ENABLED === "true" && process.env.AUTH_ABUSE_CONTROLS_READY === "true" &&
     process.env.AUTH_CAPTCHA_REQUIRED === "true" && Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY);
 }
+
+export function emailChangeEnabled() {
+  return recoveryEnabled() && process.env.AUTH_EMAIL_CHANGE_ENABLED === "true";
+}

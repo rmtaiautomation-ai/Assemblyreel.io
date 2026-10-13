@@ -1,17 +1,8 @@
 import { legacyFeatureResponse, legacyServiceEnabled } from "@/server/auth/capabilities";
 import { NextRequest, NextResponse } from "next/server";
-import { isLambdaConfigured } from "@/server/rendering/lambda-config";
-import { refreshLambdaProgress, renderViaLambda } from "@/server/rendering/lambda-renderer";
-import { renderLocally } from "@/server/rendering/local-renderer";
-import { isRenderPayload, prepareRenderPayload } from "@/server/rendering/render-payload";
 import { createClient } from '@/lib/supabase/server';
 import { PresentationAccessError, requirePresentationProject } from '@/features/presentations/server/access';
 import { prepareProjectPresentations } from '@/features/presentations/server/export';
-import {
-  getRenderProgress,
-  isRenderInFlight,
-  setRenderProgress,
-} from "@/server/rendering/render-progress-store";
 
 function errorMessage(error: unknown): string {
   return error instanceof Error && error.message
@@ -23,6 +14,10 @@ function errorMessage(error: unknown): string {
 export async function GET(request: NextRequest) {
   if (!legacyServiceEnabled()) return legacyFeatureResponse();
   /* Legacy implementation is retained for subsequent security phases. */
+  const [{ refreshLambdaProgress }, { getRenderProgress }] = await Promise.all([
+    import("@/server/rendering/lambda-renderer"),
+    import("@/server/rendering/render-progress-store"),
+  ]);
   const projectId = request.nextUrl.searchParams.get("projectId");
   if (!projectId) {
     return NextResponse.json({ success: false, error: "Missing projectId" }, { status: 400 });
@@ -47,6 +42,15 @@ export async function POST(request: NextRequest) {
   if (!legacyServiceEnabled()) return legacyFeatureResponse();
   /* Legacy implementation is retained for subsequent security phases. */
   try {
+    // Load native rendering dependencies only after the access gate allows work.
+    const [{ isLambdaConfigured }, { renderViaLambda }, { renderLocally },
+      { isRenderPayload, prepareRenderPayload }, { isRenderInFlight, setRenderProgress }] = await Promise.all([
+      import("@/server/rendering/lambda-config"),
+      import("@/server/rendering/lambda-renderer"),
+      import("@/server/rendering/local-renderer"),
+      import("@/server/rendering/render-payload"),
+      import("@/server/rendering/render-progress-store"),
+    ]);
     const requestBody: unknown = await request.json();
     if (!isRenderPayload(requestBody)) {
       return NextResponse.json(

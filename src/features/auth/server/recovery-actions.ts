@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { requireAccount } from "@/server/auth/account";
 import { authLaunchReady, emailSchema, signupSchema, siteOrigin, confirmedIdentity } from "@/server/auth/policy";
-import { requireMutationOrigin, captchaOptions, recoveryEnabled } from "@/server/auth/mutations";
+import { requireMutationOrigin, captchaOptions, recoveryEnabled, emailChangeEnabled } from "@/server/auth/mutations";
 import { RECOVERY_COOKIE, validRecoveryProof } from "@/server/auth/recovery-proof";
 import type { AuthFormState } from "./actions";
 
@@ -65,7 +65,7 @@ export async function changePassword(_state: AuthFormState, form: FormData): Pro
 }
 
 export async function changeEmail(_state: AuthFormState, form: FormData): Promise<AuthFormState> {
-  if (!recoveryEnabled()) return { error: "Account changes are not available yet." };
+  if (!emailChangeEnabled()) return { error: "Email changes are not available yet." };
   await requireAccount();
   const email = emailSchema.safeParse(form.get("email"));
   if (!email.success) return { error: "Enter a valid email address." };

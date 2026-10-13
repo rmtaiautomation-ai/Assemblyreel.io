@@ -7,6 +7,17 @@ const proof=await loadSource(new URL("../../src/server/auth/recovery-proof.ts",i
 const mutations=await loadSource(new URL("../../src/server/auth/mutations.ts",import.meta.url),stubs);
 const actions=await loadSource(new URL("../../src/features/auth/server/recovery-actions.ts",import.meta.url),stubs);
 const data=values=>{const form=new FormData();for(const [k,v]of Object.entries(values))form.set(k,v);return form;};
+test("email change stays disabled independently of configured password recovery",async()=>{
+  const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_EMAIL_CHANGE_ENABLED:"false"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  try{
+    assert.equal(mutations.recoveryEnabled(),true);
+    assert.equal(mutations.emailChangeEnabled(),false);
+    assert.match((await actions.changeEmail({},data({email:"other@example.com"}))).error,/Email changes are not available/);
+    process.env.AUTH_EMAIL_CHANGE_ENABLED="true";assert.equal(mutations.emailChangeEnabled(),true);
+    process.env.AUTH_RECOVERY_ENABLED="false";assert.equal(mutations.emailChangeEnabled(),false);
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}}
+});
 test("recovery proof rejects tampering, expiry, other users and other sessions",()=>{
   const old=process.env.AUTH_RECOVERY_SECRET;process.env.AUTH_RECOVERY_SECRET="synthetic-secret-at-least-32-characters";
   try{

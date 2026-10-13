@@ -12,7 +12,7 @@ async function fixture() {
   await db.exec(`create role anon;create role authenticated;create role service_role bypassrls;
     create schema auth;create schema storage;
     create function auth.uid() returns uuid language sql as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
-    create function auth.jwt() returns jsonb language sql as $$select '{}'::jsonb$$;
+    create function auth.jwt() returns jsonb language sql as $$select coalesce(nullif(current_setting('request.jwt.claims',true),''),'{}')::jsonb$$;
     grant usage on schema auth,public,storage to anon,authenticated,service_role;
     create table auth.users(id uuid primary key,email text,is_anonymous boolean default false,email_confirmed_at timestamptz);
     create table storage.buckets(id text primary key,name text,public boolean,file_size_limit bigint,allowed_mime_types text[]);
@@ -65,6 +65,11 @@ test("existing auth upgrade preserves legacy rows/types/private copies and provi
     assert.equal((await db.query("select count(*)::int n from storage.objects")).rows[0].n,0);
     await db.exec("reset role;set role anon");await assert.rejects(db.query("select id,email from public.users"),/permission denied/);
     await db.exec("reset role;set role service_role");await assert.rejects(db.query("select * from account_access_backup_20261013.scenes"),/permission denied/);
+    await db.exec("reset role");
+    const isolation=await readFile(new URL("../../db/auth/existing-project/test-auth-isolation.sql",import.meta.url),"utf8");
+    await db.exec(isolation);
+    assert.equal((await db.query("select count(*)::int n from auth.users")).rows[0].n,2);
+    assert.equal((await db.query("select count(*)::int n from public.users")).rows[0].n,2);
   } finally {await db.close();}
 });
 

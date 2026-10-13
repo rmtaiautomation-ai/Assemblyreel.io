@@ -36,12 +36,16 @@ export const emailSchema = z.string().trim().email().max(254).transform(value =>
 export const loginSchema = z.object({ email: emailSchema, password: z.string().min(1).max(128) });
 export const signupSchema = z.object({ email: emailSchema, password: z.string().min(12).max(128) });
 
-export function confirmationToken(params: URLSearchParams): string | null {
+export function emailToken(params: URLSearchParams, type: "email" | "recovery" | "email_change"): string | null {
   const token = params.get("token_hash");
   if (params.getAll("token_hash").length !== 1 || params.getAll("type").length !== 1 ||
-      params.get("type") !== "email" || params.has("code") || !token ||
-      !/^[a-f0-9]{32,128}$/i.test(token)) return null;
+      params.get("type") !== type || params.has("code") || params.has("error") ||
+      params.has("error_code") || !token || !/^(?:pkce_)?[a-f0-9]{32,128}$/i.test(token)) return null;
   return token;
+}
+
+export function confirmationToken(params: URLSearchParams): string | null {
+  return emailToken(params, "email");
 }
 
 export function confirmationCode(params: URLSearchParams): string | null {
