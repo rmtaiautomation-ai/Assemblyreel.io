@@ -10,7 +10,7 @@ export function Captcha({ resetKey }: { resetKey: unknown }) {
   useEffect(() => {
     const turnstile = (window as Window & { turnstile?: Turnstile }).turnstile;
     if (!ready || !sitekey || !element.current || !turnstile) return;
-    widget.current = turnstile.render(element.current, { sitekey, theme: "dark", size: "flexible", "response-field-name": "cf-turnstile-response" });
+    widget.current = turnstile.render(element.current, { sitekey, theme: "dark", size: "compact", "response-field-name": "cf-turnstile-response" });
     return () => { if (widget.current) turnstile.remove(widget.current); widget.current = null; };
   }, [ready, sitekey]);
   useEffect(() => {

@@ -2,6 +2,8 @@
 
 October 14, 2026. Current origin: `https://assemblyreel-io.vercel.app`. Basic signup, confirmation, login and logout passed for the single tester. Password recovery remains disabled until the following provider configuration is verified.
 
+**Current checkpoint:** the user reports the recovery redirect/template saved and Supabase CAPTCHA saved. The production Site Key, CAPTCHA requirement and private recovery secret were read back with exact matches after correcting CLI-added trailing newlines. Deployment `dpl_mT1u8z5HDHYPaxjEhaBrNt1PJzKC` from `b2d9563f89b3383edddff0e545cc0bb580bb84bd` reached Ready; the live client bundle contains the exact public key and Turnstile script. Direct-provider login probes with missing and invalid challenges both returned `captcha_failed` with no session. Valid-challenge browser login, rate-limit settings and real recovery acceptance are still pending.
+
 ## Turnstile configuration
 
 The Vercel URL is a public website hostname. A Cloudflare Turnstile account supplies the CAPTCHA widget only; GitHub, Vercel hosting and DNS do not need to move.
