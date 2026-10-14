@@ -1,17 +1,12 @@
 "use client";
-import { useActionState, useEffect } from "react";
-import { forgotPassword, resetPassword, changePassword, changeEmail } from "../server/recovery-actions";
+import { useActionState } from "react";
+import { forgotPassword, changePassword, changeEmail } from "../server/recovery-actions";
 import { Captcha } from "./Captcha";
 
-export function RecoveryForm({ mode, enabled }: { mode: "forgot" | "reset" | "password" | "email"; enabled: boolean }) {
-  const actions = { forgot: forgotPassword, reset: resetPassword, password: changePassword, email: changeEmail };
+export function RecoveryForm({ mode, enabled }: { mode: "forgot" | "password" | "email"; enabled: boolean }) {
+  const actions = { forgot: forgotPassword, password: changePassword, email: changeEmail };
   const [state, action, pending] = useActionState(actions[mode], {});
-  useEffect(() => {
-    if (mode === "reset" && state.passwordResetComplete) {
-      window.location.replace("/login?notice=password-updated");
-    }
-  }, [mode, state.passwordResetComplete]);
-  const disabled = pending || !enabled || Boolean(state.passwordResetComplete);
+  const disabled = pending || !enabled;
   const input = "w-full rounded-lg border border-[#353B44] bg-[#0A0B0D] px-4 py-3";
   return <form action={action} className="space-y-4">
     {mode === "password" && <label className="block text-sm">Current password<input className={input} type="password" name="currentPassword" required maxLength={128} autoComplete="current-password" /></label>}

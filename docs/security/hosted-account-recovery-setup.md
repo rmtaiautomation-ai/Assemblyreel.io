@@ -14,6 +14,10 @@ Prepared a completion fix: successful recovery returns a completion state only a
 
 Validation before publishing the completion fix: **49 auth tests**, auth lint and production build/TypeScript passed. No credentials, delivered links or session tokens were collected from the tester.
 
+**Completion retest and replacement:** the user reports that the `72f0377` completion change still ends at Account, so that change is not accepted as a browser fix. They also confirmed that reopening the used recovery link is rejected; controlled expiry remains untested. Replaced the reset form's Server Action/client-effect navigation with a native, same-origin POST to `/api/auth/reset-password`. The handler retains verified recovery proof, password validation and global sign-out, then sends a private HTTP 303 to the fixed Login notice. Update failure returns to the guarded reset form; revocation failure reports uncertainty without announcing successful sign-out. This avoids depending on a page rerender/client effect after the proof and session cookies change; the original hosted cause remains unproven.
+
+Validation for the replacement: **51 auth tests**, auth/access lint and production build/TypeScript passed. A local Next.js HTTP fixture with a synthetic loopback provider verified rendered native form submission, actual 303 response and `Set-Cookie` removal for base/chunked sessions, Login success text, subsequent Account rejection and cross-origin rejection before mutation. No real passwords or email requests were used. A fresh hosted browser completion test is still required after deployment.
+
 ## Turnstile configuration
 
 The Vercel URL is a public website hostname. A Cloudflare Turnstile account supplies the CAPTCHA widget only; GitHub, Vercel hosting and DNS do not need to move.

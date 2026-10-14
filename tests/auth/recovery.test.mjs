@@ -7,6 +7,9 @@ const stubs={"server-only":text("export{}"),"next/headers":text("export async fu
 const proof=await loadSource(new URL("../../src/server/auth/recovery-proof.ts",import.meta.url),stubs);
 const mutations=await loadSource(new URL("../../src/server/auth/mutations.ts",import.meta.url),stubs);
 const actions=await loadSource(new URL("../../src/features/auth/server/recovery-actions.ts",import.meta.url),stubs);
+const resetRoute=await loadSource(new URL("../../src/app/api/auth/reset-password/route.ts",import.meta.url),{
+  ...stubs,"next/server":new URL("../../node_modules/next/server.js",import.meta.url).href,
+});
 const data=values=>{const form=new FormData();for(const [k,v]of Object.entries(values))form.set(k,v);return form;};
 test("email change stays disabled independently of configured password recovery",async()=>{
   const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_EMAIL_CHANGE_ENABLED:"false"};
@@ -89,8 +92,14 @@ test("real SSR recovery consumes proof and clears base or chunked session cookie
         }},
       });
       globalThis.__recoveryClient=client();
-      const result=await actions.resetPassword({},data({password:"synthetic-new-password"}));
-      assert.equal(result.passwordResetComplete,true,JSON.stringify(result));
+      const result=await resetRoute.POST(new Request("https://staging.example/api/auth/reset-password",{
+        method:"POST",headers:{origin:"https://staging.example","content-type":"application/x-www-form-urlencoded"},
+        body:new URLSearchParams({password:"synthetic-new-password"}),
+      }));
+      assert.equal(result.status,303);
+      assert.equal(result.headers.get("location"),"https://staging.example/login?notice=password-updated");
+      assert.match(result.headers.get("cache-control"),/no-store/);
+      assert.equal(result.headers.get("referrer-policy"),"no-referrer");
       assert.equal(updates,1);assert.equal(revocations,1);assert.ok(reads>=1);
       assert.equal(cookies.has(proof.RECOVERY_COOKIE),false);
       assert.equal([...cookies.keys()].some(name=>name.startsWith("sb-fixture-auth-token")),false);
@@ -99,5 +108,40 @@ test("real SSR recovery consumes proof and clears base or chunked session cookie
       assert.equal(fresh.data.user,null);
       assert.equal(fresh.error.name,"AuthSessionMissingError");
     }
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__cookieStore;delete globalThis.__recoveryClient;}
+});
+
+test("native recovery POST blocks foreign origins, malformed bodies and closed recovery before authentication",async()=>{
+  const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_LAUNCH_READY:"true",APP_ACCESS_STAGE:"auth_only",NEXT_PUBLIC_SITE_URL:"https://staging.example"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  globalThis.__recoveryClient={auth:{getUser(){assert.fail("Rejected request must not authenticate");}}};
+  const request=(origin,body,type="application/x-www-form-urlencoded")=>new Request("https://staging.example/api/auth/reset-password",{method:"POST",headers:{origin,"content-type":type},body});
+  try{
+    assert.equal((await resetRoute.POST(request("https://evil.example","password=synthetic-password"))).status,403);
+    assert.equal((await resetRoute.POST(request("https://staging.example","{}","application/json"))).status,415);
+    assert.equal((await resetRoute.POST(request("https://staging.example","password=a&password=b"))).status,400);
+    assert.equal((await resetRoute.POST(request("https://staging.example","password="+"x".repeat(2048)))).status,413);
+    process.env.AUTH_RECOVERY_ENABLED="false";
+    assert.equal((await resetRoute.POST(request("https://staging.example","password=synthetic-password"))).status,503);
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__recoveryClient;}
+});
+
+test("native recovery POST never announces success when update or session revocation fails",async()=>{
+  const values={AUTH_RECOVERY_SECRET:"synthetic-secret-at-least-32-characters",AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_LAUNCH_READY:"true",APP_ACCESS_STAGE:"auth_only",NEXT_PUBLIC_SITE_URL:"https://staging.example"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  let token=proof.issueRecoveryProof("actor","session");
+  globalThis.__cookieStore={get(){return token?{value:token}:undefined},delete(){token=undefined}};
+  globalThis.__recoveryClient={auth:{async getUser(){return {data:{user:{id:"actor",email:"a@example.com",email_confirmed_at:"now"}},error:null}},async getClaims(){return {data:{claims:{session_id:"session"}},error:null}},async updateUser(){return {error:{code:"same_password"}}},async signOut(){return {error:{code:"service_unavailable"}}}}};
+  const request=()=>new Request("https://staging.example/api/auth/reset-password",{method:"POST",headers:{origin:"https://staging.example","content-type":"application/x-www-form-urlencoded"},body:"password=synthetic-new-password"});
+  try{
+    const updateFailure=await resetRoute.POST(request());
+    assert.equal(updateFailure.headers.get("location"),"https://staging.example/reset-password?error=update-failed");
+    assert.ok(token);
+    globalThis.__recoveryClient.auth.updateUser=async()=>({error:null});
+    const logoutFailure=await resetRoute.POST(request());
+    assert.equal(logoutFailure.status,502);
+    assert.equal(logoutFailure.headers.get("location"),null);
+    assert.match(await logoutFailure.text(),/signing out could not be confirmed/);
+    assert.equal(token,undefined);
   }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__cookieStore;delete globalThis.__recoveryClient;}
 });
