@@ -86,7 +86,7 @@ The default implementation order is 0 through 11. Dependencies below explain whi
 | 0 | Security preparation and isolated test environment | Review | Existing-project auth-only containment applied; content preserved | Auth-only containment verified |
 | 1 | **Vercel landing page and real login, together** | 0 | Hosted basic login/logout accepted; expiry/Back/mobile checks pending | Partial |
 | 2 | Registration, confirmation, and identity provisioning | 1 | Hosted confirmation and zero-credit profile accepted for one tester | Partial — broader email/isolation pending |
-| 3 | Account recovery and auth abuse controls | 2 | Delivered recovery, old/new credentials, used-link rejection and CAPTCHA verified; native POST completion passes local HTTP checks | Partial — hosted completion/rate/expiry/session and email-change acceptance pending |
+| 3 | Account recovery and auth abuse controls | 2 | Delivered recovery, hosted reset-to-Login completion, old/new credentials, used-link rejection and CAPTCHA verified | Partial — rate/expiry/session and email-change acceptance pending |
 | 4 | Owned database records and workspace access | 2; 0 containment | Code/SQL prepared; actual owner mapping and isolation pending | Pending |
 | 5 | Consistent API/action authorization and input boundaries | 4 | Enabled-operation guards verified locally; live checks pending | Pending |
 | 6 | Private media and owned export delivery | 5 | Code/SQL implemented; existing asset migration and hosted checks pending | Pending |
