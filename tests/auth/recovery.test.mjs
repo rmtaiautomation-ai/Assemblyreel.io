@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { loadSource } from "../presentations/load-source.mjs";
+import { createServerClient } from "@supabase/ssr";
 const text=source=>`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`;
 const stubs={"server-only":text("export{}"),"next/headers":text("export async function headers(){return new Headers({origin:globalThis.__origin??'https://staging.example'})} export async function cookies(){return globalThis.__cookieStore}"),"next/navigation":text("export function redirect(path){throw new Error('REDIRECT:'+path)}"),"@/lib/supabase/server":text("export async function createClient(){return globalThis.__recoveryClient}"),"@/server/auth/account":text("export async function requireAccount(){return {id:'actor',email:'a@example.com'}}")};
 const proof=await loadSource(new URL("../../src/server/auth/recovery-proof.ts",import.meta.url),stubs);
@@ -47,8 +48,56 @@ test("recovery updates require a verified recovery-session proof, then consume i
   try{
     const input=data({password:"strong-new-password"});
     assert.match((await actions.resetPassword({},input)).error,/authorization expired/);assert.equal(updates,0);
-    token=proof.issueRecoveryProof("actor","session");await assert.rejects(actions.resetPassword({},input),/REDIRECT:\/login/);
+    token=proof.issueRecoveryProof("actor","session");
+    assert.deepEqual(await actions.resetPassword({},input),{message:"Password updated. Sign in with your new password.",passwordResetComplete:true});
     assert.equal(updates,1);assert.equal(token,undefined);assert.equal(scope,"global");
     assert.match((await actions.resetPassword({},input)).error,/authorization expired/);
+    token=proof.issueRecoveryProof("actor","session");
+    globalThis.__recoveryClient.auth.signOut=async()=>({error:{code:"service_unavailable"}});
+    const unconfirmedLogout=await actions.resetPassword({},input);
+    assert.match(unconfirmedLogout.message,/revocation could not be confirmed/);
+    assert.equal(unconfirmedLogout.passwordResetComplete,undefined);
+    assert.equal(token,undefined);
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__cookieStore;delete globalThis.__recoveryClient;}
+});
+
+test("real SSR recovery consumes proof and clears base or chunked session cookies before completion",async()=>{
+  const values={AUTH_RECOVERY_SECRET:"synthetic-secret-at-least-32-characters",AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_LAUNCH_READY:"true",APP_ACCESS_STAGE:"auth_only",NEXT_PUBLIC_SITE_URL:"https://staging.example"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  try{
+    for(const chunked of [false,true]){
+      const actor={id:"actor",email:"a@example.com",email_confirmed_at:"now",user_metadata:chunked?{padding:"x".repeat(5000)}:{}};
+      const jwt=[{alg:"HS256",typ:"JWT"},{sub:actor.id,session_id:"session",exp:Math.floor(Date.now()/1000)+3600}].map(value=>Buffer.from(JSON.stringify(value)).toString("base64url")).concat("synthetic-signature").join(".");
+      const encoded="base64-"+Buffer.from(JSON.stringify({access_token:jwt,refresh_token:"synthetic-refresh",expires_at:Math.floor(Date.now()/1000)+3600,expires_in:3600,token_type:"bearer",user:actor})).toString("base64url");
+      const cookies=new Map([[proof.RECOVERY_COOKIE,proof.issueRecoveryProof(actor.id,"session")]]),writes=[];
+      if(chunked){for(let offset=0;offset<encoded.length;offset+=3000)cookies.set(`sb-fixture-auth-token.${offset/3000}`,encoded.slice(offset,offset+3000));}
+      else cookies.set("sb-fixture-auth-token",encoded);
+      globalThis.__cookieStore={get:key=>cookies.has(key)?{value:cookies.get(key)}:undefined,delete:key=>cookies.delete(key)};
+      let updates=0,revocations=0,reads=0;
+      const client=()=>createServerClient("https://fixture.supabase.co","synthetic-public-key",{
+        cookies:{getAll:()=>[...cookies].map(([name,value])=>({name,value})),setAll:changes=>{for(const cookie of changes){writes.push(cookie);if(cookie.options.maxAge===0)cookies.delete(cookie.name);else cookies.set(cookie.name,cookie.value);}}},
+        global:{fetch:async(input,options)=>{
+          const url=new URL(String(input));assert.equal(url.origin,"https://fixture.supabase.co");
+          assert.equal(new Headers(options.headers).get("authorization"),`Bearer ${jwt}`);
+          if(url.pathname==="/auth/v1/logout"){
+            assert.equal(url.searchParams.get("scope"),"global");revocations++;return new Response(null,{status:204});
+          }
+          assert.equal(url.pathname,"/auth/v1/user");
+          if(options.method==="PUT"){updates++;assert.equal(JSON.parse(options.body).password,"synthetic-new-password");}
+          else reads++;
+          return Response.json(actor);
+        }},
+      });
+      globalThis.__recoveryClient=client();
+      const result=await actions.resetPassword({},data({password:"synthetic-new-password"}));
+      assert.equal(result.passwordResetComplete,true,JSON.stringify(result));
+      assert.equal(updates,1);assert.equal(revocations,1);assert.ok(reads>=1);
+      assert.equal(cookies.has(proof.RECOVERY_COOKIE),false);
+      assert.equal([...cookies.keys()].some(name=>name.startsWith("sb-fixture-auth-token")),false);
+      assert.ok(writes.some(cookie=>cookie.options.maxAge===0));
+      const fresh=await client().auth.getUser();
+      assert.equal(fresh.data.user,null);
+      assert.equal(fresh.error.name,"AuthSessionMissingError");
+    }
   }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__cookieStore;delete globalThis.__recoveryClient;}
 });

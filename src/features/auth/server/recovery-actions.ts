@@ -1,6 +1,5 @@
 "use server";
 import { cookies } from "next/headers";
-import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { requireAccount } from "@/server/auth/account";
 import { authLaunchReady, emailSchema, signupSchema, siteOrigin, confirmedIdentity } from "@/server/auth/policy";
@@ -44,7 +43,7 @@ export async function resetPassword(_state: AuthFormState, form: FormData): Prom
     const { error: logoutError } = await supabase.auth.signOut({ scope: "global" });
     if (logoutError) return { message: "Your password changed. Sign out and log in again; session revocation could not be confirmed." };
   } catch { return { error: "Password recovery is temporarily unavailable." }; }
-  redirect("/login?notice=password-updated");
+  return { message: "Password updated. Sign in with your new password.", passwordResetComplete: true };
 }
 
 export async function changePassword(_state: AuthFormState, form: FormData): Promise<AuthFormState> {

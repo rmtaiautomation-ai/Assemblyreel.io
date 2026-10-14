@@ -5,7 +5,7 @@ import { createClient } from "@/lib/supabase/server";
 import { authLaunchReady, registrationEnabled, loginSchema, signupSchema, emailSchema, siteOrigin, safeReturnPath, confirmedIdentity } from "@/server/auth/policy";
 import { requireMutationOrigin, captchaOptions } from "@/server/auth/mutations";
 
-export type AuthFormState = { error?: string; message?: string };
+export type AuthFormState = { error?: string; message?: string; passwordResetComplete?: boolean };
 
 export async function login(_state: AuthFormState, form: FormData): Promise<AuthFormState> {
   if (!authLaunchReady()) return { error: "Account access is awaiting configuration." };

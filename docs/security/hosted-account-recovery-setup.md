@@ -1,8 +1,18 @@
 # Hosted password recovery continuation
 
-October 14, 2026. Current origin: `https://assemblyreel-io.vercel.app`. Basic signup, confirmation, login and logout passed for the single tester. Password recovery remains disabled until the following provider configuration is verified.
+October 14, 2026. Current origin: `https://assemblyreel-io.vercel.app`. Basic signup, confirmation, login/logout and valid-challenge CAPTCHA login passed for the single tester. Delivered recovery and password updates also passed: the user verified the old password fails and the new one works after logout. Completion navigation and broader rate/session/link acceptance remain in progress.
 
-**Current checkpoint:** the user reports the recovery redirect/template saved and Supabase CAPTCHA saved. The production Site Key, CAPTCHA requirement and private recovery secret were read back with exact matches after correcting CLI-added trailing newlines. Deployment `dpl_mT1u8z5HDHYPaxjEhaBrNt1PJzKC` from `b2d9563f89b3383edddff0e545cc0bb580bb84bd` reached Ready; the live client bundle contains the exact public key and Turnstile script. Direct-provider login probes with missing and invalid challenges both returned `captcha_failed` with no session. Valid-challenge browser login, rate-limit settings and real recovery acceptance are still pending.
+**Earlier CAPTCHA checkpoint:** the user reports the recovery redirect/template saved and Supabase CAPTCHA saved. The production Site Key, CAPTCHA requirement and private recovery secret were read back with exact matches after correcting CLI-added trailing newlines. Deployment `dpl_mT1u8z5HDHYPaxjEhaBrNt1PJzKC` from `b2d9563f89b3383edddff0e545cc0bb580bb84bd` reached Ready; the live client bundle contains the exact public key and Turnstile script. Direct-provider login probes with missing and invalid challenges both returned `captcha_failed` with no session. The subsequent login, rate-limit and activation results are recorded below.
+
+**Controlled recovery activation:** the user subsequently verified CAPTCHA login reaches their confirmed account. Their dashboard screenshot shows 30 project emails/hour, 30 sign-up/sign-in requests per five minutes/IP, 30 verification requests per five minutes/IP, and 150 refresh requests per five minutes/IP. Enabled `AUTH_ABUSE_CONTROLS_READY` and `AUTH_RECOVERY_ENABLED` for the existing single-tester auth-only deployment; exact environment read-back matches. The configured limits and CAPTCHA checks justify testing the gated recovery flow, but do not establish complete abuse-control/customer acceptance. Real request-limit behavior is being tested with only two recovery requests.
+
+Deployment `dpl_7PoaJAwPDHfH9VfoX7REEYMW1DqN` from `3c6a8d35b5b7af57cba1a0429ba8f8067261e016` reached Ready and serves the exact configured hostname. HTTP checks confirmed enabled/private recovery, signed-out reset rejection and closed email-change/content/billing boundaries. The compact widget fits narrow auth cards; real mobile usability remains pending. Email changes, ownership, onboarding, generation and billing remain disabled.
+
+**Recovery browser result:** the tester received the recovery email, opened its link, entered a new password, and reached the account page rather than the intended login page. After explicit logout, the old password was rejected and the new password opened the account. This accepts delivered recovery and the credential update, while identifying a completion-navigation issue. The second-request rate-limit case was not performed, so no live 429 result is claimed.
+
+Prepared a completion fix: successful recovery returns a completion state only after global sign-out succeeds, then the reset form makes a full document navigation to login. Login shows a fixed password-updated message. A real SSR SDK fixture verifies proof consumption and base/chunked cookie removal before success; a sign-out failure reports uncertainty and does not trigger successful completion. These tests do not establish the exact cause of the original browser navigation. Hosted completion retest and other-session revocation remain pending.
+
+Validation before publishing the completion fix: **49 auth tests**, auth lint and production build/TypeScript passed. No credentials, delivered links or session tokens were collected from the tester.
 
 ## Turnstile configuration
 
@@ -11,7 +21,7 @@ The Vercel URL is a public website hostname. A Cloudflare Turnstile account supp
 1. Create a Cloudflare account and open **Turnstile → Add widget**. Name it AssemblyReel, add hostname `assemblyreel-io.vercel.app`, and select Managed mode.
 2. Give the agent only its public Site Key. Keep the Secret Key private. The agent sets `NEXT_PUBLIC_TURNSTILE_SITE_KEY` and `AUTH_CAPTCHA_REQUIRED=true` in Vercel and deploys the matching forms before Supabase CAPTCHA is enabled.
 3. After that deployment is verified, open Supabase **Authentication → Attack Protection** (the CAPTCHA/Bot and Abuse Protection section). Select Turnstile, enter its Secret Key privately, enable CAPTCHA and save.
-4. Verify real login with a completed challenge and direct-provider rejection of missing/invalid challenges. Inspect Auth rate limits and verify a repeated resend receives the provider's wait response. Record observed limits without repeatedly flooding login or recovery endpoints.
+4. Verify real login with a completed challenge and direct-provider rejection of missing/invalid challenges. Inspect Auth rate limits before controlled recovery activation. During acceptance, verify a second recovery request within 60 seconds receives the provider's wait response. Record observed limits without repeatedly flooding login or recovery endpoints.
 
 References: [Cloudflare widget setup](https://developers.cloudflare.com/turnstile/get-started/), [Supabase CAPTCHA configuration](https://supabase.com/docs/guides/auth/auth-captcha).
 
@@ -26,7 +36,7 @@ In Supabase **Authentication → URL Configuration**, add the exact redirect `ht
 
 This route intentionally requires a recovery token hash; the default signup template may continue using `{{ .ConfirmationURL }}`. The callback accepts Supabase's optional `pkce_` hash prefix, verifies the recovery identity and session, and issues a private ten-minute proof before password updates are allowed.
 
-After provider settings pass, the agent generates a server-only `AUTH_RECOVERY_SECRET`, configures it privately in Vercel, and enables `AUTH_ABUSE_CONTROLS_READY` and `AUTH_RECOVERY_ENABLED`. The tester then requests one recovery email, changes their password, confirms the old password fails and the new password works, and checks reused-link and refresh-session behavior. Passwords and delivered links stay private.
+After CAPTCHA login/rejection and rate-limit configuration are verified, the agent configures a private server-only `AUTH_RECOVERY_SECRET` and enables `AUTH_ABUSE_CONTROLS_READY` and `AUTH_RECOVERY_ENABLED` for controlled testing. Verify actual rate-limit behavior, delivered recovery, password updates, old/new credentials, reused links and refresh-session behavior before accepting the phase. Passwords and delivered links stay private.
 
 ## Separate email-change availability
 
@@ -34,6 +44,6 @@ After provider settings pass, the agent generates a server-only `AUTH_RECOVERY_S
 
 ## Database isolation check
 
-Run the complete [auth isolation SQL](../../db/auth/existing-project/test-auth-isolation.sql) as postgres in the existing Supabase SQL Editor. It provisions two synthetic identities inside one transaction, checks A/B profile isolation, blocked anonymous access and closed legacy content/storage, then rolls back every inserted row. It does not send mail or create login sessions. Local PGlite execution passed; live execution is still pending. This is database-role evidence, not acceptance of two independent browser accounts.
+The complete [auth isolation SQL](../../db/auth/existing-project/test-auth-isolation.sql) was run by the user as postgres in the existing Supabase SQL Editor and returned its expected PASS result on October 14, 2026. It checked two synthetic identities, A/B profile isolation, blocked anonymous access and closed legacy content/storage, then rolled back every inserted row without sending mail or creating sessions. Follow-up read-only checks confirmed exactly one real confirmed account and one matching zero-credit profile, all eight legacy content table hashes unchanged, and all three buckets private. Both local execution and live role isolation passed. Two independent real browser accounts remain untested.
 
 Remaining browser checks include Back after logout, token-expiry renewal, mobile/keyboard form usability, and controlled expired/reused confirmation links. Ownership/onboarding activation requires a fresh schema-specific migration review because legacy scenes store project IDs as text and include orphan rows; do not replay the completed auth upgrade or apply the generic ownership drafts directly.
