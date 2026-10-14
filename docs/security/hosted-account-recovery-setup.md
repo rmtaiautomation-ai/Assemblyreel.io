@@ -20,6 +20,8 @@ Validation for the replacement: **51 auth tests**, auth/access lint and producti
 
 **Hosted completion accepted:** deployment `dpl_6MTbAoQc9Gqiivjg5ExdK3rF7d8F` from `1637bbcc1bf2e68b22daa47177bfc20757c50e7e` reached Ready at the configured hostname. Seven live HTTP checks passed for the Login notice/private headers, enabled recovery, deployed native POST, foreign-origin rejection, missing-proof rejection and signed-out reset protection. The tester then confirmed a fresh recovery ends at Login with the password-updated notice, and the new password opens Account. This resolves the reported completion issue for the tester. Reused-link rejection also passed; actual request-limit response, controlled expiry and other-device refresh-session revocation remain unverified. No new credentials or delivered links were collected.
 
+**Independent continuation:** 53 auth tests and auth lint passed, including actual SSR SDK recovery responses for 429, CAPTCHA forwarding and account-existence masking. The repeatable `npm run test:auth:http` passed 11 local Next.js HTTP scenarios covering missing/expired/unrelated proof, provider expiry, renewal, reset completion and rejected revoked refresh sessions. Seven live endpoint checks and read-only legacy preservation checks passed again after the tester's accepted reset. Runtime application code/configuration is unchanged. These synthetic-provider results do not accept real browser Back or live provider timing. Follow the [return checklist](account-security-return-checklist.md) for the remaining private tests.
+
 ## Turnstile configuration
 
 The Vercel URL is a public website hostname. A Cloudflare Turnstile account supplies the CAPTCHA widget only; GitHub, Vercel hosting and DNS do not need to move.

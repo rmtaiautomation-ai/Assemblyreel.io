@@ -19,6 +19,7 @@
     "run:local-mock": "node scripts/auth/run-local-mock.mjs",
     "deploy:account-preview": "node scripts/auth/account-preview-bundle.mjs --deploy",
     "test:auth": "node --test tests/auth/*.test.mjs",
+    "test:auth:http": "node --use-system-ca scripts/auth/verify-session-http.mjs",
     "check:auth": "node scripts/auth/check-readiness.mjs",
     "prepare:account-test": "node scripts/auth/account-test-bundle.mjs",
     "backup:account-existing": "node --use-system-ca scripts/auth/backup-existing-account.mjs",

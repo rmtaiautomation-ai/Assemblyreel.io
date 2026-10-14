@@ -11,6 +11,46 @@ const resetRoute=await loadSource(new URL("../../src/app/api/auth/reset-password
   ...stubs,"next/server":new URL("../../node_modules/next/server.js",import.meta.url).href,
 });
 const data=values=>{const form=new FormData();for(const [k,v]of Object.entries(values))form.set(k,v);return form;};
+test("real SSR recovery requests pass CAPTCHA and fixed callback while masking account existence and exposing provider limits",async()=>{
+  const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_LAUNCH_READY:"true",APP_ACCESS_STAGE:"auth_only",NEXT_PUBLIC_SITE_URL:"https://staging.example"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  let calls=0,status=200,body={};const cookies=new Map();
+  globalThis.__recoveryClient=createServerClient("https://fixture.supabase.co","synthetic-public-key",{
+    cookies:{getAll:()=>[...cookies].map(([name,value])=>({name,value})),setAll:changes=>{for(const cookie of changes)cookies.set(cookie.name,cookie.value);}},
+    global:{fetch:async(input,options)=>{
+      calls++;const url=new URL(String(input));assert.equal(url.origin,"https://fixture.supabase.co");assert.equal(url.pathname,"/auth/v1/recover");
+      assert.equal(url.searchParams.get("redirect_to"),"https://staging.example/auth/recovery");
+      const request=JSON.parse(options.body);assert.match(request.email,/^fixture(?:-missing)?@example\.invalid$/);
+      assert.equal(request.gotrue_meta_security.captcha_token,"synthetic-challenge");
+      return Response.json(body,{status,headers:{"x-supabase-api-version":"2024-01-01"}});
+    }},
+  });
+  const input=email=>data({email,"cf-turnstile-response":"synthetic-challenge"});
+  try{
+    const registered=await actions.forgotPassword({},input("fixture@example.invalid"));
+    assert.match(registered.message,/If this address is registered/);
+    status=400;body={code:"user_not_found",msg:"Synthetic missing identity"};
+    assert.deepEqual(await actions.forgotPassword({},input("fixture-missing@example.invalid")),registered);
+    status=429;body={code:"over_email_send_rate_limit",msg:"Synthetic rate limit"};
+    assert.deepEqual(await actions.forgotPassword({},input("fixture@example.invalid")),{error:"Please wait before requesting another email."});
+    status=400;body={code:"captcha_failed",msg:"Synthetic challenge rejected"};
+    const challengeFailure=await actions.forgotPassword({},input("fixture@example.invalid"));
+    assert.match(challengeFailure.error,/security challenge/);assert.equal(challengeFailure.message,undefined);
+    assert.equal(calls,4);
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__recoveryClient;}
+});
+
+test("forgot-password rejects malformed email, missing challenge and foreign origin before sending email",async()=>{
+  const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_LAUNCH_READY:"true",APP_ACCESS_STAGE:"auth_only",NEXT_PUBLIC_SITE_URL:"https://staging.example"};
+  const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);
+  globalThis.__recoveryClient={auth:{resetPasswordForEmail(){assert.fail("Rejected input must not send email");}}};
+  try{
+    assert.match((await actions.forgotPassword({},data({email:"malformed"}))).error,/valid email/);
+    assert.match((await actions.forgotPassword({},data({email:"fixture@example.invalid"}))).error,/security challenge/);
+    globalThis.__origin="https://evil.example";
+    assert.match((await actions.forgotPassword({},data({email:"fixture@example.invalid","cf-turnstile-response":"synthetic-challenge"}))).error,/Unable to request recovery/);
+  }finally{for(const [key,value]of Object.entries(old)){if(value===undefined)delete process.env[key];else process.env[key]=value;}delete globalThis.__origin;delete globalThis.__recoveryClient;}
+});
 test("email change stays disabled independently of configured password recovery",async()=>{
   const values={AUTH_RECOVERY_ENABLED:"true",AUTH_ABUSE_CONTROLS_READY:"true",AUTH_CAPTCHA_REQUIRED:"true",NEXT_PUBLIC_TURNSTILE_SITE_KEY:"synthetic-public-sitekey",AUTH_EMAIL_CHANGE_ENABLED:"false"};
   const old=Object.fromEntries(Object.keys(values).map(key=>[key,process.env[key]]));Object.assign(process.env,values);

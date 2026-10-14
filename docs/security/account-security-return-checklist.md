@@ -1,0 +1,29 @@
+# Account security — return checklist
+
+October 14, 2026 (Asia/Manila). Test site: **https://assemblyreel-io.vercel.app**.
+
+The reset completion issue is resolved in the tester's browser: recovery ends at Login with the password-updated notice, then the new password opens Account. Signup, confirmation, ordinary refresh/logout/login, CAPTCHA and used recovery-link rejection already passed. These do not need to be repeated for this checklist.
+
+## Completed independently
+
+- **53 auth tests** passed. The added recovery tests exercise the actual Supabase SSR SDK with synthetic responses for CAPTCHA forwarding, the fixed callback, account-existence masking, HTTP 429 handling, and rejection before email requests for malformed input, missing challenge or foreign origin.
+- **11 local HTTP scenarios** passed against actual Next.js and the SSR SDK with a synthetic loopback provider: private cache headers, missing/expired/unrelated recovery proof, expired provider response, token renewal, base/chunked cookie removal, reset replay rejection, revoked refresh-session handling, signed-out navigation and cross-origin reset rejection.
+- Auth lint passed. The runtime application code is unchanged from the accepted `1637bbc` fix; the new work adds tests, a repeatable HTTP verification command and this checklist. The production build for that runtime change had already passed.
+- **Seven live HTTP checks** passed for private Login/recovery, the deployed POST route, origin/proof rejection and signed-out reset protection. Read-only backend checks still show one confirmed real account, one matching zero-credit profile, eight unchanged content hashes and three private buckets.
+
+Run the repeatable local suite with `npm run test:auth:http` when no other Next.js development server is running. It starts and stops its own local servers, writes ignored evidence under `scratch/auth-session-acceptance/`, and uses synthetic credentials only. It changes no live account, sends no email, and does not establish live provider/browser acceptance. `npm run test:auth` runs the focused auth suite.
+
+## Remaining private browser checks
+
+Keep passwords, delivered links, browser cookies and tokens private. Report only the result and the visible error text. Use the newest email unless a case specifically asks you to keep an unused link until expiry.
+
+1. **Logout and Back:** log in, open Account, log out, then use browser Back. Refresh the restored page and open `/account` directly. Both fresh requests must lead to Login and show no account information. Report separately if Back briefly restores the old account page; HTTP cache checks do not prove real browser-history behavior. On your phone or a narrow window, also confirm the login controls and CAPTCHA remain usable.
+2. **Recovery request limit:** request one recovery email with CAPTCHA, then make one more request within 60 seconds with a fresh challenge. Record whether the app shows “Please wait before requesting another email” or a different result. Stop after those two requests. A success response instead of a wait response needs investigation; do not keep sending requests to reach the hourly limit. The dashboard configuration is 30 project emails/hour, but a live request-limit rejection has not yet been observed.
+3. **Recovery authorization expiry:** request one fresh email, open its link immediately, and leave the reset form untouched for at least 11 minutes. Submit a new password after that wait. The update must be rejected and you should reach the invalid/expired recovery notice. Your current password should still work. This checks the app's ten-minute recovery proof, which is separate from the email token's provider expiry. For provider-link expiry, keep a separate newly requested link unused until its configured email-token lifetime elapses, then confirm it is rejected; record that result separately.
+4. **Other-device renewal after reset:** sign into the same account in two browsers/devices. Reset the password in the first browser and log in there with the new password. Keep the second browser open without logging it out, then refresh its Account page after its existing access token has expired. It must fail to renew and lead to Login. Record the wait duration and the configured JWT expiry interval from Supabase. Immediate sign-out on the second browser is not required: existing access tokens can remain valid until expiry even after their refresh tokens are revoked. See [Supabase sign-out behavior](https://supabase.com/docs/guides/auth/signout).
+
+Cases 2–4 can be spread out. Do not request all the emails repeatedly if a case fails; report the first result and stop that case. Provider token expiry and a second device cannot be accepted from local fixtures alone. The real-token renewal case also remains pending for an ordinary active session; leave it signed in through its configured token lifetime and confirm a fresh Account request renews successfully before doing the reset/revocation case.
+
+## What follows acceptance
+
+The next implementation phase is ownership and workspace onboarding. `/account` remains the intended login destination during auth-only testing. Existing legacy scenes use text project references and contain orphan rows, so ownership activation requires a fresh schema-specific preflight, backup and migration review. The completed auth upgrade must not be replayed. Email change still needs delivery to two inboxes; paid features and broader customer launch remain separate acceptance gates.
