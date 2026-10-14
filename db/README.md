@@ -63,6 +63,18 @@ Phases 8–10 add auth 008–010 after auth 001–007 **and** the six reviewed b
 remain quarantined; NOT VALID constraints protect new writes while awaiting explicit repairs.
 The later drafts are ordered, one-time migrations, not a bulk rerun script.
 
+For the existing Assemblyreels project, see the [October 14 ownership audit and backup](../docs/security/database-ownership-audit-2026-10-14.md).
+The fresh application backup and SQL catalog review are complete. The locally tested
+[Phase 2 migration](../docs/security/existing-ownership-phase-2.md) was applied, passed live rollback-only SQL role isolation,
+and passed 33 live read-only preservation/access checks. Workspace UI activation and real signed-in browser acceptance remain later gates.
+Run `auth/existing-project/ownership-catalog.sql` read-only when refreshing metadata. The existing
+`scenes.project_id` is text, so the generic ownership audit and migrations must be adapted
+before use on this project; preserve ownerless content and orphan rows for explicit review.
+The private guarded `scratch/account-existing-ownership-upgrade.sql` and rollback-only
+`auth/existing-project/test-owned-isolation.sql` have already passed; do not replay the migration.
+The bundle used generic 006 before schema-specific 004 and did not include 005/007;
+do not replay the generic continuation order above after it.
+
 Ordered by dependency, not by date — see [Ordering traps](#ordering-traps) below for the two
 places where the file timestamps lie. Every script is idempotent (`IF NOT EXISTS` / `ON CONFLICT`),
 so re-running one is safe.

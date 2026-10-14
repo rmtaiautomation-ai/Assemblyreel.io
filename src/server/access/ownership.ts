@@ -16,7 +16,7 @@ export async function accessContext() {
 export function resourceId(value: unknown) {
   const result=uuidSchema.safeParse(value);
   if(!result.success) throw new AccessError(400,"INVALID_ID","Invalid resource identifier.");
-  return result.data;
+  return result.data.toLowerCase();
 }
 export async function requireOwnedWorkspace(client:SupabaseClient,userId:string,id:unknown) {
   const value=resourceId(id);

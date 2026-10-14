@@ -35,9 +35,9 @@ export async function apiResponse(work:()=>Promise<Response>) {
   try {
     const result=await work();
     const response=new Response(result.body,{status:result.status,statusText:result.statusText,headers:result.headers});
-    response.headers.set("Cache-Control","private, no-store"); response.headers.set("X-Content-Type-Options","nosniff"); return response;
+    response.headers.set("Cache-Control","private, no-store"); response.headers.set("Pragma","no-cache"); response.headers.set("X-Content-Type-Options","nosniff"); return response;
   } catch(error) {
     const safe=error instanceof AccessError?error:new AccessError(503,"SERVICE_UNAVAILABLE","The service is temporarily unavailable.");
-    return Response.json({error:safe.message,code:safe.code},{status:safe.status,headers:{"Cache-Control":"private, no-store"}});
+    return Response.json({error:safe.message,code:safe.code},{status:safe.status,headers:{"Cache-Control":"private, no-store","Pragma":"no-cache","X-Content-Type-Options":"nosniff"}});
   }
 }

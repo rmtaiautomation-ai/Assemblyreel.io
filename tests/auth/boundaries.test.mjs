@@ -22,7 +22,7 @@ test("every legacy action and API handler has its gate before existing work", as
       actions++;
     }
   }
-  const ownedRoutes = new Set(["account/billing/route.ts","account/billing/enroll/route.ts","account/billing/invoices/route.ts","account/jobs/route.ts","account/jobs/[jobId]/route.ts","account/onboarding/route.ts","account/workspaces/route.ts","account/projects/route.ts","account/resources/route.ts","media/upload/route.ts","media/from-url/route.ts","media/[mediaId]/status/route.ts","media/[mediaId]/content/route.ts","render/download/route.ts"]);
+  const ownedRoutes = new Set(["account/billing/route.ts","account/billing/enroll/route.ts","account/billing/invoices/route.ts","account/jobs/route.ts","account/jobs/[jobId]/route.ts","account/onboarding/route.ts","account/workspaces/route.ts","account/workspaces/[workspaceId]/route.ts","account/projects/route.ts","account/projects/[projectId]/route.ts","account/resources/route.ts","media/upload/route.ts","media/from-url/route.ts","media/[mediaId]/status/route.ts","media/[mediaId]/content/route.ts","render/download/route.ts"]);
   const billingRoutes = new Set(["stripe/checkout/route.ts","stripe/portal/route.ts","stripe/webhook/route.ts"]);
   let billingHandlers=0;
   let ownedHandlers=0;
@@ -46,7 +46,7 @@ test("every legacy action and API handler has its gate before existing work", as
   }
   assert.equal(actions, 83);
   assert.equal(handlers, 7);
-  assert.equal(ownedHandlers, 18);
+  assert.equal(ownedHandlers, 21);
   assert.equal(billingHandlers, 3);
 });
 
