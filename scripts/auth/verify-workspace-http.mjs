@@ -6,6 +6,7 @@ import { once } from 'node:events';
 import { mkdir,readFile,writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fixture } from '../../tests/auth/fixtures/owned-database.mjs';
+import { loadSource } from '../../tests/presentations/load-source.mjs';
 
 const db=await fixture();
 await db.exec("alter table public.workspaces add created_at timestamptz default now();alter table public.video_projects add created_at timestamptz default now()");
@@ -83,6 +84,33 @@ try{
   assert.equal((await request('/api/account/workspaces',a,{...workspace,workspace:{...workspace.workspace,user_id:b}})).status,400);
   assert.equal((await request('/api/account/projects?workspaceId=../secret')).status,400);pass('Origin, forged-owner payload and invalid IDs rejected before mutation');
   await db.exec('reset role');assert.equal((await db.query("select sum(hits)::integer n from account_request_limits where action='workspace'")).rows[0].n,2);assert.equal((await db.query("select sum(hits)::integer n from account_request_limits where action='rename'")).rows[0].n,1);pass('Actual HTTP retries do not duplicate records or double-count limits');
+  const browserClient=await loadSource(new URL('../../src/features/workspaces/owned-content-client.ts',import.meta.url));
+  const originalFetch=globalThis.fetch;let dropped=false;const sent=[];
+  const fields={workspace_id:id(10),topic:'Original retry topic'};
+  const attempt=browserClient.prepareOwnedSave('project',fields,id(40));fields.topic='Edited after send';
+  globalThis.fetch=async(path,init)=>{
+    sent.push(init.body);
+    const response=await originalFetch(origin+path,{...init,headers:{...init.headers,cookie:cookie(a),origin}});
+    if(!dropped){dropped=true;await response.text();throw new TypeError('Synthetic lost response after committed save');}
+    return response;
+  };
+  try {
+    await assert.rejects(browserClient.sendOwnedSave(attempt),error=>browserClient.shouldRetryOwnedSave(error));
+    assert.equal((await browserClient.sendOwnedSave(attempt)).id,id(40));assert.equal(sent[0],sent[1]);
+  }finally{globalThis.fetch=originalFetch;}
+  const saved=await (await request(`/api/account/projects/${id(40)}`)).json();assert.equal(saved.project.topic,'Original retry topic');
+  await db.exec('reset role');assert.equal((await db.query("select sum(hits)::integer n from account_request_limits where action='workspace'")).rows[0].n,3);
+  pass('Browser save client retries a lost HTTP response without changing details or duplicating its save');
+  // Seed only this isolated fixture at its thresholds; never flood the hosted service to test limits.
+  await db.query("insert into account_request_limits select $1,'rename',date_trunc('minute',now())+n*interval '1 minute',30 from generate_series(0,1) n on conflict(actor_id,action,window_start) do update set hits=30",[a]);
+  const limited=await request('/api/account/resources',a,{type:'project',id:id(11),value:'Must not save'},'PATCH');
+  assert.equal(limited.status,429);assert.equal((await limited.json()).code,'REQUEST_LIMIT');
+  assert.equal((await (await request(`/api/account/projects/${id(11)}`)).json()).project.topic,'Renamed');
+  await db.exec('reset role');
+  await db.query("insert into workspaces(id,user_id,name,content_theme) values($1,$3,'Quota fixture','Rollback only'),($2,$3,'Quota fixture','Rollback only')",[id(50),id(51),a]);
+  const quota=await request('/api/account/workspaces',a,{...workspace,operationId:id(52)});
+  assert.equal(quota.status,409);assert.equal((await quota.json()).code,'WORKSPACE_LIMIT');
+  pass('Real SQL rate and quota thresholds become safe HTTP 429/409 without saving rejected changes');
   assert.deepEqual(fixtureErrors,[]);
 }catch(error){failure=error;process.exitCode=1;}
 finally{

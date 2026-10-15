@@ -29,7 +29,7 @@
     "check:ownership-fixture": "node scripts/auth/check-existing-ownership-fixture.mjs",
     "prepare:account-existing": "node scripts/auth/existing-account-bundle.mjs",
     "lint:auth": "eslint --config eslint.auth.config.mjs src/server/auth src/features/auth src/lib/supabase/server.ts src/lib/supabase/proxy.ts src/proxy.ts src/app/login src/app/signup src/app/account src/app/auth src/app/api/auth src/app/api/leads scripts/auth tests/auth",
-    "lint:access": "eslint --config eslint.auth.config.mjs src/server/access src/server/media src/features/onboarding src/app/onboarding src/features/workspaces/components/OwnedContentPanel.tsx src/features/workspaces/server/owned-workspace-actions.ts src/app/api/account src/app/api/media/upload src/app/api/media/from-url src/app/api/media/[mediaId] src/app/api/render/download src/app/forgot-password src/app/reset-password",
+    "lint:access": "eslint --config eslint.auth.config.mjs src/server/access src/server/media src/features/onboarding src/app/onboarding src/features/workspaces/components/OwnedContentPanel.tsx src/features/workspaces/owned-content-client.ts src/features/workspaces/server/owned-workspace-actions.ts src/app/api/account src/app/api/media/upload src/app/api/media/from-url src/app/api/media/[mediaId] src/app/api/render/download src/app/forgot-password src/app/reset-password",
     "verify:local": "node scripts/auth/verify-local.mjs",
     "lint:marketing": "eslint --config eslint.auth.config.mjs src/app/page.tsx src/app/pricing/page.tsx src/components/marketing"
   },

@@ -1,6 +1,6 @@
 # Workspace actions and APIs — Phase 3
 
-October 14, 2026 (Asia/Manila). Implementation and independent verification are complete. The prior ownership migration and live rollback-only A/B SQL isolation have passed. Hosted workspace capability activation and personal browser acceptance remain deferred until the tester returns.
+Updated October 15, 2026 (Asia/Manila). Backend implementation and independent verification are complete. The prior ownership migration and live rollback-only A/B SQL isolation have passed. Minimal account-panel controls are implemented and the two hosted ownership/content settings are enabled for controlled testing. Actual signed-in browser/provider acceptance remains pending; this module is not yet closed.
 
 ## Implemented operations
 
@@ -56,10 +56,29 @@ npm run test:workspaces:http
 
 It starts/stops its local servers and writes ignored evidence under `scratch/workspace-http-acceptance/`. The accepted run for this phase is `2026-10-14T07-58-19.521Z/report.json`. The migration fixture is shared with its existing isolation tests so API tests exercise the same confirmed-account and ownership rules.
 
-## When the tester returns
+## Closure phases — October 15
 
-Hosted ownership/content flags remain off during this preparation. Before enabling controlled workspace testing, verify the deployed commit and accepted database migration together, then enable only `OWNERSHIP_MIGRATION_READY` and `OWNED_CONTENT_ENABLED`. Onboarding, private media, jobs, billing and all costly capabilities stay disabled.
+| Phase | Status | Acceptance |
+|---|---|---|
+| 3A: Prepare live controls | Implemented and independently tested | Account panel supports workspace/project creation, selection, refresh and rename; uncertain creation retries keep the original details and UUID. |
+| 3B: Controlled activation | Two Vercel settings configured; deployment evidence recorded privately | Enable only `OWNERSHIP_MIGRATION_READY` and `OWNED_CONTENT_ENABLED`; verify signed-out requests fail and other capabilities stay closed. |
+| 3C: Live acceptance | Pending private signed-in tests | Record real account persistence, retries, authorization failures and independent A/B provider sessions. |
+| 3D: Close module | Pending 3C | Fix failures, rerun affected checks and record acceptance. |
 
-The existing account panel can create a workspace after controlled activation. Project creation is exposed through the API/server action; the full onboarding/dashboard flow is a subsequent phase. Test creating a workspace, retrying the same operation, listing it, creating/reading/renaming a manual project, the 409/429 messages, and sign-out protection. Record independent real account A/B browser/REST isolation before broader workspace launch. The current Resend shared sender still limits email recipients; synthetic SQL/HTTP sessions do not resolve that limitation.
+**Updated independent verification:** 78 auth tests passed, including three request-helper tests; ten workspace HTTP scenarios passed, including a deliberately lost response after committed creation, safe replay and actual SQL quota/rate thresholds returning HTTP 409/429. Thresholds are seeded only in the isolated fixture, without flooding the hosted service. Eleven auth HTTP regressions, TypeScript, targeted lint and production build passed. All 33 live read-only preservation/access checks passed again before activation. Evidence: `scratch/workspace-http-acceptance/2026-10-15T09-23-03.329Z/` and `scratch/auth-session-acceptance/2026-10-15T09-23-20.909Z/`.
+
+The pending save is retained in memory only: keep the page open and use **Retry save** until confirmed. Fields are locked during an uncertain retry. A confirmed save followed by a failed list refresh is reported as saved, with a separate refresh action. No full dashboard/onboarding flow is introduced.
+
+The previous hosted settings are saved privately in `scratch/workspace-activation-before.env`. The activation changes only the two reviewed flags, verifies unrelated non-Vercel settings remain unchanged and confirms no hosted service-role key. Onboarding, private media, jobs, billing and costly capabilities remain disabled. To withdraw access, set both ownership/content flags false and redeploy; editing environment settings alone does not alter a running deployment. This stops application access without undoing the SQL migration or deleting content. Never replay the accepted migration for rollback.
+
+## Private live acceptance
+
+1. Log in at `https://assemblyreel-io.vercel.app/login` with the existing confirmed account. Earlier account acceptance used `rmt.aiautomation@gmail.com`; this is separate from the legacy ownerless sample content. Keep passwords, cookies and links private.
+2. On `/account`, create **one** test workspace. Select it, create **one** manual project, and rename both with the panel controls.
+3. Refresh, select the saved workspace/project again and confirm the renamed values persist. Open the saved project and return to Account.
+4. Log out, then open `/account` and the saved project address directly. Fresh requests must require Login and show no content.
+5. Arrange a second confirmed test account in another browser profile/device. Record A/B reads and mutation attempts against the other account's known test IDs: all must be denied, and lists must never contain the other's records. Accommodate the Resend recipient restriction without disabling confirmation or CAPTCHA. SQL role/local HTTP passes do not replace this step.
+
+Live retry/conflict and bounded concurrent-save checks use known test operation UUIDs through authenticated requests. Never ask the tester to paste session tokens into chat. Hosted quota/rate acceptance remains unperformed; the independent local results are above. Do not flood the live service or create extra records just to reach limits. Do not mark unperformed cases PASS. New test records are owned by their test account and count toward the three-workspace/ten-project quotas; deletion is outside this module. Old workspaces remain unassigned.
 
 Login continues to `/account`; no workspace/onboarding redirect change is included in this API phase.
