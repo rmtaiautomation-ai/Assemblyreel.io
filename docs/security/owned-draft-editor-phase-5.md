@@ -54,6 +54,8 @@ Local evidence recorded October 16:
 
 No live editor writes, paid provider requests or new real users were made by these tests. Signed-in visual/browser acceptance is still pending; SSR HTML checks do not replace it.
 
+**Disabled release verified October 16:** implementation commit `85cc92856d072ec9c2c961a0bf4dccfdddc4ac92` reached Vercel Ready as `dpl_8VmPjL4Sa1s8RyMzdpAu1hcHLfnf`. The stable `assemblyreel-io.vercel.app` alias was verified against that deployment. Twelve anonymous read-only hosted checks passed for Login redirects, owned API denial, the disabled editor API, closed media/jobs/render features and private cache headers. Evidence: ignored `scratch/owned-editor-disabled-release-verification.json`. This publishes the prepared code with both editor switches disabled; it does not apply SQL or accept signed-in editing. A documentation-only follow-up commit may redeploy identical application code.
+
 ## Activation and tester return
 
 The agent has no authenticated SQL management connection in this session. `DATABASE_URL` is not a verified target and must not be used as a shortcut. Finish implementation/tests first, then request only this concrete operator step:
