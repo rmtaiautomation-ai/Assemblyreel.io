@@ -78,3 +78,26 @@ test("Proxy opens only configured confirmed onboarding and keeps legacy generati
     for (const path of ["/onboarding","/account/projects/private"]) assert.equal((await proxy.updateSession(new NextRequest("https://staging.example"+path))).headers.get("location"),"https://staging.example/login?next=/account");
   } finally { restore(); }
 });
+
+test("workspace dashboard flag opens only confirmed dashboard/setup without activating legacy pages or resumable setup", async () => {
+  const restore = enable(); const previous = process.env.WORKSPACE_DASHBOARD_ENABLED;
+  try {
+    process.env.ONBOARDING_ENABLED = "false";
+    process.env.WORKSPACE_DASHBOARD_ENABLED = "true";
+    globalThis.__setupClient = client();
+    for (const path of ["/dashboard", "/dashboard/10000000-0000-4000-8000-000000000001", "/onboarding"]) {
+      const response = await proxy.updateSession(new NextRequest("https://staging.example" + path));
+      assert.equal(response.headers.get("location"), null);
+      assert.match(response.headers.get("cache-control"), /private.*no-store/);
+    }
+    assert.equal((await route.GET()).status, 503);
+    assert.equal((await proxy.updateSession(new NextRequest("https://staging.example/workspaces/private/videos/editor"))).headers.get("location"), "https://staging.example/account");
+    process.env.WORKSPACE_DASHBOARD_ENABLED = "false";
+    assert.equal((await proxy.updateSession(new NextRequest("https://staging.example/dashboard"))).headers.get("location"), "https://staging.example/account");
+    process.env.WORKSPACE_DASHBOARD_ENABLED = "true"; globalThis.__setupClient = client(null);
+    assert.equal((await proxy.updateSession(new NextRequest("https://staging.example/dashboard"))).headers.get("location"), "https://staging.example/login?next=/account");
+  } finally {
+    if (previous === undefined) delete process.env.WORKSPACE_DASHBOARD_ENABLED; else process.env.WORKSPACE_DASHBOARD_ENABLED = previous;
+    restore();
+  }
+});

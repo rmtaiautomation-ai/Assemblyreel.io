@@ -7,17 +7,18 @@ import { AuthCard } from "@/features/auth/components/AuthCard";
 import { AccountJobPanel } from "@/features/videos/components/AccountJobPanel";
 import { scriptProviderReady } from "@/server/generation/job-policy";
 import {cloudPreviewReady} from "@/server/generation/cloud-preview";
+import { workspaceDashboardReady } from "@/server/auth/policy";
 
 export const dynamic = "force-dynamic";
 export default async function DraftPage({ params }: { params: Promise<{ projectId: string }> }) {
   const user = await requireAccount();
-  let details: { id: string; name: string; topic: string } | null = null;
+  let details: { id: string; workspaceId: string; name: string; topic: string } | null = null;
   try {
     requireFeature("OWNED_CONTENT_ENABLED");
     const { client, user: actor } = await accessContext();
     const project = await requireOwnedProject(client, actor.id, (await params).projectId);
     const workspace = await requireOwnedWorkspace(client, actor.id, project.workspace_id);
-    details = { id:project.id,name: workspace.name, topic: project.topic };
+    details = { id:project.id,workspaceId:workspace.id,name: workspace.name, topic: project.topic };
   } catch (error) {
     if (error instanceof AccessError && [400,404].includes(error.status)) notFound();
   }
@@ -28,5 +29,5 @@ export default async function DraftPage({ params }: { params: Promise<{ projectI
     {details && process.env.DURABLE_JOBS_ENABLED === "true" && process.env.JOBS_MIGRATION_READY === "true" &&
       <AccountJobPanel projectId={details.id} mockEnabled={process.env.MOCK_JOBS_ENABLED === "true"} scriptEnabled={scriptProviderReady()} renderEnabled={cloudPreviewReady()} />}
     <Link href="/account/billing" className="text-[#13EF93] block">Billing and allowances</Link>
-    <Link href="/account?overview=1" className="text-[#13EF93]">Back to account and workspaces</Link></AuthCard>;
+    <Link href={workspaceDashboardReady() ? (details ? `/dashboard/${details.workspaceId}` : "/dashboard") : "/account?overview=1"} className="text-[#13EF93]">{workspaceDashboardReady() ? "Back to workspace" : "Back to account and workspaces"}</Link></AuthCard>;
 }

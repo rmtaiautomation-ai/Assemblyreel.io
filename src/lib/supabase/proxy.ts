@@ -1,6 +1,6 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
-import { authLaunchReady, confirmedIdentity, onboardingReady } from "@/server/auth/policy";
+import { authLaunchReady, confirmedIdentity, onboardingReady, workspaceDashboardReady } from "@/server/auth/policy";
 
 const privateHeaders = { "Cache-Control": "private, no-store", Pragma: "no-cache", Expires: "0" };
 
@@ -33,8 +33,10 @@ export async function updateSession(request: NextRequest) {
   }
 
   const setup = path === "/onboarding" || path.startsWith("/onboarding/");
-  const legacy = ["/workspaces", "/billing", "/integrations"].some(prefix => path === prefix || path.startsWith(prefix + "/")) || (setup && !onboardingReady());
-  if (legacy || ((path === "/account" || path.startsWith("/account/") || setup) && !confirmed)) {
+  const dashboard = path === "/dashboard" || path.startsWith("/dashboard/");
+  const legacy = ["/workspaces", "/billing", "/integrations"].some(prefix => path === prefix || path.startsWith(prefix + "/"))
+    || (setup && !onboardingReady() && !workspaceDashboardReady()) || (dashboard && !workspaceDashboardReady());
+  if (legacy || ((path === "/account" || path.startsWith("/account/") || setup || dashboard) && !confirmed)) {
     const url = request.nextUrl.clone();
     url.pathname = confirmed ? "/account" : "/login";
     url.search = confirmed ? "" : "?next=/account";

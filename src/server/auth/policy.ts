@@ -59,3 +59,9 @@ export function onboardingReady() {
   return authLaunchReady() && process.env.OWNERSHIP_MIGRATION_READY === "true"
     && process.env.OWNED_CONTENT_ENABLED === "true" && process.env.ONBOARDING_ENABLED === "true";
 }
+
+// Uses only the accepted owned-workspace RPCs; resumable onboarding stays separate.
+export function workspaceDashboardReady() {
+  return authLaunchReady() && process.env.OWNERSHIP_MIGRATION_READY === "true"
+    && process.env.OWNED_CONTENT_ENABLED === "true" && process.env.WORKSPACE_DASHBOARD_ENABLED === "true";
+}

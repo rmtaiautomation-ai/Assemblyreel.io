@@ -150,3 +150,15 @@ test('server actions share origin, identity, ownership, validation and safe-erro
     assert.equal(f.state.rpcs.length,2);
   }finally{await f.close();}
 });
+
+test('niche setup persists supported preferences only through the reviewed workspace RPC',async()=>{
+  const f=await setup();try{
+    const preferences={name:'My channel',content_theme:'Mythology & Ancient Lore',visual_aesthetic:'Watercolor',aspect_ratio:'Vertical 9:16',video_language:'French',duration_pref:'2-3m'};
+    assert.equal((await createWorkspace(id(70),preferences)).status,201);
+    assert.equal((await createWorkspace(id(70),preferences)).status,201);
+    await f.db.exec('reset role');
+    const saved=(await f.db.query('select name,content_theme,visual_aesthetic,aspect_ratio,video_language,duration_pref from public.workspaces where id=$1',[id(70)])).rows[0];
+    assert.deepEqual(saved,preferences);
+    assert.equal((await f.db.query('select count(*)::integer n from public.workspaces where id=$1',[id(70)])).rows[0].n,1);
+  }finally{await f.close();}
+});

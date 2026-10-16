@@ -50,7 +50,7 @@ const template=await readFile('config/auth.env.example','utf8');
 const disabled=Object.fromEntries([...template.matchAll(/^([A-Z_]+)=(?:false|true)\s*$/gm)].map(match=>[match[1],'false']));
 const env={...process.env,...disabled,NEXT_PUBLIC_SITE_URL:origin,NEXT_PUBLIC_SUPABASE_URL:`http://127.0.0.1:${provider.address().port}`,
   NEXT_PUBLIC_SUPABASE_ANON_KEY:'sb_publishable_synthetic_fixture',SUPABASE_SERVICE_ROLE_KEY:'',DATABASE_URL:'',
-  AUTH_LAUNCH_READY:'true',APP_ACCESS_STAGE:'auth_only',OWNERSHIP_MIGRATION_READY:'true',OWNED_CONTENT_ENABLED:'true'};
+  AUTH_LAUNCH_READY:'true',APP_ACCESS_STAGE:'auth_only',OWNERSHIP_MIGRATION_READY:'true',OWNED_CONTENT_ENABLED:'true',WORKSPACE_DASHBOARD_ENABLED:'true'};
 const child=spawn(process.execPath,['--use-system-ca','node_modules/next/dist/bin/next','dev','--hostname','localhost','--port',String(port)],{cwd:process.cwd(),env,stdio:['ignore','pipe','pipe'],windowsHide:true});
 let log='',failure;child.stdout.on('data',chunk=>{log+=chunk;});child.stderr.on('data',chunk=>{log+=chunk;});
 const closed=new Promise(done=>child.on('close',done));const checks=[];
@@ -64,12 +64,29 @@ const pass=name=>{checks.push({name,passed:true});console.log(`PASS: ${name}`);}
 try{
   let ready=false;for(let attempt=0;attempt<90;attempt++){if(child.exitCode!==null)throw new Error('Local Next server exited');try{if((await request('/api/auth/navigation',null)).status===200){ready=true;break;}}catch{/*startup*/}await new Promise(done=>setTimeout(done,500));}assert.ok(ready);
   assert.equal((await request('/api/account/workspaces',null)).status,401);pass('Missing session rejected by actual SSR client');
+  for(const path of ['/dashboard',`/dashboard/${id(10)}`,'/onboarding']){
+    const response=await request(path,null);assert.equal(response.status,307);assert.equal(new URL(response.headers.get('location'),origin).pathname,'/login');
+  }
+  assert.equal((await request('/account')).headers.get('location'),'/dashboard');
+  assert.equal((await request('/dashboard')).headers.get('location'),'/onboarding');
+  const setup=await request('/onboarding');assert.equal(setup.status,200);assert.match(await setup.text(),/Niche or channel theme/);
+  pass('Signed-out dashboard/setup require Login; confirmed empty account reaches niche setup');
   const workspace={operationId:id(10),workspace:{name:'HTTP channel',content_theme:'History'}};
   assert.equal((await request('/api/account/workspaces',a,workspace)).status,201);
   assert.equal((await request('/api/account/workspaces',a,workspace)).status,201);pass('Actual HTTP workspace creation and retry persist one record');
+  const dashboard=await request('/dashboard');assert.equal(dashboard.status,200);assert.match(dashboard.headers.get('cache-control'),/no-store/);assert.match(await dashboard.text(),/HTTP channel/);
+  assert.equal((await request('/onboarding')).headers.get('location'),'/dashboard');
+  assert.equal((await request('/onboarding?new=1')).status,200);
+  assert.equal((await request('/dashboard',b)).headers.get('location'),'/onboarding');
+  pass('Returning account sees owned workspace cards and can explicitly create another workspace');
   const project={operationId:id(11),project:{workspace_id:id(10),topic:'HTTP draft'}};
   assert.equal((await request('/api/account/projects',a,project)).status,201);
   assert.equal((await request('/api/account/projects',a,project)).status,201);pass('Actual HTTP project creation and retry persist one record');
+  const workspacePage=await request(`/dashboard/${id(10)}`);assert.equal(workspacePage.status,200);assert.match(await workspacePage.text(),/HTTP draft/);
+  const foreignPage=await request(`/dashboard/${id(10)}`,b);const foreignHtml=await foreignPage.text();
+  assert.ok(foreignPage.status===404||foreignHtml.includes('NEXT_HTTP_ERROR_FALLBACK;404'));assert.ok(!foreignHtml.includes('HTTP channel'));assert.ok(!foreignHtml.includes('HTTP draft'));
+  assert.equal((await request('/api/account/onboarding',a,{action:'complete',revision:1})).status,503);
+  pass('Workspace page lists owned projects, rejects foreign workspace and leaves resumable onboarding API closed');
   const list=await request('/api/account/workspaces');assert.equal(list.status,200);assert.match(list.headers.get('cache-control'),/no-store/);assert.equal(list.headers.get('pragma'),'no-cache');assert.equal((await list.json()).workspaces.length,1);
   assert.equal((await request(`/api/account/workspaces/${id(10)}`)).status,200);
   assert.equal((await request(`/api/account/projects?workspaceId=${id(10)}`)).status,200);
