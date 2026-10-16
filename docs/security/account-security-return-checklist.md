@@ -31,3 +31,5 @@ The database ownership migration has now been applied and passed live rollback-o
 ### October 16 continuation
 
 The Phase 3 handoff now records the operators two-account core acceptance: list/project read isolation, both rename denial directions, rejected foreign-workspace project creation, same-operation replay and changed-payload conflict rejection. Broader hosted resilience/limit coverage and public signup delivery remain open. [Phase 4 dashboard/niche setup](workspace-dashboard-onboarding-phase-4.md) adds a separately gated user flow based on the accepted ownership RPCs; do not activate generic resumable onboarding or replay its migrations. See that handoff for the current login destination and the remaining new-page browser checks.
+
+The owner deferred paid domain/email work until launch preparation; see the [email follow-up](signup-email-delivery-followup.md). Active development proceeds with [Phase 5 owned draft editing](owned-draft-editor-phase-5.md), whose own SQL migration, activation switches and browser acceptance are separate from the already deployed dashboard.

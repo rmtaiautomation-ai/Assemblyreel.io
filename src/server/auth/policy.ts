@@ -65,3 +65,8 @@ export function workspaceDashboardReady() {
   return authLaunchReady() && process.env.OWNERSHIP_MIGRATION_READY === "true"
     && process.env.OWNED_CONTENT_ENABLED === "true" && process.env.WORKSPACE_DASHBOARD_ENABLED === "true";
 }
+
+export function ownedEditorReady() {
+  return workspaceDashboardReady() && process.env.OWNED_EDITOR_ENABLED === "true"
+    && process.env.EDITOR_MIGRATION_READY === "true";
+}

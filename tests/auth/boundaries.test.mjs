@@ -22,7 +22,7 @@ test("every legacy action and API handler has its gate before existing work", as
       actions++;
     }
   }
-  const ownedRoutes = new Set(["account/billing/route.ts","account/billing/enroll/route.ts","account/billing/invoices/route.ts","account/jobs/route.ts","account/jobs/[jobId]/route.ts","account/onboarding/route.ts","account/workspaces/route.ts","account/workspaces/[workspaceId]/route.ts","account/projects/route.ts","account/projects/[projectId]/route.ts","account/resources/route.ts","media/upload/route.ts","media/from-url/route.ts","media/[mediaId]/status/route.ts","media/[mediaId]/content/route.ts","render/download/route.ts"]);
+  const ownedRoutes = new Set(["account/billing/route.ts","account/billing/enroll/route.ts","account/billing/invoices/route.ts","account/jobs/route.ts","account/jobs/[jobId]/route.ts","account/onboarding/route.ts","account/workspaces/route.ts","account/workspaces/[workspaceId]/route.ts","account/projects/route.ts","account/projects/[projectId]/route.ts","account/projects/[projectId]/editor/route.ts","account/resources/route.ts","media/upload/route.ts","media/from-url/route.ts","media/[mediaId]/status/route.ts","media/[mediaId]/content/route.ts","render/download/route.ts"]);
   const billingRoutes = new Set(["stripe/checkout/route.ts","stripe/portal/route.ts","stripe/webhook/route.ts"]);
   let billingHandlers=0;
   let ownedHandlers=0;
@@ -34,7 +34,7 @@ test("every legacy action and API handler has its gate before existing work", as
       if (!ts.isFunctionDeclaration(s) || !["GET", "POST", "PUT", "PATCH", "DELETE"].includes(s.name?.text)) continue;
       const relative=decodeURIComponent(file.pathname).split("/src/app/api/")[1];
       if(ownedRoutes.has(relative)) {
-        assert.match(s.body.statements[0].getText(ast),/return apiResponse\(async\s*\(\)\s*=>\s*\{\s*(requireFeature|requireJobs|requireBillingLaunch)\(/,file.pathname);
+        assert.match(s.body.statements[0].getText(ast),/return apiResponse\(async\s*\(\)\s*=>\s*\{\s*(requireFeature|requireJobs|requireBillingLaunch|requireOwnedEditor)\(/,file.pathname);
         ownedHandlers++;continue;
       }
       if(billingRoutes.has(relative)) {
@@ -46,7 +46,7 @@ test("every legacy action and API handler has its gate before existing work", as
   }
   assert.equal(actions, 83);
   assert.equal(handlers, 7);
-  assert.equal(ownedHandlers, 21);
+  assert.equal(ownedHandlers, 23);
   assert.equal(billingHandlers, 3);
 });
 

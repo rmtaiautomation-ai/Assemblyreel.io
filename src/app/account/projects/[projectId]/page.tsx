@@ -7,7 +7,7 @@ import { AuthCard } from "@/features/auth/components/AuthCard";
 import { AccountJobPanel } from "@/features/videos/components/AccountJobPanel";
 import { scriptProviderReady } from "@/server/generation/job-policy";
 import {cloudPreviewReady} from "@/server/generation/cloud-preview";
-import { workspaceDashboardReady } from "@/server/auth/policy";
+import { workspaceDashboardReady, ownedEditorReady } from "@/server/auth/policy";
 
 export const dynamic = "force-dynamic";
 export default async function DraftPage({ params }: { params: Promise<{ projectId: string }> }) {
@@ -24,7 +24,8 @@ export default async function DraftPage({ params }: { params: Promise<{ projectI
   }
   return <AuthCard title="Your project"><p className="text-sm break-all">Signed in as {user.email}</p>{details
     ? <><p>Workspace: <strong>{details.name}</strong></p><p>Saved topic: <strong>{details.topic}</strong></p>
-      <p className="text-sm text-[#B5BCC6]">Saved project metadata. Accepted background features appear below when configured; the full video editor remains unavailable.</p></>
+      <p className="text-sm text-[#B5BCC6]">Saved project metadata. Accepted background features appear below when configured; the full video editor remains unavailable.</p>
+      {ownedEditorReady() && <Link href={`/account/projects/${details.id}/edit`} className="text-[#13EF93] block">Edit draft scenes and timing →</Link>}</>
     : <p role="alert">Your project is temporarily unavailable. Refresh to retry.</p>}
     {details && process.env.DURABLE_JOBS_ENABLED === "true" && process.env.JOBS_MIGRATION_READY === "true" &&
       <AccountJobPanel projectId={details.id} mockEnabled={process.env.MOCK_JOBS_ENABLED === "true"} scriptEnabled={scriptProviderReady()} renderEnabled={cloudPreviewReady()} />}

@@ -11,6 +11,12 @@ import { loadSource } from '../../tests/presentations/load-source.mjs';
 const db=await fixture();
 await db.exec("alter table public.workspaces add created_at timestamptz default now();alter table public.video_projects add created_at timestamptz default now()");
 await db.exec(await readFile('db/auth/existing-project/004-owned-records-text-projects.sql','utf8'));
+await db.exec(`create schema account_ownership_backup_20261014;
+  alter table public.video_projects add track_states jsonb,add captions_enabled boolean;
+  alter table public.scenes add sequence_number integer default 1,add voice_over_beat text default '',add final_video_prompt text default '',add video_duration numeric default 5,add trim_start numeric default 0;
+  alter table public.media add status text default 'ready',add duration_seconds numeric;
+  alter table public.timeline_items add track_id text default 'A1',add start_time numeric default 0,add duration numeric default 5,add trim_start numeric default 0;`);
+await db.exec(await readFile('db/auth/existing-project/008-owned-draft-editor.sql','utf8'));
 const directory=resolve('scratch/workspace-http-acceptance',new Date().toISOString().replaceAll(':','-'));await mkdir(directory,{recursive:true});
 const a='10000000-0000-4000-8000-000000000001',b='10000000-0000-4000-8000-000000000002';
 const id=n=>`abcdef00-0000-4000-8000-${String(n).padStart(12,'0')}`;
@@ -31,6 +37,8 @@ const provider=createServer(async(request,response)=>{
       let bytes='';for await(const chunk of request)bytes+=chunk;
       const input=JSON.parse(bytes),name=url.pathname.split('/').at(-1);let sql,values;
       if(['create_owned_workspace','create_owned_project'].includes(name)){sql=`select public.${name}($1::jsonb,$2::uuid) value`;values=[input.payload,input.operation_id];}
+      else if(name==='read_owned_editor'){sql='select public.read_owned_editor($1::uuid) value';values=[input.p_project_id];}
+      else if(name==='save_owned_editor'){sql='select public.save_owned_editor($1::uuid,$2::integer,$3::uuid,$4::jsonb) value';values=[input.p_project_id,input.p_revision,input.p_operation_id,input.p_document];}
       else{assert.equal(name,'rename_owned_resource');sql='select public.rename_owned_resource($1,$2::uuid,$3) value';values=[input.resource_type,input.resource_id,input.value];}
       try{return json((await db.query(sql,values)).rows[0].value);}catch(error){return json({message:error.message,code:error.code,details:null,hint:null},400);}
     }
@@ -50,7 +58,8 @@ const template=await readFile('config/auth.env.example','utf8');
 const disabled=Object.fromEntries([...template.matchAll(/^([A-Z_]+)=(?:false|true)\s*$/gm)].map(match=>[match[1],'false']));
 const env={...process.env,...disabled,NEXT_PUBLIC_SITE_URL:origin,NEXT_PUBLIC_SUPABASE_URL:`http://127.0.0.1:${provider.address().port}`,
   NEXT_PUBLIC_SUPABASE_ANON_KEY:'sb_publishable_synthetic_fixture',SUPABASE_SERVICE_ROLE_KEY:'',DATABASE_URL:'',
-  AUTH_LAUNCH_READY:'true',APP_ACCESS_STAGE:'auth_only',OWNERSHIP_MIGRATION_READY:'true',OWNED_CONTENT_ENABLED:'true',WORKSPACE_DASHBOARD_ENABLED:'true'};
+  AUTH_LAUNCH_READY:'true',APP_ACCESS_STAGE:'auth_only',OWNERSHIP_MIGRATION_READY:'true',OWNED_CONTENT_ENABLED:'true',WORKSPACE_DASHBOARD_ENABLED:'true',
+  OWNED_EDITOR_ENABLED:'true',EDITOR_MIGRATION_READY:'true'};
 const child=spawn(process.execPath,['--use-system-ca','node_modules/next/dist/bin/next','dev','--hostname','localhost','--port',String(port)],{cwd:process.cwd(),env,stdio:['ignore','pipe','pipe'],windowsHide:true});
 let log='',failure;child.stdout.on('data',chunk=>{log+=chunk;});child.stderr.on('data',chunk=>{log+=chunk;});
 const closed=new Promise(done=>child.on('close',done));const checks=[];
@@ -128,6 +137,40 @@ try{
   const quota=await request('/api/account/workspaces',a,{...workspace,operationId:id(52)});
   assert.equal(quota.status,409);assert.equal((await quota.json()).code,'WORKSPACE_LIMIT');
   pass('Real SQL rate and quota thresholds become safe HTTP 429/409 without saving rejected changes');
+  const editorPath=`/api/account/projects/${id(11)}/editor`;
+  assert.equal((await request(editorPath,null)).status,401);
+  const signedOutEditor=await request(`/account/projects/${id(11)}/edit`,null);assert.equal(signedOutEditor.status,307);
+  const editorPage=await request(`/account/projects/${id(11)}/edit`);assert.equal(editorPage.status,200);assert.match(await editorPage.text(),/No scenes yet/);
+  const editorInitial=await request(editorPath);assert.equal(editorInitial.status,200);assert.match(editorInitial.headers.get('cache-control'),/no-store/);
+  const editorSnapshot=await editorInitial.json();assert.equal(editorSnapshot.revision,0);assert.deepEqual(editorSnapshot.document.scenes,[]);
+  const foreignEditor=await request(`/account/projects/${id(11)}/edit`,b);const foreignEditorHtml=await foreignEditor.text();
+  assert.ok(foreignEditor.status===404||foreignEditorHtml.includes('NEXT_HTTP_ERROR_FALLBACK;404'));assert.ok(!foreignEditorHtml.includes('Renamed'));
+  assert.equal((await request(editorPath,b)).status,404);
+  pass('Owned editor renders empty state; signed-out and foreign page/API access reject without private metadata');
+  const document=editorSnapshot.document;document.scenes=[{id:id(70),voice_over_beat:'Manual HTTP scene',final_video_prompt:'A calm room',video_duration:5,trim_start:0}];
+  document.settings.captions_enabled=true;
+  const editorBody={operationId:id(71),revision:0,document};
+  assert.equal((await request(editorPath,a,editorBody,'PUT','https://evil.example')).status,403);
+  assert.equal((await request(editorPath,a,{...editorBody,document:{...document,user_id:b}},'PUT')).status,400);
+  assert.equal((await request(editorPath,a,{...editorBody,padding:'x'.repeat(262144)},'PUT')).status,413);
+  assert.equal((await request(editorPath,b,editorBody,'PUT')).status,404);
+  pass('Editor rejects foreign mutations, cross-origin writes, unknown fields and oversized request streams');
+  const draftClient=await loadSource(new URL('../../src/features/owned-editor/client.ts',import.meta.url));
+  const draftAttempt=draftClient.prepareEditorSave(0,document,id(71));let draftDropped=false;const draftBodies=[];
+  globalThis.fetch=async(path,init)=>{
+    draftBodies.push(init.body);const response=await originalFetch(origin+path,{...init,headers:{...init.headers,cookie:cookie(a),origin}});
+    if(!draftDropped){draftDropped=true;await response.text();throw new TypeError('Synthetic lost editor response after commit');}return response;
+  };
+  try{await assert.rejects(draftClient.sendEditorSave(id(11),draftAttempt));await draftClient.sendEditorSave(id(11),draftAttempt);assert.equal(draftBodies[0],draftBodies[1]);}
+  finally{globalThis.fetch=originalFetch;}
+  const editorSaved=await (await request(editorPath)).json();assert.equal(editorSaved.revision,1);assert.deepEqual(editorSaved.document,document);
+  const reloadedPage=await request(`/account/projects/${id(11)}/edit`);assert.match(await reloadedPage.text(),/Manual HTTP scene/);
+  pass('Actual editor HTTP save persists scene/settings through reload; a lost response retries the same operation once');
+  const stale=await request(editorPath,a,{...editorBody,operationId:id(72)},'PUT');assert.equal(stale.status,409);assert.equal((await stale.json()).code,'EDITOR_CONFLICT');
+  const changed=await request(editorPath,a,{...editorBody,document:{...document,scenes:[]}},'PUT');assert.equal(changed.status,409);assert.equal((await changed.json()).code,'OPERATION_REUSED');
+  await db.exec('reset role');assert.equal((await db.query('select count(*)::int n from account_editor_operations')).rows[0].n,1);
+  assert.equal((await db.query("select hits from account_request_limits where actor_id=$1 and action='editor'",[a])).rows[0].hits,1);
+  pass('Actual HTTP stale-tab and changed-retry conflicts preserve the saved revision and count one operation');
   assert.deepEqual(fixtureErrors,[]);
 }catch(error){failure=error;process.exitCode=1;}
 finally{

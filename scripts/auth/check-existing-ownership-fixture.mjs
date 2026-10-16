@@ -94,9 +94,21 @@ try {
   check('Live-style rollback role isolation script passes on exported public schema',true);
   const countsAfter=(await db.query('select (select count(*) from auth.users)::integer identities,(select count(*) from public.workspaces)::integer workspaces')).rows[0];
   check('Isolation script leaves no synthetic identities or workspaces',JSON.stringify(countsBefore)===JSON.stringify(countsAfter));
+  if(process.argv.includes('--editor')) {
+    await db.exec(await readFile(new URL('../../db/auth/existing-project/008-owned-draft-editor.sql',import.meta.url),'utf8'));
+    for(const name of names) {
+      const additions=name==='scenes'?"-'account_project_id'-'account_editor_created'":name==='video_projects'?"-'account_editor_revision'":'';
+      const rows=(await db.query(`select to_jsonb(t)${additions} as row from public.${identifier(name)} t order by id`)).rows;
+      check(`Editor upgrade preserves exported ${name} values`,JSON.stringify(rows)===JSON.stringify(before[name]));
+    }
+    await db.exec(await readFile(new URL('../../db/auth/existing-project/test-owned-editor.sql',import.meta.url),'utf8'));
+    check('Editor rollback test passes against exported public columns, constraints and triggers',true);
+    const afterEditor=(await db.query('select (select count(*) from auth.users)::integer identities,(select count(*) from public.workspaces)::integer workspaces')).rows[0];
+    check('Editor acceptance leaves no synthetic identities or workspaces',JSON.stringify(countsAfter)===JSON.stringify(afterEditor));
+  }
 }catch(error){console.error(`Offline ownership replay failed: ${error.code??'FIXTURE_CHECK_FAILED'}. No private rows printed.`);process.exitCode=1;}
 finally {
   await db.close();
-  await writeFile(resolve(directory,'ownership-migration-replay.json'),JSON.stringify({checkedAt:new Date().toISOString(),checks,
+  await writeFile(resolve(directory,process.argv.includes('--editor')?'editor-migration-replay.json':'ownership-migration-replay.json'),JSON.stringify({checkedAt:new Date().toISOString(),checks,
     scope:'Actual public columns/defaults/constraints/indexes/functions/triggers/policies and backed-up rows in PGlite; minimally modeled managed Auth/Storage, not live Supabase acceptance.'},null,2));
 }

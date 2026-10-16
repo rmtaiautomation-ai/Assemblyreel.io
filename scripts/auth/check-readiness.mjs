@@ -47,6 +47,11 @@ if (process.env.WORKSPACE_DASHBOARD_ENABLED === "true") {
   check("Workspace dashboard uses accepted ownership flags", process.env.OWNERSHIP_MIGRATION_READY === "true" && process.env.OWNED_CONTENT_ENABLED === "true");
   console.log(`${checks.at(-1).passed ? "PASS" : "PENDING"}: ${checks.at(-1).name}; live dashboard browser acceptance is separate`);
 }
+if (process.env.OWNED_EDITOR_ENABLED === "true") {
+  check("Owned editor requires reviewed 008 and dashboard ownership flags", process.env.EDITOR_MIGRATION_READY === "true" &&
+    process.env.WORKSPACE_DASHBOARD_ENABLED === "true" && process.env.OWNERSHIP_MIGRATION_READY === "true" && process.env.OWNED_CONTENT_ENABLED === "true");
+  console.log(`${checks.at(-1).passed ? "PASS" : "PENDING"}: ${checks.at(-1).name}; live rollback SQL and private browser acceptance are separate`);
+}
 if(process.env.DURABLE_JOBS_ENABLED === "true") {
   check("Job migrations and owned content accepted",process.env.JOBS_MIGRATION_READY === "true" && process.env.OWNED_CONTENT_ENABLED === "true" && process.env.OWNERSHIP_MIGRATION_READY === "true");
   console.log(`${checks.at(-1).passed ? "PASS":"PENDING"}: ${checks.at(-1).name}`);
